@@ -5,10 +5,19 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 
 #include <SDL_opengl.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+
+// ── Shared GLSL program + draw helpers ─────────
+//
+// One program serves every draw. Vertex attributes are fixed at locations
+// 0 = position, 1 = normal, 2 = colour, matching every VAO built below. The
+// ``uLighting`` flag switches between the lit meshes and the flat-coloured grid,
+// axes, and camera marker. Lighting is computed per-vertex in view space with
+// two fixed lights, reproducing the legacy fixed-function look.
 
 namespace {
     constexpr float kPi = 3.14159265358979323846f;
@@ -19,10 +28,159 @@ namespace {
     constexpr int WARM_UPLOAD_BUDGET = 4;
     constexpr int WARM_PREP_AHEAD = 3;
 
-    /// Draw a UV sphere of triangles centred on the origin (lighting is off when
-    /// this is used, so no normals are emitted).
-    void draw_sphere(float radius, int slices, int stacks) {
-        glBegin(GL_TRIANGLES);
+    // Attribute locations shared by the shader and every VAO.
+    constexpr GLuint ATTRIB_POSITION = 0;
+    constexpr GLuint ATTRIB_NORMAL = 1;
+    constexpr GLuint ATTRIB_COLOR = 2;
+
+    const char* const VERTEX_SHADER = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec4 aColor;
+
+uniform mat4 uModel;
+uniform mat4 uView;
+uniform mat4 uProj;
+uniform bool uLighting;
+
+out vec4 vColor;
+
+// View-space lights matching the legacy setup_lighting() values.
+const vec3 LIGHT0_POS = vec3(5.0, 10.0, 5.0);
+const vec3 LIGHT0_DIFFUSE = vec3(0.85, 0.85, 0.85);
+const vec3 LIGHT0_AMBIENT = vec3(0.15, 0.15, 0.15);
+const vec3 LIGHT1_POS = vec3(-5.0, 6.0, -8.0);
+const vec3 LIGHT1_DIFFUSE = vec3(0.3, 0.35, 0.5);
+const vec3 SPECULAR = vec3(0.4, 0.4, 0.4);
+const float SHININESS = 32.0;
+
+void main() {
+    vec4 view_pos = uView * uModel * vec4(aPos, 1.0);
+    gl_Position = uProj * view_pos;
+
+    if (!uLighting) {
+        vColor = aColor;
+        return;
+    }
+
+    // Model/view here only translate and uniformly scale, so the upper 3x3 needs
+    // no inverse-transpose to keep normals correct.
+    vec3 normal = normalize(mat3(uView * uModel) * aNormal);
+    vec3 frag = view_pos.xyz;
+    vec3 eye = normalize(-frag);
+
+    vec3 lit = aColor.rgb * LIGHT0_AMBIENT;
+
+    vec3 dir0 = normalize(LIGHT0_POS - frag);
+    lit += aColor.rgb * LIGHT0_DIFFUSE * max(dot(normal, dir0), 0.0);
+    vec3 half0 = normalize(dir0 + eye);
+    lit += SPECULAR * LIGHT0_DIFFUSE * pow(max(dot(normal, half0), 0.0), SHININESS);
+
+    vec3 dir1 = normalize(LIGHT1_POS - frag);
+    lit += aColor.rgb * LIGHT1_DIFFUSE * max(dot(normal, dir1), 0.0);
+
+    vColor = vec4(lit, aColor.a);
+}
+)";
+
+    const char* const FRAGMENT_SHADER = R"(#version 330 core
+in vec4 vColor;
+out vec4 FragColor;
+void main() { FragColor = vColor; }
+)";
+
+    // Shared GL resources, created lazily on the first render and freed by
+    // shutdown_renderer() before the context goes away.
+    GLuint g_program = 0;
+    GLint g_loc_model = -1;
+    GLint g_loc_view = -1;
+    GLint g_loc_proj = -1;
+    GLint g_loc_lighting = -1;
+    GLuint g_dynamic_vao = 0; // pos+colour stream for grid / axes / marker
+    GLuint g_dynamic_vbo = 0;
+
+    GLuint compile_shader(GLenum type, const char* source) {
+        const GLuint shader = glx::CreateShader(type);
+        glx::ShaderSource(shader, 1, &source, nullptr);
+        glx::CompileShader(shader);
+        GLint ok = GL_FALSE;
+        glx::GetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+        if (ok == GL_FALSE) {
+            char log[512];
+            glx::GetShaderInfoLog(shader, sizeof(log), nullptr, log);
+            std::printf("Shader compile failed: %s\n", log);
+        }
+        return shader;
+    }
+
+    void ensure_resources() {
+        if (g_program != 0) {
+            return;
+        }
+        const GLuint vertex = compile_shader(GL_VERTEX_SHADER, VERTEX_SHADER);
+        const GLuint fragment = compile_shader(GL_FRAGMENT_SHADER, FRAGMENT_SHADER);
+        g_program = glx::CreateProgram();
+        glx::AttachShader(g_program, vertex);
+        glx::AttachShader(g_program, fragment);
+        glx::LinkProgram(g_program);
+        GLint ok = GL_FALSE;
+        glx::GetProgramiv(g_program, GL_LINK_STATUS, &ok);
+        if (ok == GL_FALSE) {
+            char log[512];
+            glx::GetProgramInfoLog(g_program, sizeof(log), nullptr, log);
+            std::printf("Program link failed: %s\n", log);
+        }
+        glx::DeleteShader(vertex);
+        glx::DeleteShader(fragment);
+
+        g_loc_model = glx::GetUniformLocation(g_program, "uModel");
+        g_loc_view = glx::GetUniformLocation(g_program, "uView");
+        g_loc_proj = glx::GetUniformLocation(g_program, "uProj");
+        g_loc_lighting = glx::GetUniformLocation(g_program, "uLighting");
+
+        // Dynamic stream VAO: interleaved position (3) + colour (4); the normal
+        // attribute stays disabled (a constant value) since this stream is unlit.
+        glx::GenVertexArrays(1, &g_dynamic_vao);
+        glx::GenBuffers(1, &g_dynamic_vbo);
+        glx::BindVertexArray(g_dynamic_vao);
+        glx::BindBuffer(GL_ARRAY_BUFFER, g_dynamic_vbo);
+        const GLsizei stride = 7 * sizeof(float);
+        glx::EnableVertexAttribArray(ATTRIB_POSITION);
+        glx::VertexAttribPointer(ATTRIB_POSITION, 3, GL_FLOAT, GL_FALSE, stride, nullptr);
+        glx::EnableVertexAttribArray(ATTRIB_COLOR);
+        glx::VertexAttribPointer(ATTRIB_COLOR, 4, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<const void*>(3 * sizeof(float)));
+        glx::VertexAttrib3f(ATTRIB_NORMAL, 0.0f, 0.0f, 1.0f);
+        glx::BindVertexArray(0);
+        glx::BindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    void set_model(const glm::mat4& model) { glx::UniformMatrix4fv(g_loc_model, 1, GL_FALSE, glm::value_ptr(model)); }
+
+    void set_lighting(bool enabled) { glx::Uniform1i(g_loc_lighting, enabled ? 1 : 0); }
+
+    /// Draw an interleaved position(3)+colour(4) vertex stream (unlit) under
+    /// ``model``. Used for the grid, axes, and camera marker.
+    void draw_colored(GLenum mode, const std::vector<float>& data, const glm::mat4& model) {
+        if (data.empty()) {
+            return;
+        }
+        set_model(model);
+        set_lighting(false);
+        glx::BindVertexArray(g_dynamic_vao);
+        glx::BindBuffer(GL_ARRAY_BUFFER, g_dynamic_vbo);
+        glx::BufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(data.size() * sizeof(float)), data.data(), GL_DYNAMIC_DRAW);
+        glDrawArrays(mode, 0, static_cast<GLsizei>(data.size() / 7));
+        glx::BindVertexArray(0);
+        glx::BindBuffer(GL_ARRAY_BUFFER, 0);
+    }
+
+    /// Append one position+colour vertex to an interleaved stream.
+    void push_vertex(std::vector<float>& out, const glm::vec3& position, const glm::vec4& color) {
+        out.insert(out.end(), {position.x, position.y, position.z, color.r, color.g, color.b, color.a});
+    }
+
+    /// Append a UV sphere of triangles (centred on the origin) to ``out``.
+    void append_sphere(std::vector<float>& out, float radius, int slices, int stacks, const glm::vec4& color) {
         for (int stack = 0; stack < stacks; ++stack) {
             const float phi0 = kPi * static_cast<float>(stack) / static_cast<float>(stacks);
             const float phi1 = kPi * static_cast<float>(stack + 1) / static_cast<float>(stacks);
@@ -38,72 +196,77 @@ namespace {
                 const glm::vec3 c = point(phi1, theta1);
                 const glm::vec3 d = point(phi0, theta1);
 
-                glVertex3f(a.x, a.y, a.z);
-                glVertex3f(b.x, b.y, b.z);
-                glVertex3f(c.x, c.y, c.z);
-
-                glVertex3f(a.x, a.y, a.z);
-                glVertex3f(c.x, c.y, c.z);
-                glVertex3f(d.x, d.y, d.z);
+                push_vertex(out, a, color);
+                push_vertex(out, b, color);
+                push_vertex(out, c, color);
+                push_vertex(out, a, color);
+                push_vertex(out, c, color);
+                push_vertex(out, d, color);
             }
         }
-        glEnd();
     }
 } // namespace
+
+void shutdown_renderer() {
+    if (g_program != 0) {
+        glx::DeleteProgram(g_program);
+        g_program = 0;
+    }
+    if (g_dynamic_vbo != 0) {
+        glx::DeleteBuffers(1, &g_dynamic_vbo);
+        g_dynamic_vbo = 0;
+    }
+    if (g_dynamic_vao != 0) {
+        glx::DeleteVertexArrays(1, &g_dynamic_vao);
+        g_dynamic_vao = 0;
+    }
+}
 
 // ── Grid + marker ──────────────────────────────
 
 void draw_grid(int size, float step, float y) {
-    glLineWidth(1.0f);
-    glBegin(GL_LINES);
+    std::vector<float> lines;
     for (int index = -size; index <= size; ++index) {
-        if (index == 0) {
-            glColor3f(0.9f, 0.9f, 0.9f);
-        } else {
-            glColor3f(0.35f, 0.35f, 0.35f);
-        }
-        glVertex3f(index * step, y, size * step);
-        glVertex3f(index * step, y, -size * step);
-        glVertex3f(size * step, y, index * step);
-        glVertex3f(-size * step, y, index * step);
+        const glm::vec4 color = (index == 0) ? glm::vec4(0.9f, 0.9f, 0.9f, 1.0f) : glm::vec4(0.35f, 0.35f, 0.35f, 1.0f);
+        push_vertex(lines, glm::vec3(index * step, y, size * step), color);
+        push_vertex(lines, glm::vec3(index * step, y, -size * step), color);
+        push_vertex(lines, glm::vec3(size * step, y, index * step), color);
+        push_vertex(lines, glm::vec3(-size * step, y, index * step), color);
     }
-    glEnd();
+    glLineWidth(1.0f);
+    draw_colored(GL_LINES, lines, glm::mat4(1.0f));
 
     // Axis arrows on the floor; depth test off so they always win over the
     // coincident grid lines instead of z-fighting.
+    std::vector<float> axes;
+    const glm::vec4 x_color(1.0f, 0.2f, 0.2f, 1.0f); // X – red
+    const glm::vec4 z_color(0.2f, 0.4f, 1.0f, 1.0f); // Z – blue
+    const glm::vec4 y_color(0.2f, 0.9f, 0.2f, 1.0f); // Y – green (up)
+    push_vertex(axes, glm::vec3(0.0f, y, 0.0f), x_color);
+    push_vertex(axes, glm::vec3(2.0f, y, 0.0f), x_color);
+    push_vertex(axes, glm::vec3(0.0f, y, 0.0f), z_color);
+    push_vertex(axes, glm::vec3(0.0f, y, 2.0f), z_color);
+    push_vertex(axes, glm::vec3(0.0f, y, 0.0f), y_color);
+    push_vertex(axes, glm::vec3(0.0f, y + 2.0f, 0.0f), y_color);
+
     glDisable(GL_DEPTH_TEST);
     glLineWidth(2.5f);
-    glBegin(GL_LINES);
-    glColor3f(1.0f, 0.2f, 0.2f); // X – red
-    glVertex3f(0.0f, y, 0.0f);
-    glVertex3f(2.0f, y, 0.0f);
-    glColor3f(0.2f, 0.4f, 1.0f); // Z – blue
-    glVertex3f(0.0f, y, 0.0f);
-    glVertex3f(0.0f, y, 2.0f);
-    glColor3f(0.2f, 0.9f, 0.2f); // Y – green (up)
-    glVertex3f(0.0f, y, 0.0f);
-    glVertex3f(0.0f, y + 2.0f, 0.0f);
-    glEnd();
+    draw_colored(GL_LINES, axes, glm::mat4(1.0f));
     glLineWidth(1.0f);
     glEnable(GL_DEPTH_TEST);
 }
 
 void draw_camera_marker(const glm::vec3& center, float radius) {
-    glPushAttrib(static_cast<GLbitfield>(GL_ENABLE_BIT) | static_cast<GLbitfield>(GL_DEPTH_BUFFER_BIT));
-    glDisable(GL_LIGHTING);
+    std::vector<float> sphere;
+    append_sphere(sphere, radius, 24, 16, glm::vec4(1.0f, 0.4f, 0.7f, 0.35f));
+
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     // Don't write depth so the ball never occludes the scene behind it.
     glDepthMask(GL_FALSE);
-
-    glPushMatrix();
-    glTranslatef(center.x, center.y, center.z);
-    glColor4f(1.0f, 0.4f, 0.7f, 0.35f);
-    draw_sphere(radius, 24, 16);
-    glPopMatrix();
-
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-    glPopAttrib();
+    draw_colored(GL_TRIANGLES, sphere, glm::translate(glm::mat4(1.0f), center));
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
 }
 
 // ── GpuMesh ────────────────────────────────────
@@ -122,12 +285,27 @@ GpuMesh::GpuMesh(const MeshArrays& arrays) : vertex_count_(arrays.vertex_count) 
     upload_buffer(position_vbo_, arrays.positions);
     upload_buffer(normal_vbo_, arrays.normals);
     upload_buffer(color_vbo_, arrays.colors);
+
+    // Bake the attribute layout into a VAO so draw() is a bind + glDrawArrays.
+    glx::GenVertexArrays(1, &vao_);
+    glx::BindVertexArray(vao_);
+    glx::BindBuffer(GL_ARRAY_BUFFER, position_vbo_);
+    glx::EnableVertexAttribArray(ATTRIB_POSITION);
+    glx::VertexAttribPointer(ATTRIB_POSITION, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glx::BindBuffer(GL_ARRAY_BUFFER, normal_vbo_);
+    glx::EnableVertexAttribArray(ATTRIB_NORMAL);
+    glx::VertexAttribPointer(ATTRIB_NORMAL, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glx::BindBuffer(GL_ARRAY_BUFFER, color_vbo_);
+    glx::EnableVertexAttribArray(ATTRIB_COLOR);
+    glx::VertexAttribPointer(ATTRIB_COLOR, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    glx::BindVertexArray(0);
     glx::BindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 GpuMesh::GpuMesh(GpuMesh&& other) noexcept :
-    vertex_count_(other.vertex_count_), position_vbo_(other.position_vbo_), normal_vbo_(other.normal_vbo_), color_vbo_(other.color_vbo_) {
+    vertex_count_(other.vertex_count_), vao_(other.vao_), position_vbo_(other.position_vbo_), normal_vbo_(other.normal_vbo_), color_vbo_(other.color_vbo_) {
     other.vertex_count_ = 0;
+    other.vao_ = 0;
     other.position_vbo_ = other.normal_vbo_ = other.color_vbo_ = 0;
 }
 
@@ -135,10 +313,12 @@ GpuMesh& GpuMesh::operator=(GpuMesh&& other) noexcept {
     if (this != &other) {
         release();
         vertex_count_ = other.vertex_count_;
+        vao_ = other.vao_;
         position_vbo_ = other.position_vbo_;
         normal_vbo_ = other.normal_vbo_;
         color_vbo_ = other.color_vbo_;
         other.vertex_count_ = 0;
+        other.vao_ = 0;
         other.position_vbo_ = other.normal_vbo_ = other.color_vbo_ = 0;
     }
     return *this;
@@ -147,11 +327,15 @@ GpuMesh& GpuMesh::operator=(GpuMesh&& other) noexcept {
 GpuMesh::~GpuMesh() { release(); }
 
 void GpuMesh::release() {
+    if (vao_ != 0) {
+        glx::DeleteVertexArrays(1, &vao_);
+    }
     if (position_vbo_ != 0 || normal_vbo_ != 0 || color_vbo_ != 0) {
         unsigned int buffers[3] = {position_vbo_, normal_vbo_, color_vbo_};
         glx::DeleteBuffers(3, buffers);
     }
     vertex_count_ = 0;
+    vao_ = 0;
     position_vbo_ = normal_vbo_ = color_vbo_ = 0;
 }
 
@@ -159,20 +343,9 @@ void GpuMesh::draw() const {
     if (vertex_count_ == 0) {
         return;
     }
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glEnableClientState(GL_NORMAL_ARRAY);
-    glEnableClientState(GL_COLOR_ARRAY);
-    glx::BindBuffer(GL_ARRAY_BUFFER, position_vbo_);
-    glVertexPointer(3, GL_FLOAT, 0, nullptr);
-    glx::BindBuffer(GL_ARRAY_BUFFER, normal_vbo_);
-    glNormalPointer(GL_FLOAT, 0, nullptr);
-    glx::BindBuffer(GL_ARRAY_BUFFER, color_vbo_);
-    glColorPointer(4, GL_FLOAT, 0, nullptr);
+    glx::BindVertexArray(vao_);
     glDrawArrays(GL_TRIANGLES, 0, vertex_count_);
-    glx::BindBuffer(GL_ARRAY_BUFFER, 0);
-    glDisableClientState(GL_VERTEX_ARRAY);
-    glDisableClientState(GL_NORMAL_ARRAY);
-    glDisableClientState(GL_COLOR_ARRAY);
+    glx::BindVertexArray(0);
 }
 
 // ── SceneMesh ──────────────────────────────────
@@ -193,6 +366,7 @@ void SceneMesh::release() {
 }
 
 void SceneMesh::draw(bool translucent) const {
+    set_lighting(true);
     // Joints first (opaque) so a translucent hand blends correctly over them.
     if (joints_) {
         joints_->draw();
@@ -239,15 +413,16 @@ FrameGpu::FrameGpu(const PreparedFrame& prepared_hands) {
     }
 }
 
-void FrameGpu::apply_hand_matrix(const Transform* transform, float scale) const {
-    glPushMatrix();
+glm::mat4 FrameGpu::hand_matrix(const Transform* transform, float scale) const {
+    glm::mat4 model(1.0f);
     if (transform != nullptr) {
-        glScalef(transform->scale, transform->scale, transform->scale);
-        glTranslatef(transform->translate.x, transform->translate.y, transform->translate.z);
+        model = glm::scale(model, glm::vec3(transform->scale));
+        model = glm::translate(model, transform->translate);
     }
     if (scale != 1.0f) {
-        glScalef(scale, scale, scale);
+        model = glm::scale(model, glm::vec3(scale));
     }
+    return model;
 }
 
 void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<float> reference_depth) const {
@@ -258,10 +433,10 @@ void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<
         scales.push_back((reference_depth && depth != 0.0f) ? (*reference_depth / depth) : 1.0f);
     }
 
+    set_lighting(true);
     for (std::size_t index = 0; index < hands_.size(); ++index) {
-        apply_hand_matrix(transform, scales[index]);
+        set_model(hand_matrix(transform, scales[index]));
         hands_[index].joints->draw();
-        glPopMatrix();
     }
 
     if (translucent) {
@@ -270,9 +445,8 @@ void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<
         glDepthMask(GL_FALSE);
     }
     for (std::size_t index = 0; index < hands_.size(); ++index) {
-        apply_hand_matrix(transform, scales[index]);
+        set_model(hand_matrix(transform, scales[index]));
         (translucent ? hands_[index].hand_translucent : hands_[index].hand_solid)->draw();
-        glPopMatrix();
     }
     if (translucent) {
         glDepthMask(GL_TRUE);
@@ -485,7 +659,7 @@ void Framebuffer::resize(int width, int height) {
     height_ = height;
 
     glBindTexture(GL_TEXTURE_2D, texture_);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
@@ -502,15 +676,14 @@ void Framebuffer::resize(int width, int height) {
 
 OrbitCamera::OrbitCamera(float distance) : distance_(distance) {}
 
-void OrbitCamera::apply() const {
+glm::mat4 OrbitCamera::view_matrix() const {
     const float az = glm::radians(azimuth_);
     const float el = glm::radians(elevation_);
     const glm::vec3 target(target_[0], target_[1], target_[2]);
     const glm::vec3 eye(
         target.x + distance_ * std::cos(el) * std::sin(az), target.y + distance_ * std::sin(el), target.z + distance_ * std::cos(el) * std::cos(az)
     );
-    const glm::mat4 view = glm::lookAt(eye, target, glm::vec3(0.0f, 1.0f, 0.0f));
-    glLoadMatrixf(glm::value_ptr(view));
+    return glm::lookAt(eye, target, glm::vec3(0.0f, 1.0f, 0.0f));
 }
 
 void OrbitCamera::orbit(float dx, float dy) {
@@ -583,11 +756,10 @@ glm::vec3 FreeCamera::forward() const {
     return glm::vec3(-std::cos(pitch) * std::sin(yaw), -std::sin(pitch), -std::cos(pitch) * std::cos(yaw));
 }
 
-void FreeCamera::apply() const {
+glm::mat4 FreeCamera::view_matrix() const {
     const glm::vec3 dir = forward();
     const glm::vec3 eye(position_[0], position_[1], position_[2]);
-    const glm::mat4 view = glm::lookAt(eye, eye + dir, glm::vec3(0.0f, 1.0f, 0.0f));
-    glLoadMatrixf(glm::value_ptr(view));
+    return glm::lookAt(eye, eye + dir, glm::vec3(0.0f, 1.0f, 0.0f));
 }
 
 void FreeCamera::orbit(float dx, float dy) {
@@ -640,30 +812,7 @@ void FreeCamera::set_from_orbit(const OrbitCamera& orbit) {
     pitch_ = orbit.elevation();
 }
 
-// ── Lighting + scene render ────────────────────
-
-void setup_lighting() {
-    glEnable(GL_LIGHTING);
-    glEnable(GL_LIGHT0);
-    glEnable(GL_LIGHT1);
-    const float light0_position[4] = {5.0f, 10.0f, 5.0f, 1.0f};
-    const float light0_diffuse[4] = {0.85f, 0.85f, 0.85f, 1.0f};
-    const float light0_ambient[4] = {0.15f, 0.15f, 0.15f, 1.0f};
-    glLightfv(GL_LIGHT0, GL_POSITION, light0_position);
-    glLightfv(GL_LIGHT0, GL_DIFFUSE, light0_diffuse);
-    glLightfv(GL_LIGHT0, GL_AMBIENT, light0_ambient);
-    const float light1_position[4] = {-5.0f, 6.0f, -8.0f, 1.0f};
-    const float light1_diffuse[4] = {0.3f, 0.35f, 0.5f, 1.0f};
-    glLightfv(GL_LIGHT1, GL_POSITION, light1_position);
-    glLightfv(GL_LIGHT1, GL_DIFFUSE, light1_diffuse);
-    // Per-vertex glColor drives ambient+diffuse so mesh colours show; keep a
-    // fixed specular highlight.
-    glEnable(GL_COLOR_MATERIAL);
-    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
-    const float specular[4] = {0.4f, 0.4f, 0.4f, 1.0f};
-    glMaterialfv(GL_FRONT_AND_BACK, GL_SPECULAR, specular);
-    glMaterialf(GL_FRONT_AND_BACK, GL_SHININESS, 32.0f);
-}
+// ── Scene render ───────────────────────────────
 
 void render_scene(
     const Framebuffer& framebuffer,
@@ -675,33 +824,33 @@ void render_scene(
     std::optional<float> reference_depth,
     bool show_camera_marker
 ) {
+    ensure_resources();
+
     glx::BindFramebuffer(GL_FRAMEBUFFER, framebuffer.fbo());
     glViewport(0, 0, framebuffer.width(), framebuffer.height());
     glClearColor(0.12f, 0.12f, 0.15f, 1.0f);
     glClear(static_cast<GLbitfield>(GL_COLOR_BUFFER_BIT) | static_cast<GLbitfield>(GL_DEPTH_BUFFER_BIT));
 
     const float aspect = framebuffer.height() != 0 ? static_cast<float>(framebuffer.width()) / static_cast<float>(framebuffer.height()) : 1.0f;
-    glMatrixMode(GL_PROJECTION);
     const glm::mat4 projection = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 500.0f);
-    glLoadMatrixf(glm::value_ptr(projection));
-    glMatrixMode(GL_MODELVIEW);
-    camera.apply();
 
-    // Grid (lighting off so it stays flat-coloured).
-    glDisable(GL_LIGHTING);
+    glx::UseProgram(g_program);
+    glx::UniformMatrix4fv(g_loc_proj, 1, GL_FALSE, glm::value_ptr(projection));
+    glx::UniformMatrix4fv(g_loc_view, 1, GL_FALSE, glm::value_ptr(camera.view_matrix()));
+
+    // Grid (flat-coloured; draw_grid keeps lighting off).
     draw_grid(10, 1.0f, 0.0f);
-    glEnable(GL_LIGHTING);
 
     if (frame != nullptr) {
         frame->draw(translucent, transform, reference_depth);
     } else if (scene != nullptr && scene->has_mesh()) {
-        glPushMatrix();
+        glm::mat4 model(1.0f);
         if (transform != nullptr) {
-            glScalef(transform->scale, transform->scale, transform->scale);
-            glTranslatef(transform->translate.x, transform->translate.y, transform->translate.z);
+            model = glm::scale(model, glm::vec3(transform->scale));
+            model = glm::translate(model, transform->translate);
         }
+        set_model(model);
         scene->draw(translucent);
-        glPopMatrix();
     }
 
     // Marker for the orbit camera's look-at point; drawn last so its
@@ -710,5 +859,6 @@ void render_scene(
         draw_camera_marker(camera.marker_target());
     }
 
+    glx::UseProgram(0);
     glx::BindFramebuffer(GL_FRAMEBUFFER, 0);
 }

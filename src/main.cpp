@@ -9,7 +9,7 @@
 #include <SDL_opengl.h>
 
 #include <imgui.h>
-#include <imgui_impl_opengl2.h>
+#include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl2.h>
 
 #include <portable-file-dialogs.h>
@@ -39,9 +39,11 @@ int main(int, char**) {
     WindowGeometry geometry = compute_initial_geometry(settings);
     WindowGeometry windowed_geometry = geometry;
 
-    // Request a compatibility GL context (the renderer is fixed-function) before
-    // creating the window.
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+    // Request a core OpenGL 3.3 context before creating the window. The renderer
+    // and the ImGui OpenGL3 backend both target the programmable pipeline.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 
@@ -69,9 +71,6 @@ int main(int, char**) {
     SDL_GetWindowSize(app_window, &win_width, &win_height);
 
     glEnable(GL_DEPTH_TEST);
-    glEnable(GL_NORMALIZE);
-    glShadeModel(GL_SMOOTH);
-    setup_lighting();
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -82,7 +81,7 @@ int main(int, char**) {
     imgui_io.FontDefault = ui_font;
 
     ImGui_ImplSDL2_InitForOpenGL(app_window, gl_context);
-    ImGui_ImplOpenGL2_Init();
+    ImGui_ImplOpenGL3_Init("#version 330");
 
     Framebuffer framebuffer;
     framebuffer.resize(win_width, win_height);
@@ -254,7 +253,7 @@ int main(int, char**) {
         }
 
         // ── Build the imgui frame ──────────────
-        ImGui_ImplOpenGL2_NewFrame();
+        ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
@@ -448,7 +447,7 @@ int main(int, char**) {
         glViewport(0, 0, win_width, win_height);
         glClearColor(0.08f, 0.08f, 0.10f, 1.0f);
         glClear(static_cast<GLbitfield>(GL_COLOR_BUFFER_BIT) | static_cast<GLbitfield>(GL_DEPTH_BUFFER_BIT));
-        ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         SDL_GL_SwapWindow(app_window);
     }
@@ -476,8 +475,10 @@ int main(int, char**) {
         sequence_loader->stop();
     }
     scene.release();
+    frame_image.clear();
+    shutdown_renderer();
 
-    ImGui_ImplOpenGL2_Shutdown();
+    ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
     SDL_GL_DeleteContext(gl_context);

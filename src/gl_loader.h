@@ -31,6 +31,35 @@ namespace glx {
     extern PFNGLRENDERBUFFERSTORAGEPROC RenderbufferStorage;
     extern PFNGLDELETERENDERBUFFERSPROC DeleteRenderbuffers;
 
+    // Vertex array objects (required for every draw in a core profile).
+    extern PFNGLGENVERTEXARRAYSPROC GenVertexArrays;
+    extern PFNGLBINDVERTEXARRAYPROC BindVertexArray;
+    extern PFNGLDELETEVERTEXARRAYSPROC DeleteVertexArrays;
+
+    // Generic vertex attributes (replace the fixed-function client arrays).
+    extern PFNGLENABLEVERTEXATTRIBARRAYPROC EnableVertexAttribArray;
+    extern PFNGLDISABLEVERTEXATTRIBARRAYPROC DisableVertexAttribArray;
+    extern PFNGLVERTEXATTRIBPOINTERPROC VertexAttribPointer;
+    extern PFNGLVERTEXATTRIB3FPROC VertexAttrib3f;
+
+    // Shader programs (replace the fixed-function transform + lighting).
+    extern PFNGLCREATESHADERPROC CreateShader;
+    extern PFNGLSHADERSOURCEPROC ShaderSource;
+    extern PFNGLCOMPILESHADERPROC CompileShader;
+    extern PFNGLGETSHADERIVPROC GetShaderiv;
+    extern PFNGLGETSHADERINFOLOGPROC GetShaderInfoLog;
+    extern PFNGLDELETESHADERPROC DeleteShader;
+    extern PFNGLCREATEPROGRAMPROC CreateProgram;
+    extern PFNGLATTACHSHADERPROC AttachShader;
+    extern PFNGLLINKPROGRAMPROC LinkProgram;
+    extern PFNGLGETPROGRAMIVPROC GetProgramiv;
+    extern PFNGLGETPROGRAMINFOLOGPROC GetProgramInfoLog;
+    extern PFNGLUSEPROGRAMPROC UseProgram;
+    extern PFNGLDELETEPROGRAMPROC DeleteProgram;
+    extern PFNGLGETUNIFORMLOCATIONPROC GetUniformLocation;
+    extern PFNGLUNIFORMMATRIX4FVPROC UniformMatrix4fv;
+    extern PFNGLUNIFORM1IPROC Uniform1i;
+
     /// Resolve every entry point above; returns false if any could not be loaded.
     bool load();
 } // namespace glx

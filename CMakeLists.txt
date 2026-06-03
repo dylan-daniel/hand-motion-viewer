@@ -44,10 +44,10 @@ FetchContent_Declare(
 )
 
 # Dear ImGui (docking branch) — the UI. It ships no CMake of its own, so the
-# core sources plus the SDL2 + fixed-function OpenGL2 backends are compiled into
-# a static library below. The OpenGL2 backend is chosen because the renderer is
-# legacy fixed-function GL, so the UI uses the same pipeline (no GL loader needed
-# for ImGui itself).
+# core sources plus the SDL2 + OpenGL3 backends are compiled into a static
+# library below. The OpenGL3 backend targets the programmable pipeline, matching
+# the renderer's core 3.3 context; it bundles its own GL loader so ImGui needs no
+# external one.
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
@@ -110,7 +110,7 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl2.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
 )
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}

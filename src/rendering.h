@@ -1,9 +1,10 @@
 #pragma once
 
 // OpenGL rendering: grid, mesh vertex buffers, cameras, lighting, and the
-// offscreen framebuffer the scene is drawn into. Uses the legacy fixed-function
-// pipeline (matching the Python viewer); glm supplies the projection/view
-// matrices that GLU used to.
+// offscreen framebuffer the scene is drawn into. Uses a modern core-profile
+// pipeline (GL 3.3): a single GLSL program with per-vertex lighting, VAOs/VBOs
+// for all geometry, and glm-supplied projection/view/model matrices fed as
+// uniforms.
 
 #include <array>
 #include <atomic>
@@ -46,6 +47,7 @@ private:
     void release();
 
     int vertex_count_ = 0;
+    unsigned int vao_ = 0;
     unsigned int position_vbo_ = 0;
     unsigned int normal_vbo_ = 0;
     unsigned int color_vbo_ = 0;
@@ -84,7 +86,7 @@ public:
     void draw(bool translucent, const Transform* transform, std::optional<float> reference_depth) const;
 
 private:
-    void apply_hand_matrix(const Transform* transform, float scale) const;
+    glm::mat4 hand_matrix(const Transform* transform, float scale) const;
 
     std::vector<HandGpu> hands_;
     std::vector<float> depths_;
@@ -192,7 +194,7 @@ class FreeCamera; // forward declaration for the orbit→free conversion
 class Camera {
 public:
     virtual ~Camera() = default;
-    virtual void apply() const = 0; // load the modelview matrix
+    virtual glm::mat4 view_matrix() const = 0; // the modelview (view) matrix
     virtual void orbit(float dx, float dy) = 0;
     virtual void pan(float dx, float dy) = 0;
     virtual void move(float forward, float right, float up, float dt) = 0;
@@ -206,7 +208,7 @@ class OrbitCamera : public Camera {
 public:
     explicit OrbitCamera(float distance = 6.0f);
 
-    void apply() const override;
+    glm::mat4 view_matrix() const override;
     void orbit(float dx, float dy) override;
     void pan(float dx, float dy) override;
     void move(float forward, float right, float up, float dt) override;
@@ -235,7 +237,7 @@ class FreeCamera : public Camera {
 public:
     FreeCamera();
 
-    void apply() const override;
+    glm::mat4 view_matrix() const override;
     void orbit(float dx, float dy) override;
     void pan(float dx, float dy) override;
     void move(float forward, float right, float up, float dt) override;
@@ -255,9 +257,11 @@ private:
     float pitch_ = 0.0f;
 };
 
-// ── Lighting + scene render ────────────────────
+// ── Scene render ───────────────────────────────
 
-void setup_lighting();
+/// Free the renderer's shared GL resources (shader program, helper VAO). Call
+/// once on the main thread before the GL context is destroyed.
+void shutdown_renderer();
 
 /// Render the grid and the active drawable into the offscreen framebuffer.
 /// Exactly one of ``scene`` / ``frame`` is drawn (frame takes precedence);
