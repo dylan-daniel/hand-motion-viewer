@@ -330,18 +330,30 @@ int main(int, char**) {
             frame_ptr = frame_cache->ensure(current_frame);
             scene_ptr = nullptr;
             const std::size_t hand_count = sequence_loader->frame_paths(current_frame).size();
-            char buffer[96];
+            char buffer[160];
+            const int meshes_loaded = sequence_loader->meshes_loaded();
+            const int mesh_total = sequence_loader->mesh_total();
             if (frame_ptr == nullptr) {
-                std::snprintf(buffer, sizeof(buffer), "loading frame %d / %d...", current_frame + 1, sequence_loader->frame_count());
+                std::snprintf(
+                    buffer,
+                    sizeof(buffer),
+                    "loading frame %d / %d...\nloaded %d / %d meshes",
+                    current_frame + 1,
+                    sequence_loader->frame_count(),
+                    meshes_loaded,
+                    mesh_total
+                );
             } else {
                 std::snprintf(
                     buffer,
                     sizeof(buffer),
-                    "frame %d / %d - %zu hand%s",
+                    "frame %d / %d - %zu hand%s\nloaded %d / %d meshes",
                     current_frame + 1,
                     sequence_loader->frame_count(),
                     hand_count,
-                    hand_count == 1 ? "" : "s"
+                    hand_count == 1 ? "" : "s",
+                    meshes_loaded,
+                    mesh_total
                 );
             }
             status = buffer;

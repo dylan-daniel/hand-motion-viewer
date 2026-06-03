@@ -216,6 +216,9 @@ SequenceLoader::SequenceLoader(const std::string& folder, int workers) : folder_
     frame_paths_ = discover_frames(folder);
     frame_count_ = static_cast<int>(frame_paths_.size());
     frames_.assign(static_cast<std::size_t>(frame_count_), nullptr);
+    for (const std::vector<std::string>& hands : frame_paths_) {
+        mesh_total_ += static_cast<int>(hands.size());
+    }
 
     const int worker_count = std::max(1, std::min(workers, frame_count_));
     threads_.reserve(static_cast<std::size_t>(worker_count));
@@ -306,6 +309,7 @@ void SequenceLoader::worker() {
             hand.positions = std::move(positions);
             hand.topology = get_topology(key, path);
             hands->push_back(std::move(hand));
+            meshes_loaded_.fetch_add(1);
         }
         std::lock_guard<std::mutex> guard(mutex_);
         frames_[static_cast<std::size_t>(index)] = std::move(hands);

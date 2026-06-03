@@ -63,6 +63,12 @@ public:
     SequenceLoader& operator=(const SequenceLoader&) = delete;
 
     int frame_count() const { return frame_count_; }
+
+    /// Total number of hand meshes across every frame, and how many have finished
+    /// parsing so far (a frame may hold several hands, each its own .obj).
+    int mesh_total() const { return mesh_total_; }
+    int meshes_loaded() const { return meshes_loaded_.load(); }
+
     const std::string& folder() const { return folder_; }
     const std::vector<std::string>& frame_paths(int index) const { return frame_paths_[static_cast<std::size_t>(index)]; }
 
@@ -86,6 +92,8 @@ private:
     std::string folder_;
     std::vector<std::vector<std::string>> frame_paths_;
     int frame_count_;
+    int mesh_total_ = 0;
+    std::atomic<int> meshes_loaded_{0};
 
     mutable std::mutex mutex_;
     std::vector<std::shared_ptr<const Frame>> frames_; // nullptr until parsed
