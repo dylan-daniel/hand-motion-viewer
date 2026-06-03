@@ -180,6 +180,18 @@ std::vector<std::vector<std::string>> discover_frames(const std::string& folder)
     return frames;
 }
 
+std::string frame_image_path(const std::string& mesh_path) {
+    const fs::path mesh(mesh_path);
+    const std::string name = mesh.filename().string();
+    std::smatch match;
+    if (!std::regex_search(name, match, kFrameRe)) {
+        return {};
+    }
+    // Keep the original zero-padded frame number so the jpg name matches on disk.
+    const std::string image_name = "frame_" + match[1].str() + "_all_keypoints.jpg";
+    return (mesh.parent_path() / image_name).string();
+}
+
 Transform compute_transform(const Frame& hands) {
     glm::vec3 low(std::numeric_limits<float>::max());
     glm::vec3 high(std::numeric_limits<float>::lowest());

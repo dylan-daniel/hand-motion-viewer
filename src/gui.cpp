@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <tuple>
 #include <vector>
 
 #include <SDL.h>
@@ -119,6 +120,39 @@ namespace {
         ImGui::PopStyleColor();
         return show_panel;
     }
+
+    // Playback transport (play/pause button + scrubber + frame label) drawn as an
+    // overlay along the bottom of whichever pane currently carries it. ``strip_top``
+    // is the screen Y where the overlay strip begins; a translucent backing is
+    // painted behind it so the controls stay legible over the scene. Updates and
+    // returns the (current_frame, playing) state.
+    std::pair<int, bool> draw_transport_bar(float left, float strip_top, float width, int current_frame, int frame_count, bool playing) {
+        // Translucent backing so the controls read over any scene content beneath.
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        const ImU32 backing = ImGui::ColorConvertFloat4ToU32(ImVec4(0.08f, 0.08f, 0.10f, 0.65f));
+        draw_list->AddRectFilled(ImVec2(left, strip_top), ImVec2(left + width, strip_top + PLAYBACK_BAR_HEIGHT), backing);
+
+        const float row_height = ImGui::GetFrameHeight();
+        ImGui::SetCursorScreenPos(ImVec2(left + 8.0f, strip_top + (PLAYBACK_BAR_HEIGHT - row_height) * 0.5f));
+
+        if (ImGui::Button(playing ? "Pause" : "Play", ImVec2(70.0f, 0.0f))) {
+            playing = !playing;
+        }
+
+        // Stretch the scrubber to fill the gap between the button and the label.
+        ImGui::SameLine();
+        char label[48];
+        std::snprintf(label, sizeof(label), "frame %d / %d", current_frame + 1, frame_count);
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float slider_width = width - 8.0f - 70.0f - spacing - ImGui::CalcTextSize(label).x - spacing - 8.0f;
+        ImGui::SetNextItemWidth(std::max(1.0f, slider_width));
+        // Empty format: the standalone label shows the 1-based frame instead.
+        ImGui::SliderInt("##frame", &current_frame, 0, frame_count - 1, "");
+
+        ImGui::SameLine();
+        ImGui::TextUnformatted(label);
+        return {current_frame, playing};
+    }
 } // namespace
 
 std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io) {
@@ -177,17 +211,19 @@ ViewportResult draw_viewport_window(
     bool has_sequence,
     int current_frame,
     int frame_count,
-    bool playing
+    bool playing,
+    bool show_transport
 ) {
     ImGui::SetNextWindowDockID(dock_id, ImGuiCond_Once);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::Begin("Viewport");
+    const bool focused = ImGui::IsWindowFocused();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
-    // Reserve room at the bottom for the transport bar so the scene image and the
-    // player share this one window and dock together.
-    const float bar_height = has_sequence ? PLAYBACK_BAR_HEIGHT : 0.0f;
+    // The transport is drawn as an overlay (see below), so the scene fills the
+    // whole window and does not resize when the transport moves between panes.
+    const bool draw_transport = has_sequence && show_transport;
     const int width = std::max(1, static_cast<int>(avail.x));
-    const int height = std::max(1, static_cast<int>(avail.y - bar_height));
+    const int height = std::max(1, static_cast<int>(avail.y));
 
     const ImVec2 image_pos = ImGui::GetCursorScreenPos();
     // Flip V (uv0 top = 1, uv1 bottom = 0) because GL textures are bottom-up.
@@ -211,30 +247,74 @@ ViewportResult draw_viewport_window(
 
     show_controls = draw_controls_overlay(image_pos, width, has_sequence, show_controls);
 
-    // Transport bar along the bottom of the reserved strip, vertically centred.
-    if (has_sequence) {
-        const float row_height = ImGui::GetFrameHeight();
-        ImGui::SetCursorScreenPos(ImVec2(image_pos.x + 8.0f, image_pos.y + static_cast<float>(height) + (bar_height - row_height) * 0.5f));
-
-        if (ImGui::Button(playing ? "Pause" : "Play", ImVec2(70.0f, 0.0f))) {
-            playing = !playing;
-        }
-
-        // Stretch the scrubber to fill the gap between the button and the label.
-        ImGui::SameLine();
-        char label[48];
-        std::snprintf(label, sizeof(label), "frame %d / %d", current_frame + 1, frame_count);
-        const float spacing = ImGui::GetStyle().ItemSpacing.x;
-        const float slider_width = ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(label).x - spacing - 8.0f;
-        ImGui::SetNextItemWidth(std::max(1.0f, slider_width));
-        // Empty format: the standalone label shows the 1-based frame instead.
-        ImGui::SliderInt("##frame", &current_frame, 0, frame_count - 1, "");
-
-        ImGui::SameLine();
-        ImGui::TextUnformatted(label);
+    // Transport overlay pinned to the bottom edge of the scene image.
+    if (draw_transport) {
+        const float strip_top = image_pos.y + static_cast<float>(height) - PLAYBACK_BAR_HEIGHT;
+        std::tie(current_frame, playing) = draw_transport_bar(image_pos.x, strip_top, static_cast<float>(width), current_frame, frame_count, playing);
     }
 
     ImGui::End();
     ImGui::PopStyleVar();
-    return {width, height, hovered, show_controls, current_frame, playing};
+    return {width, height, hovered, focused, show_controls, current_frame, playing};
+}
+
+ImageViewResult draw_image_window(
+    unsigned int texture,
+    int texture_width,
+    int texture_height,
+    ImGuiID dock_id,
+    bool has_sequence,
+    int current_frame,
+    int frame_count,
+    bool playing,
+    bool show_transport
+) {
+    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_Once);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin("Image");
+    const bool focused = ImGui::IsWindowFocused();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+
+    // The transport is drawn as an overlay, so the image uses the full region and
+    // does not resize when the transport moves between panes.
+    const bool draw_transport = has_sequence && show_transport;
+    const float region_width = std::max(1.0f, avail.x);
+    const float region_height = std::max(1.0f, avail.y);
+
+    const ImVec2 region_pos = ImGui::GetCursorScreenPos();
+    bool hovered = false;
+    if (texture != 0 && texture_width > 0 && texture_height > 0) {
+        // Fit the image inside the region while preserving its aspect ratio, and
+        // centre it so it does not stretch as the pane is resized.
+        const float tex_aspect = static_cast<float>(texture_width) / static_cast<float>(texture_height);
+        const float region_aspect = region_width / region_height;
+        float draw_width = region_width;
+        float draw_height = region_height;
+        if (tex_aspect > region_aspect) {
+            draw_height = region_width / tex_aspect;
+        } else {
+            draw_width = region_height * tex_aspect;
+        }
+        const float offset_x = (region_width - draw_width) * 0.5f;
+        const float offset_y = (region_height - draw_height) * 0.5f;
+        ImGui::SetCursorScreenPos(ImVec2(region_pos.x + offset_x, region_pos.y + offset_y));
+        // No V flip: stb_image rows run top-to-bottom, matching imgui's UV space.
+        ImGui::Image(static_cast<ImTextureID>(texture), ImVec2(draw_width, draw_height), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
+        hovered = ImGui::IsItemHovered();
+    } else {
+        const char* note = has_sequence ? "No keypoint image for this frame." : "Load a sequence folder to see modeled frames.";
+        const ImVec2 text_size = ImGui::CalcTextSize(note);
+        ImGui::SetCursorScreenPos(ImVec2(region_pos.x + (region_width - text_size.x) * 0.5f, region_pos.y + (region_height - text_size.y) * 0.5f));
+        ImGui::TextDisabled("%s", note);
+    }
+
+    // Transport overlay pinned to the bottom edge of the image region.
+    if (draw_transport) {
+        const float strip_top = region_pos.y + region_height - PLAYBACK_BAR_HEIGHT;
+        std::tie(current_frame, playing) = draw_transport_bar(region_pos.x, strip_top, region_width, current_frame, frame_count, playing);
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar();
+    return {hovered, focused, current_frame, playing};
 }

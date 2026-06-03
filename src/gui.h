@@ -29,8 +29,19 @@ struct ViewportResult {
     int width;
     int height;
     bool hovered;
+    // True when this window is the one the mouse is interacting with (focused),
+    // used to decide which pane carries the playback transport.
+    bool focused;
     bool show_controls;
     // Playback transport state, echoed back when a sequence is loaded.
+    int current_frame;
+    bool playing;
+};
+
+struct ImageViewResult {
+    bool hovered;
+    bool focused;
+    // Playback transport state, echoed back when the transport is drawn here.
     int current_frame;
     bool playing;
 };
@@ -43,10 +54,10 @@ std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io);
 MenuResult draw_menu_bar(bool translucent, bool show_marker, bool free_camera);
 
 /// Draw the dockable window that displays the rendered scene texture. ``status``
-/// may be empty to omit the overlay status line. When ``has_sequence`` is set the
-/// video-player transport bar is drawn at the bottom of this same window, so it
-/// follows the viewport wherever it is docked; ``current_frame`` / ``playing`` are
-/// returned with any changes the user made on the transport.
+/// may be empty to omit the overlay status line. When ``has_sequence`` and
+/// ``show_transport`` are set, the video-player transport bar is drawn at the
+/// bottom of this same window so it follows the viewport wherever it is docked;
+/// ``current_frame`` / ``playing`` are returned with any changes the user made.
 ViewportResult draw_viewport_window(
     const Framebuffer& framebuffer,
     ImGuiID dock_id,
@@ -57,5 +68,23 @@ ViewportResult draw_viewport_window(
     bool has_sequence,
     int current_frame,
     int frame_count,
-    bool playing
+    bool playing,
+    bool show_transport
+);
+
+/// Draw the dockable "Image" window showing the modeled keypoint image for the
+/// current frame. ``texture`` may be 0 (no image available) — a placeholder note
+/// is shown instead. When ``has_sequence`` and ``show_transport`` are set the
+/// transport bar is drawn here too, so the player follows whichever pane the
+/// mouse is on; ``current_frame`` / ``playing`` carry any user changes back.
+ImageViewResult draw_image_window(
+    unsigned int texture,
+    int texture_width,
+    int texture_height,
+    ImGuiID dock_id,
+    bool has_sequence,
+    int current_frame,
+    int frame_count,
+    bool playing,
+    bool show_transport
 );

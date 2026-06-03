@@ -17,6 +17,7 @@
 #include "config.h"
 #include "gl_loader.h"
 #include "gui.h"
+#include "image.h"
 #include "rendering.h"
 #include "sequence.h"
 #include "window.h"
@@ -86,6 +87,13 @@ int main(int, char**) {
     Framebuffer framebuffer;
     framebuffer.resize(win_width, win_height);
 
+    // Decoded keypoint image for the current frame, shown in the "Image" pane.
+    ImageTexture frame_image;
+    // Which pane the playback transport rides on: 0 = Viewport, 1 = Image. Tracks
+    // the focused pane so the player follows whichever the mouse last interacted
+    // with; falls back to the viewport when neither is focused.
+    int active_pane = 0;
+
     // ── Scene / sequence state ─────────────────
     SceneMesh scene;
     std::unique_ptr<MeshLoadJob> mesh_job;
@@ -125,6 +133,7 @@ int main(int, char**) {
         }
         transform.reset();
         depth_reference.reset();
+        frame_image.clear();
         mesh_job = std::make_unique<MeshLoadJob>(path);
     };
 
@@ -361,17 +370,64 @@ int main(int, char**) {
 
         const bool has_sequence = sequence_loader != nullptr;
         const int frame_count = has_sequence ? sequence_loader->frame_count() : 0;
+
+        // Decode the current frame's modeled keypoint image (cached by path, so
+        // this is a no-op unless the frame changed).
+        if (has_sequence) {
+            const std::vector<std::string>& hands = sequence_loader->frame_paths(current_frame);
+            const std::string image_path = hands.empty() ? std::string() : frame_image_path(hands.front());
+            if (!image_path.empty()) {
+                frame_image.load(image_path);
+            } else {
+                frame_image.clear();
+            }
+        } else {
+            frame_image.clear();
+        }
+
+        // The transport rides on whichever pane was active (the one the mouse last
+        // focused). Capture the pane that draws it this frame so we read its state
+        // back from the matching window below.
+        const int transport_pane = active_pane;
         const ViewportResult viewport = draw_viewport_window(
-            framebuffer, dock_id, imgui_io.Framerate, fps_font, status, settings.show_controls, has_sequence, current_frame, frame_count, playing
+            framebuffer,
+            dock_id,
+            imgui_io.Framerate,
+            fps_font,
+            status,
+            settings.show_controls,
+            has_sequence,
+            current_frame,
+            frame_count,
+            playing,
+            transport_pane == 0
         );
         settings.show_controls = viewport.show_controls;
         viewport_hovered = viewport.hovered;
 
+        const ImageViewResult image_view = draw_image_window(
+            frame_image.texture(), frame_image.width(), frame_image.height(), dock_id, has_sequence, current_frame, frame_count, playing, transport_pane == 1
+        );
+
         if (has_sequence) {
-            current_frame = viewport.current_frame;
-            playing = viewport.playing;
+            // Only the pane that drew the transport changed the state; read it back.
+            if (transport_pane == 1) {
+                current_frame = image_view.current_frame;
+                playing = image_view.playing;
+            } else {
+                current_frame = viewport.current_frame;
+                playing = viewport.playing;
+            }
         } else {
             playing = false;
+        }
+
+        // Move the transport to follow this frame's focus; keep the current pane
+        // when neither is focused so the player never disappears.
+        if (viewport.focused) {
+            active_pane = 0;
+        } else if (image_view.focused) {
+            active_pane = 1;
         }
 
         ImGui::Render();

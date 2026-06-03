@@ -44,6 +44,11 @@ using Frame = std::vector<HandData>;
 /// Group a folder's ``frame_NNNN_<slot>.obj`` files into ordered frames.
 std::vector<std::vector<std::string>> discover_frames(const std::string& folder);
 
+/// Map a frame hand's mesh path (``frame_NNNN_<slot>.obj``) to the modeled image
+/// that sits beside it (``frame_NNNN_all_keypoints.jpg``). Returns empty if the
+/// path does not match the expected ``frame_NNNN_<slot>`` shape.
+std::string frame_image_path(const std::string& mesh_path);
+
 /// Build the fixed transform that sits a frame's hands on the grid and scales
 /// them to a comfortable size (mirrors center_model but kept as a transform so
 /// every frame shares it and motion shows).

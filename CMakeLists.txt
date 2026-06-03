@@ -81,10 +81,25 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE
 )
 
-FetchContent_MakeAvailable(SDL2 glm nlohmann_json imgui portable_file_dialogs rapidobj)
+# stb — single-header image loader (stb_image.h) used to decode the per-frame
+# keypoint .jpg shown in the image viewport. The repo ships no usable CMake, so
+# SOURCE_SUBDIR points at a non-existent directory to download the headers only;
+# the interface target below exposes the include path.
+FetchContent_Declare(
+    stb
+    GIT_REPOSITORY https://github.com/nothings/stb.git
+    GIT_TAG master
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR do-not-configure
+)
+
+FetchContent_MakeAvailable(SDL2 glm nlohmann_json imgui portable_file_dialogs rapidobj stb)
 
 add_library(portable_file_dialogs INTERFACE)
 target_include_directories(portable_file_dialogs INTERFACE ${portable_file_dialogs_SOURCE_DIR})
+
+add_library(stb INTERFACE)
+target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
 
 find_package(OpenGL REQUIRED)
 
@@ -110,6 +125,7 @@ add_executable(hand_motion_viewer
     src/geometry.cpp
     src/sequence.cpp
     src/rendering.cpp
+    src/image.cpp
     src/window.cpp
     src/gui.cpp
     src/main.cpp
@@ -124,6 +140,7 @@ target_link_libraries(hand_motion_viewer PRIVATE
     imgui_lib
     portable_file_dialogs
     rapidobj::rapidobj
+    stb
 )
 
 if (APPLE)
