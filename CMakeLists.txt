@@ -68,7 +68,20 @@ FetchContent_Declare(
     SOURCE_SUBDIR do-not-configure
 )
 
-FetchContent_MakeAvailable(SDL2 glm nlohmann_json imgui portable_file_dialogs)
+# rapidobj — fast, parallel OBJ parser used for the single-file mesh loader (the
+# per-frame sequence path keeps its own hand-tuned streaming parser). Disable its
+# tests/examples/tools so only the header library is built.
+set(RAPIDOBJ_BuildTests OFF CACHE BOOL "" FORCE)
+set(RAPIDOBJ_BuildExamples OFF CACHE BOOL "" FORCE)
+set(RAPIDOBJ_BuildTools OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    rapidobj
+    GIT_REPOSITORY https://github.com/guybrush77/rapidobj.git
+    GIT_TAG v1.1
+    GIT_SHALLOW TRUE
+)
+
+FetchContent_MakeAvailable(SDL2 glm nlohmann_json imgui portable_file_dialogs rapidobj)
 
 add_library(portable_file_dialogs INTERFACE)
 target_include_directories(portable_file_dialogs INTERFACE ${portable_file_dialogs_SOURCE_DIR})
@@ -110,6 +123,7 @@ target_link_libraries(hand_motion_viewer PRIVATE
     nlohmann_json::nlohmann_json
     imgui_lib
     portable_file_dialogs
+    rapidobj::rapidobj
 )
 
 if (APPLE)

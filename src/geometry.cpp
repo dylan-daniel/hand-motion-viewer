@@ -2,21 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
-#include <fstream>
-#include <sstream>
 #include <stdexcept>
 
-namespace {
-    /// One vertex of an obj face: its index in the shared vertex list (0-based).
-    int parse_face_index(const std::string& token) {
-        // obj face tokens are ``v``, ``v/vt``, ``v/vt/vn`` or ``v//vn``; only the
-        // leading vertex index matters here. obj indices are 1-based.
-        std::size_t slash = token.find('/');
-        const std::string vertex = slash == std::string::npos ? token : token.substr(0, slash);
-        return std::atoi(vertex.c_str()) - 1;
-    }
-} // namespace
+#include <rapidobj/rapidobj.hpp>
 
 MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha) {
     MeshArrays out;
@@ -134,44 +122,42 @@ float center_model(std::vector<glm::vec3>& verts) {
 }
 
 std::pair<MeshPart, MeshPart> load_mesh(const std::string& path) {
-    std::ifstream mesh_file(path);
-    if (!mesh_file) {
-        throw std::runtime_error("Could not open mesh file: " + path);
+    rapidobj::Result result = rapidobj::ParseFile(path);
+    if (result.error) {
+        throw std::runtime_error("Could not load mesh " + path + ": " + result.error.code.message());
     }
+    // The mesh may carry quads/n-gons; triangulate so faces are uniform triangles.
+    rapidobj::Triangulate(result);
+    if (result.error) {
+        throw std::runtime_error("Could not triangulate mesh " + path + ": " + result.error.code.message());
+    }
+
+    // rapidobj stores positions/colours as flat float arrays, 3 per vertex; colours
+    // are present only when the obj's ``v`` lines carry r g b (matching extent).
+    const rapidobj::Array<float>& position_floats = result.attributes.positions;
+    const rapidobj::Array<float>& color_floats = result.attributes.colors;
 
     std::vector<glm::vec3> verts;
-    std::vector<glm::vec4> colors; // one per vertex when the obj carries colours
-    std::vector<glm::ivec3> faces;
-    bool has_colors = true;
+    verts.reserve(position_floats.size() / 3);
+    for (std::size_t offset = 0; offset + 3 <= position_floats.size(); offset += 3) {
+        verts.emplace_back(position_floats[offset], position_floats[offset + 1], position_floats[offset + 2]);
+    }
 
-    std::string line;
-    while (std::getline(mesh_file, line)) {
-        if (line.size() < 2) {
-            continue;
-        }
-        if (line[0] == 'v' && line[1] == ' ') {
-            std::istringstream stream(line.substr(2));
-            float x = 0.0f, y = 0.0f, z = 0.0f;
-            stream >> x >> y >> z;
-            verts.emplace_back(x, y, z);
-            float r = 0.0f, g = 0.0f, b = 0.0f;
-            if (stream >> r >> g >> b) {
-                colors.emplace_back(r, g, b, 1.0f);
-            } else {
-                has_colors = false;
-            }
-        } else if (line[0] == 'f' && line[1] == ' ') {
-            std::istringstream stream(line.substr(2));
-            std::string a, b, c;
-            stream >> a >> b >> c;
-            if (!a.empty() && !b.empty() && !c.empty()) {
-                faces.emplace_back(parse_face_index(a), parse_face_index(b), parse_face_index(c));
-            }
+    std::vector<glm::vec4> colors; // one per vertex when the obj carries colours
+    if (!color_floats.empty() && color_floats.size() == position_floats.size()) {
+        colors.reserve(color_floats.size() / 3);
+        for (std::size_t offset = 0; offset + 3 <= color_floats.size(); offset += 3) {
+            colors.emplace_back(color_floats[offset], color_floats[offset + 1], color_floats[offset + 2], 1.0f);
         }
     }
 
-    if (!has_colors || colors.size() != verts.size()) {
-        colors.clear();
+    std::vector<glm::ivec3> faces;
+    for (const rapidobj::Shape& shape : result.shapes) {
+        const rapidobj::Array<rapidobj::Index>& indices = shape.mesh.indices;
+        faces.reserve(faces.size() + indices.size() / 3);
+        for (std::size_t corner = 0; corner + 3 <= indices.size(); corner += 3) {
+            faces.emplace_back(indices[corner].position_index, indices[corner + 1].position_index, indices[corner + 2].position_index);
+        }
     }
 
     const std::vector<glm::vec3> normals = face_normals(verts, faces);
