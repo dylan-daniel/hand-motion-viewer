@@ -56,7 +56,7 @@ float reference_depth(const Frame& hands);
 /// Streams every frame's hand positions into memory on background threads.
 class SequenceLoader {
 public:
-    explicit SequenceLoader(const std::string& folder, int workers = 4);
+    explicit SequenceLoader(const std::string& folder, int workers = 1);
     ~SequenceLoader();
 
     SequenceLoader(const SequenceLoader&) = delete;
