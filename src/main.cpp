@@ -359,15 +359,17 @@ int main(int, char**) {
             status = buffer;
         }
 
-        const ViewportResult viewport =
-            draw_viewport_window(framebuffer, dock_id, imgui_io.Framerate, fps_font, status, sequence_loader != nullptr, settings.show_controls);
+        const bool has_sequence = sequence_loader != nullptr;
+        const int frame_count = has_sequence ? sequence_loader->frame_count() : 0;
+        const ViewportResult viewport = draw_viewport_window(
+            framebuffer, dock_id, imgui_io.Framerate, fps_font, status, settings.show_controls, has_sequence, current_frame, frame_count, playing
+        );
         settings.show_controls = viewport.show_controls;
         viewport_hovered = viewport.hovered;
 
-        if (sequence_loader) {
-            const PlaybackResult playback = draw_playback_bar(win_width, win_height, current_frame, sequence_loader->frame_count(), playing);
-            current_frame = playback.current_frame;
-            playing = playback.playing;
+        if (has_sequence) {
+            current_frame = viewport.current_frame;
+            playing = viewport.playing;
         } else {
             playing = false;
         }

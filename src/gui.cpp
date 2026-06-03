@@ -168,19 +168,33 @@ MenuResult draw_menu_bar(bool translucent, bool show_marker, bool free_camera) {
 }
 
 ViewportResult draw_viewport_window(
-    const Framebuffer& framebuffer, ImGuiID dock_id, float fps, ImFont* fps_font, const std::string& status, bool has_sequence, bool show_controls
+    const Framebuffer& framebuffer,
+    ImGuiID dock_id,
+    float fps,
+    ImFont* fps_font,
+    const std::string& status,
+    bool show_controls,
+    bool has_sequence,
+    int current_frame,
+    int frame_count,
+    bool playing
 ) {
     ImGui::SetNextWindowDockID(dock_id, ImGuiCond_Once);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::Begin("Viewport");
     const ImVec2 avail = ImGui::GetContentRegionAvail();
+    // Reserve room at the bottom for the transport bar so the scene image and the
+    // player share this one window and dock together.
+    const float bar_height = has_sequence ? PLAYBACK_BAR_HEIGHT : 0.0f;
     const int width = std::max(1, static_cast<int>(avail.x));
-    const int height = std::max(1, static_cast<int>(avail.y));
-    const bool hovered = ImGui::IsWindowHovered();
+    const int height = std::max(1, static_cast<int>(avail.y - bar_height));
 
     const ImVec2 image_pos = ImGui::GetCursorScreenPos();
     // Flip V (uv0 top = 1, uv1 bottom = 0) because GL textures are bottom-up.
     ImGui::Image(framebuffer.texture(), ImVec2(static_cast<float>(width), static_cast<float>(height)), ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+    // Hover is the scene image only, so the camera does not react to drags on the
+    // transport bar below.
+    const bool hovered = ImGui::IsItemHovered();
 
     // FPS overlay on top of the image, in the dedicated crisp font.
     const ImU32 fps_color = ImGui::ColorConvertFloat4ToU32(ImVec4(0.86f, 0.86f, 0.3f, 1.0f));
@@ -197,38 +211,30 @@ ViewportResult draw_viewport_window(
 
     show_controls = draw_controls_overlay(image_pos, width, has_sequence, show_controls);
 
-    ImGui::End();
-    ImGui::PopStyleVar();
-    return {width, height, hovered, show_controls};
-}
+    // Transport bar along the bottom of the reserved strip, vertically centred.
+    if (has_sequence) {
+        const float row_height = ImGui::GetFrameHeight();
+        ImGui::SetCursorScreenPos(ImVec2(image_pos.x + 8.0f, image_pos.y + static_cast<float>(height) + (bar_height - row_height) * 0.5f));
 
-PlaybackResult draw_playback_bar(int win_width, int win_height, int current_frame, int frame_count, bool playing) {
-    ImGui::SetNextWindowPos(ImVec2(0.0f, win_height - PLAYBACK_BAR_HEIGHT));
-    ImGui::SetNextWindowSize(ImVec2(static_cast<float>(win_width), PLAYBACK_BAR_HEIGHT));
-    const ImGuiWindowFlags flags =
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::Begin("Playback", nullptr, flags);
+        if (ImGui::Button(playing ? "Pause" : "Play", ImVec2(70.0f, 0.0f))) {
+            playing = !playing;
+        }
 
-    const int last_frame = frame_count - 1;
-    if (ImGui::Button(playing ? "Pause" : "Play", ImVec2(70.0f, 0.0f))) {
-        playing = !playing;
+        // Stretch the scrubber to fill the gap between the button and the label.
+        ImGui::SameLine();
+        char label[48];
+        std::snprintf(label, sizeof(label), "frame %d / %d", current_frame + 1, frame_count);
+        const float spacing = ImGui::GetStyle().ItemSpacing.x;
+        const float slider_width = ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(label).x - spacing - 8.0f;
+        ImGui::SetNextItemWidth(std::max(1.0f, slider_width));
+        // Empty format: the standalone label shows the 1-based frame instead.
+        ImGui::SliderInt("##frame", &current_frame, 0, frame_count - 1, "");
+
+        ImGui::SameLine();
+        ImGui::TextUnformatted(label);
     }
 
-    // Stretch the scrubber to fill the gap between the button and the label.
-    ImGui::SameLine();
-    char label[48];
-    std::snprintf(label, sizeof(label), "frame %d / %d", current_frame + 1, frame_count);
-    const float spacing = ImGui::GetStyle().ItemSpacing.x;
-    const float slider_width = ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(label).x - spacing;
-    ImGui::SetNextItemWidth(std::max(1.0f, slider_width));
-    // Empty format: the standalone label shows the 1-based frame instead.
-    ImGui::SliderInt("##frame", &current_frame, 0, last_frame, "");
-
-    ImGui::SameLine();
-    ImGui::TextUnformatted(label);
-
     ImGui::End();
     ImGui::PopStyleVar();
-    return {current_frame, playing};
+    return {width, height, hovered, show_controls, current_frame, playing};
 }

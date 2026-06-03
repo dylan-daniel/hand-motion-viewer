@@ -30,9 +30,7 @@ struct ViewportResult {
     int height;
     bool hovered;
     bool show_controls;
-};
-
-struct PlaybackResult {
+    // Playback transport state, echoed back when a sequence is loaded.
     int current_frame;
     bool playing;
 };
@@ -45,10 +43,19 @@ std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io);
 MenuResult draw_menu_bar(bool translucent, bool show_marker, bool free_camera);
 
 /// Draw the dockable window that displays the rendered scene texture. ``status``
-/// may be empty to omit the overlay status line.
+/// may be empty to omit the overlay status line. When ``has_sequence`` is set the
+/// video-player transport bar is drawn at the bottom of this same window, so it
+/// follows the viewport wherever it is docked; ``current_frame`` / ``playing`` are
+/// returned with any changes the user made on the transport.
 ViewportResult draw_viewport_window(
-    const Framebuffer& framebuffer, ImGuiID dock_id, float fps, ImFont* fps_font, const std::string& status, bool has_sequence, bool show_controls
+    const Framebuffer& framebuffer,
+    ImGuiID dock_id,
+    float fps,
+    ImFont* fps_font,
+    const std::string& status,
+    bool show_controls,
+    bool has_sequence,
+    int current_frame,
+    int frame_count,
+    bool playing
 );
-
-/// Draw the video-player transport bar pinned to the bottom of the window.
-PlaybackResult draw_playback_bar(int win_width, int win_height, int current_frame, int frame_count, bool playing);
