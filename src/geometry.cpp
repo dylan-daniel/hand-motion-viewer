@@ -114,7 +114,7 @@ float center_model(std::vector<glm::vec3>& verts) {
     if (span == 0.0f) {
         span = 1.0f;
     }
-    const float scale = 4.0f / span;
+    const float scale = MODEL_FIT_SPAN / span;
     for (glm::vec3& vertex : verts) {
         vertex = glm::vec3((vertex.x - center_x) * scale, (vertex.y - floor_y) * scale, (vertex.z - center_z) * scale);
     }

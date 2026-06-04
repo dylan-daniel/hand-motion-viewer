@@ -18,6 +18,13 @@ inline constexpr glm::ivec3 HAND_COLOR_8BIT = {166, 189, 219};
 // Tint applied to a part that carries no per-vertex colours of its own.
 inline constexpr glm::vec4 DEFAULT_COLOR = {0.6f, 0.75f, 0.9f, 1.0f};
 
+// Target world-unit span a reference hand's largest extent is scaled to fit.
+// The grid spans +/-10 units, so a hand of this size sits comfortably on it.
+// Shared by the single-mesh fit (center_model) and the sequence fit
+// (compute_transform) so both render a hand at the same on-screen size; this is
+// the one knob for the overall scene scale.
+inline constexpr float MODEL_FIT_SPAN = 1.0f;
+
 /// A drawable chunk of geometry: shared vertices plus per-face indices/normals.
 struct MeshPart {
     std::vector<glm::vec3> verts;
