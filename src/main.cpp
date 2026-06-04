@@ -117,6 +117,10 @@ int main(int, char**) {
     std::optional<float> depth_reference;
     int current_frame = 0;
     bool playing = false;
+    // True while the user drags the scrubber; suspends auto-advance so the hands
+    // don't jitter between the dragged frame and the next. Carried across frames
+    // since the transport (which reports it) is drawn after playback is advanced.
+    bool scrubbing = false;
     double playback_accumulator = 0.0;
 
     auto open_sequence = [&](const std::string& folder, int start_frame) {
@@ -198,11 +202,11 @@ int main(int, char**) {
                     camera->reset();
                 } else if (key == SDLK_h) {
                     settings.hand_translucent = !settings.hand_translucent;
-                } else if (key == SDLK_SPACE && !imgui_io.WantCaptureKeyboard) {
+                } else if (key == SDLK_SPACE && event.key.repeat == 0 && !imgui_io.WantTextInput) {
                     if (sequence_loader && sequence_loader->frame_count() > 0) {
                         playing = !playing;
                     }
-                } else if (sequence_loader && (key == SDLK_LEFT || key == SDLK_RIGHT || key == SDLK_HOME || key == SDLK_END)) {
+                } else if (sequence_loader && !playing && (key == SDLK_LEFT || key == SDLK_RIGHT || key == SDLK_HOME || key == SDLK_END)) {
                     const int last = sequence_loader->frame_count() - 1;
                     if (key == SDLK_LEFT) {
                         current_frame = std::max(0, current_frame - 1);
@@ -255,8 +259,12 @@ int main(int, char**) {
             }
         }
 
-        // WASD/QE continuous movement, skipped while imgui captures the keyboard.
-        if (!imgui_io.WantCaptureKeyboard) {
+        // WASD/QE continuous movement. Gated on WantTextInput (a focused text
+        // field) rather than WantCaptureKeyboard: the latter is forced true while
+        // any mouse button is held over an imgui window (the click grabs the
+        // window move-id as the active item), which would otherwise freeze camera
+        // movement whenever the left button is down over the viewport.
+        if (!imgui_io.WantTextInput) {
             const Uint8* keys = SDL_GetKeyboardState(nullptr);
             const float forward = (keys[SDL_SCANCODE_W] ? 1.0f : 0.0f) - (keys[SDL_SCANCODE_S] ? 1.0f : 0.0f);
             const float right = (keys[SDL_SCANCODE_D] ? 1.0f : 0.0f) - (keys[SDL_SCANCODE_A] ? 1.0f : 0.0f);
@@ -328,7 +336,8 @@ int main(int, char**) {
         }
 
         // Advance playback at a fixed rate independent of the render frame rate.
-        if (playing && sequence_loader && sequence_loader->frame_count() > 0) {
+        // Suspended while scrubbing so the dragged frame is not fought by auto-advance.
+        if (playing && !scrubbing && sequence_loader && sequence_loader->frame_count() > 0) {
             playback_accumulator += dt_seconds;
             const int frame_step = static_cast<int>(playback_accumulator * PLAYBACK_FPS);
             if (frame_step > 0) {
@@ -427,12 +436,15 @@ int main(int, char**) {
             if (transport_pane == 1) {
                 current_frame = image_view.current_frame;
                 playing = image_view.playing;
+                scrubbing = image_view.scrubbing;
             } else {
                 current_frame = viewport.current_frame;
                 playing = viewport.playing;
+                scrubbing = viewport.scrubbing;
             }
         } else {
             playing = false;
+            scrubbing = false;
         }
 
         // Move the transport to follow this frame's focus; keep the current pane

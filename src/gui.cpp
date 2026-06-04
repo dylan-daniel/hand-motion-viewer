@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
-#include <tuple>
 #include <vector>
 
 #include <SDL.h>
@@ -20,22 +19,23 @@ namespace {
     struct ControlRow {
         const char* action;
         const char* keys;
-        bool sequence_only;
+        bool sequence_only; // dimmed when no sequence is loaded
+        bool paused_only;   // dimmed while a sequence is playing
     };
 
     const std::array<ControlRow, 12> CONTROLS = {{
-        {"Orbit camera", "Right-drag", false},
-        {"Pan camera", "Shift + Right-drag", false},
-        {"Move camera", "W / A / S / D", false},
-        {"Down / Up", "Q / E", false},
-        {"Zoom", "Scroll", false},
-        {"Play / Pause", "Space", true},
-        {"Prev / Next frame", "Left / Right", true},
-        {"First / Last frame", "Home / End", true},
-        {"Reset camera", "R", false},
-        {"Transparent hands", "H", false},
-        {"Fullscreen", "F11", false},
-        {"Quit", "Esc", false},
+        {"Orbit camera", "Right-drag", false, false},
+        {"Pan camera", "Shift + Right-drag", false, false},
+        {"Move camera", "W / A / S / D", false, false},
+        {"Down / Up", "Q / E", false, false},
+        {"Zoom", "Scroll", false, false},
+        {"Play / Pause", "Space", true, false},
+        {"Prev / Next frame", "Left / Right", true, true},
+        {"First / Last frame", "Home / End", true, true},
+        {"Reset camera", "R", false, false},
+        {"Transparent hands", "H", false, false},
+        {"Fullscreen", "F11", false, false},
+        {"Quit", "Esc", false, false},
     }};
 
     /// Path to the first .ttf in the bundled fonts/ directory next to the binary.
@@ -68,7 +68,7 @@ namespace {
     }
 
     /// Draw the "Controls" button + help panel in the viewport's top-right corner.
-    bool draw_controls_overlay(const ImVec2& top_left, int width, bool has_sequence, bool show_panel) {
+    bool draw_controls_overlay(const ImVec2& top_left, int width, bool has_sequence, bool playing, bool show_panel) {
         const char* label = "Controls";
         const float button_width = ImGui::CalcTextSize(label).x + 16.0f;
         ImGui::SetCursorScreenPos(ImVec2(top_left.x + width - button_width - 8.0f, top_left.y + 8.0f));
@@ -92,7 +92,7 @@ namespace {
                 ImGui::TableSetupColumn("action", ImGuiTableColumnFlags_WidthStretch);
                 ImGui::TableSetupColumn("keys", ImGuiTableColumnFlags_WidthFixed);
                 for (const ControlRow& row : CONTROLS) {
-                    const bool dimmed = row.sequence_only && !has_sequence;
+                    const bool dimmed = (row.sequence_only && !has_sequence) || (row.paused_only && playing);
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
                     if (dimmed) {
@@ -121,12 +121,20 @@ namespace {
         return show_panel;
     }
 
+    // Result of drawing the transport bar: the (possibly user-changed) frame and
+    // play state, plus whether the scrubber is being dragged this frame.
+    struct TransportState {
+        int current_frame;
+        bool playing;
+        bool scrubbing;
+    };
+
     // Playback transport (play/pause button + scrubber + frame label) drawn as an
     // overlay along the bottom of whichever pane currently carries it. ``strip_top``
     // is the screen Y where the overlay strip begins; a translucent backing is
     // painted behind it so the controls stay legible over the scene. Updates and
-    // returns the (current_frame, playing) state.
-    std::pair<int, bool> draw_transport_bar(float left, float strip_top, float width, int current_frame, int frame_count, bool playing) {
+    // returns the transport state, including whether the scrubber is being dragged.
+    TransportState draw_transport_bar(float left, float strip_top, float width, int current_frame, int frame_count, bool playing) {
         // Translucent backing so the controls read over any scene content beneath.
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         const ImU32 backing = ImGui::ColorConvertFloat4ToU32(ImVec4(0.08f, 0.08f, 0.10f, 0.65f));
@@ -148,10 +156,13 @@ namespace {
         ImGui::SetNextItemWidth(std::max(1.0f, slider_width));
         // Empty format: the standalone label shows the 1-based frame instead.
         ImGui::SliderInt("##frame", &current_frame, 0, frame_count - 1, "");
+        // True while the user holds and drags the scrubber, so playback can be
+        // suspended and the hands don't jitter between the dragged and next frame.
+        const bool scrubbing = ImGui::IsItemActive();
 
         ImGui::SameLine();
         ImGui::TextUnformatted(label);
-        return {current_frame, playing};
+        return {current_frame, playing, scrubbing};
     }
 } // namespace
 
@@ -218,7 +229,7 @@ ViewportResult draw_viewport_window(
     // no saved .ini entry, so a layout the user rearranged is restored on launch.
     ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin("Viewport");
+    ImGui::Begin("Scene");
     const bool focused = ImGui::IsWindowFocused();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     // The transport is drawn as an overlay (see below), so the scene fills the
@@ -247,17 +258,21 @@ ViewportResult draw_viewport_window(
         draw_list->AddText(fps_font, FPS_FONT_SIZE, ImVec2(image_pos.x + 8.0f, image_pos.y + 6.0f + FPS_FONT_SIZE), status_color, status.c_str());
     }
 
-    show_controls = draw_controls_overlay(image_pos, width, has_sequence, show_controls);
+    show_controls = draw_controls_overlay(image_pos, width, has_sequence, playing, show_controls);
 
     // Transport overlay pinned to the bottom edge of the scene image.
+    bool scrubbing = false;
     if (draw_transport) {
         const float strip_top = image_pos.y + static_cast<float>(height) - PLAYBACK_BAR_HEIGHT;
-        std::tie(current_frame, playing) = draw_transport_bar(image_pos.x, strip_top, static_cast<float>(width), current_frame, frame_count, playing);
+        const TransportState transport = draw_transport_bar(image_pos.x, strip_top, static_cast<float>(width), current_frame, frame_count, playing);
+        current_frame = transport.current_frame;
+        playing = transport.playing;
+        scrubbing = transport.scrubbing;
     }
 
     ImGui::End();
     ImGui::PopStyleVar();
-    return {width, height, hovered, focused, show_controls, current_frame, playing};
+    return {width, height, hovered, focused, show_controls, current_frame, playing, scrubbing};
 }
 
 ImageViewResult draw_image_window(
@@ -313,12 +328,16 @@ ImageViewResult draw_image_window(
     }
 
     // Transport overlay pinned to the bottom edge of the image region.
+    bool scrubbing = false;
     if (draw_transport) {
         const float strip_top = region_pos.y + region_height - PLAYBACK_BAR_HEIGHT;
-        std::tie(current_frame, playing) = draw_transport_bar(region_pos.x, strip_top, region_width, current_frame, frame_count, playing);
+        const TransportState transport = draw_transport_bar(region_pos.x, strip_top, region_width, current_frame, frame_count, playing);
+        current_frame = transport.current_frame;
+        playing = transport.playing;
+        scrubbing = transport.scrubbing;
     }
 
     ImGui::End();
     ImGui::PopStyleVar();
-    return {hovered, focused, current_frame, playing};
+    return {hovered, focused, current_frame, playing, scrubbing};
 }

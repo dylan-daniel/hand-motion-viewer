@@ -36,6 +36,8 @@ struct ViewportResult {
     // Playback transport state, echoed back when a sequence is loaded.
     int current_frame;
     bool playing;
+    // True while the user is dragging the scrubber on this pane's transport.
+    bool scrubbing;
 };
 
 struct ImageViewResult {
@@ -44,6 +46,8 @@ struct ImageViewResult {
     // Playback transport state, echoed back when the transport is drawn here.
     int current_frame;
     bool playing;
+    // True while the user is dragging the scrubber on this pane's transport.
+    bool scrubbing;
 };
 
 /// Bake the bundled font for the UI and the FPS overlay. Returns (ui, fps),
