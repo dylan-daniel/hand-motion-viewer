@@ -23,7 +23,7 @@ namespace {
         bool paused_only;   // dimmed while a sequence is playing
     };
 
-    const std::array<ControlRow, 12> CONTROLS = {{
+    const std::array<ControlRow, 13> CONTROLS = {{
         {"Orbit camera", "Right-drag", false, false},
         {"Pan camera", "Shift + Right-drag", false, false},
         {"Move camera", "W / A / S / D", false, false},
@@ -34,6 +34,7 @@ namespace {
         {"First / Last frame", "Home / End", true, true},
         {"Reset camera", "R", false, false},
         {"Transparent hands", "H", false, false},
+        {"Over-hand hands", "O", false, false},
         {"Fullscreen", "F11", false, false},
         {"Quit", "Esc", false, false},
     }};
@@ -276,6 +277,7 @@ ViewportResult draw_viewport_window(
 }
 
 ImageViewResult draw_image_window(
+    const char* title,
     unsigned int texture,
     int texture_width,
     int texture_height,
@@ -290,7 +292,7 @@ ImageViewResult draw_image_window(
     // no saved .ini entry, so a layout the user rearranged is restored on launch.
     ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::Begin("Image");
+    ImGui::Begin(title);
     const bool focused = ImGui::IsWindowFocused();
     const ImVec2 avail = ImGui::GetContentRegionAvail();
 

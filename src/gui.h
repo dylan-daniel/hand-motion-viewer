@@ -82,6 +82,7 @@ ViewportResult draw_viewport_window(
 /// transport bar is drawn here too, so the player follows whichever pane the
 /// mouse is on; ``current_frame`` / ``playing`` carry any user changes back.
 ImageViewResult draw_image_window(
+    const char* title,
     unsigned int texture,
     int texture_width,
     int texture_height,

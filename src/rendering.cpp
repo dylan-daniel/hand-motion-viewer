@@ -395,7 +395,7 @@ PreparedFrame prepare_frame(const Frame& hands) {
             sum += position.z;
         }
         const float depth = hand.positions.empty() ? 0.0f : static_cast<float>(sum / hand.positions.size());
-        prepared.emplace_back(std::move(arrays), depth);
+        prepared.push_back({std::move(arrays), depth, hand.is_overlay});
     }
     return prepared;
 }
@@ -403,13 +403,15 @@ PreparedFrame prepare_frame(const Frame& hands) {
 FrameGpu::FrameGpu(const PreparedFrame& prepared_hands) {
     hands_.reserve(prepared_hands.size());
     depths_.reserve(prepared_hands.size());
-    for (const auto& [prepared, depth] : prepared_hands) {
+    is_overlay_.reserve(prepared_hands.size());
+    for (const PreparedHand& prepared : prepared_hands) {
         HandGpu hand;
-        hand.joints = std::make_unique<GpuMesh>(prepared.joints);
-        hand.hand_solid = std::make_unique<GpuMesh>(prepared.hand_solid);
-        hand.hand_translucent = std::make_unique<GpuMesh>(prepared.hand_translucent);
+        hand.joints = std::make_unique<GpuMesh>(prepared.mesh.joints);
+        hand.hand_solid = std::make_unique<GpuMesh>(prepared.mesh.hand_solid);
+        hand.hand_translucent = std::make_unique<GpuMesh>(prepared.mesh.hand_translucent);
         hands_.push_back(std::move(hand));
-        depths_.push_back(depth);
+        depths_.push_back(prepared.depth);
+        is_overlay_.push_back(prepared.is_overlay ? 1 : 0);
     }
 }
 
@@ -425,7 +427,7 @@ glm::mat4 FrameGpu::hand_matrix(const Transform* transform, float scale) const {
     return model;
 }
 
-void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<float> reference_depth) const {
+void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<float> reference_depth, bool show_overlay) const {
     // Stabilise depth: snap every hand to the common reference plane.
     std::vector<float> scales;
     scales.reserve(depths_.size());
@@ -435,6 +437,9 @@ void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<
 
     set_lighting(true);
     for (std::size_t index = 0; index < hands_.size(); ++index) {
+        if (is_overlay_[index] && !show_overlay) {
+            continue;
+        }
         set_model(hand_matrix(transform, scales[index]));
         hands_[index].joints->draw();
     }
@@ -445,6 +450,9 @@ void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<
         glDepthMask(GL_FALSE);
     }
     for (std::size_t index = 0; index < hands_.size(); ++index) {
+        if (is_overlay_[index] && !show_overlay) {
+            continue;
+        }
         set_model(hand_matrix(transform, scales[index]));
         (translucent ? hands_[index].hand_translucent : hands_[index].hand_solid)->draw();
     }
@@ -822,7 +830,8 @@ void render_scene(
     bool translucent,
     const Transform* transform,
     std::optional<float> reference_depth,
-    bool show_camera_marker
+    bool show_camera_marker,
+    bool show_overlay
 ) {
     ensure_resources();
 
@@ -842,7 +851,7 @@ void render_scene(
     draw_grid(10, 1.0f, 0.0f);
 
     if (frame != nullptr) {
-        frame->draw(translucent, transform, reference_depth);
+        frame->draw(translucent, transform, reference_depth, show_overlay);
     } else if (scene != nullptr && scene->has_mesh()) {
         glm::mat4 model(1.0f);
         if (transform != nullptr) {

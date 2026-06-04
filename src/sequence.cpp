@@ -224,12 +224,18 @@ float reference_depth(const Frame& hands) {
     return count == 0 ? 0.0f : static_cast<float>(sum / static_cast<double>(count));
 }
 
-SequenceLoader::SequenceLoader(const std::string& folder, int workers) : folder_(folder) {
+SequenceLoader::SequenceLoader(const std::string& folder, int workers, std::shared_ptr<const CrossViewOverlay> overlay) :
+    folder_(folder), overlay_(std::move(overlay)) {
     frame_paths_ = discover_frames(folder);
     frame_count_ = static_cast<int>(frame_paths_.size());
     frames_.assign(static_cast<std::size_t>(frame_count_), nullptr);
     for (const std::vector<std::string>& hands : frame_paths_) {
         mesh_total_ += static_cast<int>(hands.size());
+    }
+    // The folded-in OHView hands are parsed alongside each frame's BabyView hands,
+    // so count them toward the load totals too.
+    if (overlay_) {
+        mesh_total_ += overlay_->mesh_total();
     }
 
     const int worker_count = std::max(1, std::min(workers, frame_count_));
@@ -308,6 +314,32 @@ std::shared_ptr<const Topology> SequenceLoader::get_topology(std::uint64_t key, 
     return iterator->second;
 }
 
+std::shared_ptr<const Topology> SequenceLoader::get_tinted_topology(std::uint64_t key, const std::string& path) {
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        auto found = tinted_topologies_.find(key);
+        if (found != tinted_topologies_.end()) {
+            return found->second;
+        }
+    }
+    // Start from the untinted topology, then recolour the hand-surface vertices
+    // with the overlay tint (joint-skeleton vertices keep their vivid colours).
+    auto base = get_topology(key, path);
+    auto tinted = std::make_shared<Topology>(*base);
+    const glm::vec4 tint = overlay_->tint();
+    for (std::size_t vertex = 0; vertex < tinted->colors.size(); ++vertex) {
+        const glm::vec4& original = tinted->colors[vertex];
+        const bool is_hand = std::fabs(original.r - kHandColorFloat.r) < 1e-3f && std::fabs(original.g - kHandColorFloat.g) < 1e-3f &&
+            std::fabs(original.b - kHandColorFloat.b) < 1e-3f;
+        if (is_hand) {
+            tinted->colors[vertex] = tint;
+        }
+    }
+    std::lock_guard<std::mutex> guard(mutex_);
+    auto [iterator, inserted] = tinted_topologies_.emplace(key, std::move(tinted));
+    return iterator->second;
+}
+
 void SequenceLoader::worker() {
     while (!stop_.load()) {
         const int index = claim_next();
@@ -322,6 +354,23 @@ void SequenceLoader::worker() {
             hand.topology = get_topology(key, path);
             hands->push_back(std::move(hand));
             meshes_loaded_.fetch_add(1);
+        }
+        // Fold in the matching OHView hands, mapped into this BabyView frame's
+        // coordinate space by the estimated similarity transform and tinted apart.
+        if (overlay_) {
+            const SimilarityTransform& transform = overlay_->transform();
+            for (const std::string& path : overlay_->oh_paths(index)) {
+                auto [positions, key] = parse_positions(path);
+                for (glm::vec3& position : positions) {
+                    position = transform.apply(position);
+                }
+                HandData hand;
+                hand.positions = std::move(positions);
+                hand.topology = get_tinted_topology(key, path);
+                hand.is_overlay = true;
+                hands->push_back(std::move(hand));
+                meshes_loaded_.fetch_add(1);
+            }
         }
         std::lock_guard<std::mutex> guard(mutex_);
         frames_[static_cast<std::size_t>(index)] = std::move(hands);

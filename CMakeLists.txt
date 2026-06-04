@@ -123,6 +123,8 @@ add_executable(hand_motion_viewer
     src/gl_loader.cpp
     src/config.cpp
     src/geometry.cpp
+    src/npy.cpp
+    src/crossview.cpp
     src/sequence.cpp
     src/rendering.cpp
     src/image.cpp

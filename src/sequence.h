@@ -20,6 +20,8 @@
 
 #include <glm/glm.hpp>
 
+#include "crossview.h"
+
 /// Shared per-vertex/face data for one MANO hand mesh, identical across frames.
 struct Topology {
     std::vector<glm::ivec3> faces;            // 0-based vertex indices
@@ -31,6 +33,7 @@ struct Topology {
 struct HandData {
     std::vector<glm::vec3> positions;
     std::shared_ptr<const Topology> topology;
+    bool is_overlay = false; // true for OHView hands folded in via the cross-view overlay
 };
 
 /// A fixed translate-then-scale that frames the whole sequence on the grid.
@@ -61,7 +64,7 @@ float reference_depth(const Frame& hands);
 /// Streams every frame's hand positions into memory on background threads.
 class SequenceLoader {
 public:
-    explicit SequenceLoader(const std::string& folder, int workers = 1);
+    explicit SequenceLoader(const std::string& folder, int workers = 1, std::shared_ptr<const CrossViewOverlay> overlay = nullptr);
     ~SequenceLoader();
 
     SequenceLoader(const SequenceLoader&) = delete;
@@ -75,6 +78,10 @@ public:
     int meshes_loaded() const { return meshes_loaded_.load(); }
 
     const std::string& folder() const { return folder_; }
+
+    /// The cross-view overlay folded into this sequence, or nullptr if this is a
+    /// plain single-view sequence (used to locate the OHView keypoint images).
+    const std::shared_ptr<const CrossViewOverlay>& overlay() const { return overlay_; }
     const std::vector<std::string>& frame_paths(int index) const { return frame_paths_[static_cast<std::size_t>(index)]; }
 
     /// True once frame ``index`` has finished parsing.
@@ -92,9 +99,13 @@ public:
 private:
     int claim_next();
     std::shared_ptr<const Topology> get_topology(std::uint64_t key, const std::string& path);
+    /// Topology recoloured with the overlay tint so OHView hands read apart from
+    /// the BabyView hands; interned separately from the untinted topology.
+    std::shared_ptr<const Topology> get_tinted_topology(std::uint64_t key, const std::string& path);
     void worker();
 
     std::string folder_;
+    std::shared_ptr<const CrossViewOverlay> overlay_;
     std::vector<std::vector<std::string>> frame_paths_;
     int frame_count_;
     int mesh_total_ = 0;
@@ -103,6 +114,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<std::shared_ptr<const Frame>> frames_; // nullptr until parsed
     std::unordered_map<std::uint64_t, std::shared_ptr<const Topology>> topologies_;
+    std::unordered_map<std::uint64_t, std::shared_ptr<const Topology>> tinted_topologies_;
     int cursor_ = 0;
     std::deque<int> priority_;
     std::unordered_set<int> claimed_;

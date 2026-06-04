@@ -69,6 +69,7 @@ Config load_config(const std::string& path) {
     read_optional_string(data, "last_folder", config.last_folder);
     read_field(data, "last_frame", config.last_frame);
     read_field(data, "hand_translucent", config.hand_translucent);
+    read_field(data, "show_overlay_hands", config.show_overlay_hands);
     read_field(data, "show_controls", config.show_controls);
     read_field(data, "show_camera_marker", config.show_camera_marker);
     read_field(data, "free_camera", config.free_camera);
@@ -93,6 +94,7 @@ void save_config(const std::string& path, const Config& config) {
     data["last_folder"] = config.last_folder ? json(*config.last_folder) : json(nullptr);
     data["last_frame"] = config.last_frame;
     data["hand_translucent"] = config.hand_translucent;
+    data["show_overlay_hands"] = config.show_overlay_hands;
     data["show_controls"] = config.show_controls;
     data["show_camera_marker"] = config.show_camera_marker;
     data["free_camera"] = config.free_camera;

@@ -8,6 +8,7 @@
 
 #include <array>
 #include <atomic>
+#include <cstdint>
 #include <future>
 #include <list>
 #include <memory>
@@ -75,21 +76,30 @@ struct HandGpu {
     std::unique_ptr<GpuMesh> hand_translucent;
 };
 
-// A frame's prepared CPU arrays: one (PreparedMesh, mean depth) pair per hand.
-using PreparedFrame = std::vector<std::pair<PreparedMesh, float>>;
+// A frame's prepared CPU arrays for one hand: GPU-ready mesh, mean depth, and
+// whether it is an OHView overlay hand (so rendering can hide it on toggle).
+struct PreparedHand {
+    PreparedMesh mesh;
+    float depth = 0.0f;
+    bool is_overlay = false;
+};
+using PreparedFrame = std::vector<PreparedHand>;
 
 /// GPU buffers for every hand of one sequence frame, drawn as a unit.
 class FrameGpu {
 public:
     explicit FrameGpu(const PreparedFrame& prepared_hands);
 
-    void draw(bool translucent, const Transform* transform, std::optional<float> reference_depth) const;
+    /// Draw the frame. When ``show_overlay`` is false the OHView overlay hands are
+    /// skipped, so only the BabyView hands appear.
+    void draw(bool translucent, const Transform* transform, std::optional<float> reference_depth, bool show_overlay) const;
 
 private:
     glm::mat4 hand_matrix(const Transform* transform, float scale) const;
 
     std::vector<HandGpu> hands_;
     std::vector<float> depths_;
+    std::vector<std::uint8_t> is_overlay_; // 1 for OHView overlay hands
 };
 
 /// Expand a frame's hands into GPU-ready arrays plus each hand's mean depth.
@@ -274,5 +284,6 @@ void render_scene(
     bool translucent,
     const Transform* transform,
     std::optional<float> reference_depth,
-    bool show_camera_marker
+    bool show_camera_marker,
+    bool show_overlay
 );
