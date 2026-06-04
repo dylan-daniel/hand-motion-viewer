@@ -214,7 +214,9 @@ ViewportResult draw_viewport_window(
     bool playing,
     bool show_transport
 ) {
-    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_Once);
+    // FirstUseEver (not Once): only seed the default dock node when the window has
+    // no saved .ini entry, so a layout the user rearranged is restored on launch.
+    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::Begin("Viewport");
     const bool focused = ImGui::IsWindowFocused();
@@ -269,7 +271,9 @@ ImageViewResult draw_image_window(
     bool playing,
     bool show_transport
 ) {
-    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_Once);
+    // FirstUseEver (not Once): only seed the default dock node when the window has
+    // no saved .ini entry, so a layout the user rearranged is restored on launch.
+    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::Begin("Image");
     const bool focused = ImGui::IsWindowFocused();

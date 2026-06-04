@@ -77,6 +77,20 @@ int main(int, char**) {
     ImGuiIO& imgui_io = ImGui::GetIO();
     imgui_io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
+    // Persist the dock layout next to the executable (like config.json) instead of
+    // imgui's default cwd-relative path, so the saved window arrangement is
+    // restored no matter where the app is launched from. The string must outlive
+    // the context: imgui keeps the pointer and writes the file on shutdown.
+    static std::string imgui_ini_path;
+    {
+        char* base = SDL_GetBasePath();
+        imgui_ini_path = (base != nullptr ? std::string(base) : std::string()) + "imgui.ini";
+        if (base != nullptr) {
+            SDL_free(base);
+        }
+    }
+    imgui_io.IniFilename = imgui_ini_path.c_str();
+
     auto [ui_font, fps_font] = load_fonts(imgui_io);
     imgui_io.FontDefault = ui_font;
 
