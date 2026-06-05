@@ -56,28 +56,38 @@ struct MeshPart {
     std::vector<glm::vec4> colors;  // per-vertex RGBA in 0..1 (may be empty)
 };
 
-/// Flat per-vertex arrays for one mesh part, ready for a GPU vertex buffer.
-/// Triangles are expanded (no index buffer): every face contributes three
-/// consecutive vertices, so positions/normals/colors share the same length.
+/// Flat per-vertex arrays for one mesh part, ready for a GPU vertex buffer. When
+/// ``indices`` is empty the triangles are expanded (every three consecutive
+/// vertices form a face, drawn with glDrawArrays). When ``indices`` is set the
+/// vertices are shared and the triangles are drawn indexed (glDrawElements),
+/// which is how the hand surface is stored to avoid 6x-duplicating each vertex.
 struct MeshArrays {
-    std::vector<float> positions; // 3 floats per vertex
-    std::vector<float> normals;   // 3 floats per vertex
-    std::vector<float> colors;    // 4 floats per vertex
-    int vertex_count = 0;
+    std::vector<float> positions;       // 3 floats per vertex
+    std::vector<float> normals;         // 3 floats per vertex
+    std::vector<float> colors;          // 4 floats per vertex
+    std::vector<std::uint16_t> indices; // triangle indices (empty => non-indexed)
+    int vertex_count = 0;               // number of vertices (positions.size() / 3)
 };
 
-/// GPU-ready vertex arrays for a loaded scene plus a little metadata.
+/// GPU-ready vertex arrays for a loaded scene plus a little metadata. The hand
+/// surface is one mesh drawn either opaque or translucent (the alpha is a shader
+/// uniform, so a single buffer serves both).
 struct PreparedMesh {
     MeshArrays joints;
-    MeshArrays hand_solid;
-    MeshArrays hand_translucent;
+    MeshArrays hand;
     int hand_triangle_count = 0;
     int joint_triangle_count = 0;
 };
 
 /// Expand a MeshPart into flat per-vertex arrays for GL_TRIANGLES drawing. If
-/// ``alpha`` is given it overrides every vertex's alpha (the translucent hand).
+/// ``alpha`` is given it overrides every vertex's alpha.
 MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha = std::nullopt);
+
+/// Build an indexed surface mesh: one vertex per entry in ``verts`` (no
+/// duplication), with smooth area-weighted per-vertex normals and a uniform
+/// ``color``, plus a triangle index buffer from ``faces``. ~5x smaller than the
+/// expanded form for a closed mesh like the MANO hand.
+MeshArrays build_indexed_surface(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& color);
 
 /// Load an obj file and split it into (hand, joints) by vertex colour.
 std::pair<MeshPart, MeshPart> load_mesh(const std::string& path);
@@ -114,16 +124,11 @@ MeshArrays build_joint_mesh(const std::vector<glm::vec3>& joints, float hand_dia
 /// Per-face unit normals for triangles, recomputed each frame for a sequence.
 std::vector<glm::vec3> face_normals(const std::vector<glm::vec3>& positions, const std::vector<glm::ivec3>& faces);
 
-/// Build GPU-ready arrays for one sequence hand: the surface from ``verts`` plus
-/// the shared MANO ``faces`` painted a uniform ``surface_color``, and a
-/// regenerated joint skeleton from ``joints``.
-PreparedMesh prepare_hand(
-    const std::vector<glm::vec3>& verts,
-    const std::vector<glm::ivec3>& faces,
-    const glm::vec4& surface_color,
-    const std::vector<glm::vec3>& joints,
-    float alpha = 0.30f
-);
+/// Build GPU-ready arrays for one sequence hand: the indexed surface from
+/// ``verts`` plus the shared MANO ``faces`` painted a uniform ``surface_color``,
+/// and a regenerated joint skeleton from ``joints``.
+PreparedMesh
+prepare_hand(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& surface_color, const std::vector<glm::vec3>& joints);
 
 /// Translate + scale verts so the model sits on the grid (y=0) and fits nicely;
 /// returns the scale factor and centres ``verts`` in place.

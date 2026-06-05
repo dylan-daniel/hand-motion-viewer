@@ -47,11 +47,13 @@ public:
 private:
     void release();
 
-    int vertex_count_ = 0;
+    int vertex_count_ = 0; // vertices in the buffers
+    int index_count_ = 0;  // indices to draw (0 => non-indexed, draw vertex_count_)
     unsigned int vao_ = 0;
     unsigned int position_vbo_ = 0;
     unsigned int normal_vbo_ = 0;
     unsigned int color_vbo_ = 0;
+    unsigned int index_ebo_ = 0; // element buffer, 0 when non-indexed
 };
 
 /// Owns the GPU vertex buffers for the currently loaded single mesh.
@@ -60,20 +62,19 @@ public:
     void upload(const std::string& path, const PreparedMesh& prepared);
     void release();
     void draw(bool translucent) const;
-    bool has_mesh() const { return hand_solid_ != nullptr; }
+    bool has_mesh() const { return hand_ != nullptr; }
 
 private:
     std::optional<std::string> path_;
     std::unique_ptr<GpuMesh> joints_;
-    std::unique_ptr<GpuMesh> hand_solid_;
-    std::unique_ptr<GpuMesh> hand_translucent_;
+    std::unique_ptr<GpuMesh> hand_;
 };
 
-/// One hand's GPU buffers within a sequence frame.
+/// One hand's GPU buffers within a sequence frame. The hand surface is a single
+/// mesh; opaque vs. translucent is a draw-time alpha uniform, not a second copy.
 struct HandGpu {
     std::unique_ptr<GpuMesh> joints;
-    std::unique_ptr<GpuMesh> hand_solid;
-    std::unique_ptr<GpuMesh> hand_translucent;
+    std::unique_ptr<GpuMesh> hand;
 };
 
 // A frame's prepared CPU arrays for one hand: GPU-ready mesh, mean depth, and

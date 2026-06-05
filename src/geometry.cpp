@@ -79,18 +79,56 @@ namespace {
     }
 } // namespace
 
-PreparedMesh prepare_hand(
-    const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& surface_color, const std::vector<glm::vec3>& joints, float alpha
-) {
-    MeshPart hand_part;
-    hand_part.verts = verts;
-    hand_part.faces = faces;
-    hand_part.normals = face_normals(verts, faces);
-    hand_part.colors.assign(verts.size(), surface_color);
+MeshArrays build_indexed_surface(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& color) {
+    MeshArrays out;
+    const std::size_t vertex_count = verts.size();
+    out.vertex_count = static_cast<int>(vertex_count);
 
+    // Smooth per-vertex normals: sum each face's normal (its magnitude is twice
+    // the triangle area, so larger faces weigh more) into its three vertices,
+    // then normalize. This is what lets the vertices be shared.
+    std::vector<glm::vec3> normals(vertex_count, glm::vec3(0.0f));
+    out.indices.reserve(faces.size() * 3);
+    for (const glm::ivec3& face : faces) {
+        const glm::vec3& a = verts[static_cast<std::size_t>(face[0])];
+        const glm::vec3& b = verts[static_cast<std::size_t>(face[1])];
+        const glm::vec3& c = verts[static_cast<std::size_t>(face[2])];
+        const glm::vec3 weighted = glm::cross(b - a, c - a);
+        normals[static_cast<std::size_t>(face[0])] += weighted;
+        normals[static_cast<std::size_t>(face[1])] += weighted;
+        normals[static_cast<std::size_t>(face[2])] += weighted;
+        out.indices.push_back(static_cast<std::uint16_t>(face[0]));
+        out.indices.push_back(static_cast<std::uint16_t>(face[1]));
+        out.indices.push_back(static_cast<std::uint16_t>(face[2]));
+    }
+
+    out.positions.reserve(vertex_count * 3);
+    out.normals.reserve(vertex_count * 3);
+    out.colors.reserve(vertex_count * 4);
+    for (std::size_t vertex = 0; vertex < vertex_count; ++vertex) {
+        const glm::vec3& position = verts[vertex];
+        out.positions.push_back(position.x);
+        out.positions.push_back(position.y);
+        out.positions.push_back(position.z);
+
+        const float length = glm::length(normals[vertex]);
+        const glm::vec3 normal = length == 0.0f ? glm::vec3(0.0f) : normals[vertex] / length;
+        out.normals.push_back(normal.x);
+        out.normals.push_back(normal.y);
+        out.normals.push_back(normal.z);
+
+        out.colors.push_back(color.r);
+        out.colors.push_back(color.g);
+        out.colors.push_back(color.b);
+        out.colors.push_back(color.a);
+    }
+    return out;
+}
+
+PreparedMesh
+prepare_hand(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& surface_color, const std::vector<glm::vec3>& joints) {
     PreparedMesh prepared;
-    prepared.hand_solid = build_arrays(hand_part);
-    prepared.hand_translucent = build_arrays(hand_part, alpha);
+    prepared.hand = build_indexed_surface(verts, faces, surface_color);
     prepared.joints = build_joint_mesh(joints, bounding_diagonal(verts));
     prepared.hand_triangle_count = static_cast<int>(faces.size());
     prepared.joint_triangle_count = static_cast<int>(prepared.joints.vertex_count / 3);

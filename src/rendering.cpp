@@ -41,9 +41,36 @@ layout(location = 2) in vec4 aColor;
 uniform mat4 uModel;
 uniform mat4 uView;
 uniform mat4 uProj;
-uniform bool uLighting;
 
+out vec3 vFragPos;   // view-space position; its screen-space derivatives give the face normal
+out vec3 vNormalRef; // smooth view-space normal, used only to orient the derived facet normal
 out vec4 vColor;
+
+void main() {
+    vec4 view_pos = uView * uModel * vec4(aPos, 1.0);
+    gl_Position = uProj * view_pos;
+    vFragPos = view_pos.xyz;
+    // Model/view here only translate and uniformly scale, so the upper 3x3 needs
+    // no inverse-transpose to keep the reference normal pointing outward.
+    vNormalRef = mat3(uView * uModel) * aNormal;
+    vColor = aColor;
+}
+)";
+
+    // Lighting is per-fragment and uses a *flat* normal derived from the
+    // view-space position's screen-space derivatives, so each triangle shades as
+    // one facet even though the vertices are shared/indexed (smooth vNormalRef is
+    // only used to pick the facet normal's sign). This restores the faceted look
+    // without un-sharing vertices.
+    const char* const FRAGMENT_SHADER = R"(#version 330 core
+in vec3 vFragPos;
+in vec3 vNormalRef;
+in vec4 vColor;
+
+uniform bool uLighting;
+uniform float uAlpha; // multiplies alpha; lets one buffer draw opaque or translucent
+
+out vec4 FragColor;
 
 // View-space lights matching the legacy setup_lighting() values.
 const vec3 LIGHT0_POS = vec3(5.0, 10.0, 5.0);
@@ -55,38 +82,34 @@ const vec3 SPECULAR = vec3(0.4, 0.4, 0.4);
 const float SHININESS = 32.0;
 
 void main() {
-    vec4 view_pos = uView * uModel * vec4(aPos, 1.0);
-    gl_Position = uProj * view_pos;
-
     if (!uLighting) {
-        vColor = aColor;
+        FragColor = vec4(vColor.rgb, vColor.a * uAlpha);
         return;
     }
 
-    // Model/view here only translate and uniformly scale, so the upper 3x3 needs
-    // no inverse-transpose to keep normals correct.
-    vec3 normal = normalize(mat3(uView * uModel) * aNormal);
-    vec3 frag = view_pos.xyz;
+    // Flat per-triangle normal: derivatives of the linearly-interpolated position
+    // are constant across a triangle, so this is the geometric facet normal.
+    vec3 normal = normalize(cross(dFdx(vFragPos), dFdy(vFragPos)));
+    // Orient it outward using the interpolated vertex normal as a sign reference.
+    if (dot(normal, vNormalRef) < 0.0) {
+        normal = -normal;
+    }
+
+    vec3 frag = vFragPos;
     vec3 eye = normalize(-frag);
 
-    vec3 lit = aColor.rgb * LIGHT0_AMBIENT;
+    vec3 lit = vColor.rgb * LIGHT0_AMBIENT;
 
     vec3 dir0 = normalize(LIGHT0_POS - frag);
-    lit += aColor.rgb * LIGHT0_DIFFUSE * max(dot(normal, dir0), 0.0);
+    lit += vColor.rgb * LIGHT0_DIFFUSE * max(dot(normal, dir0), 0.0);
     vec3 half0 = normalize(dir0 + eye);
     lit += SPECULAR * LIGHT0_DIFFUSE * pow(max(dot(normal, half0), 0.0), SHININESS);
 
     vec3 dir1 = normalize(LIGHT1_POS - frag);
-    lit += aColor.rgb * LIGHT1_DIFFUSE * max(dot(normal, dir1), 0.0);
+    lit += vColor.rgb * LIGHT1_DIFFUSE * max(dot(normal, dir1), 0.0);
 
-    vColor = vec4(lit, aColor.a);
+    FragColor = vec4(lit, vColor.a * uAlpha);
 }
-)";
-
-    const char* const FRAGMENT_SHADER = R"(#version 330 core
-in vec4 vColor;
-out vec4 FragColor;
-void main() { FragColor = vColor; }
 )";
 
     // Shared GL resources, created lazily on the first render and freed by
@@ -96,6 +119,7 @@ void main() { FragColor = vColor; }
     GLint g_loc_view = -1;
     GLint g_loc_proj = -1;
     GLint g_loc_lighting = -1;
+    GLint g_loc_alpha = -1;
     GLuint g_dynamic_vao = 0; // pos+colour stream for grid / axes / marker
     GLuint g_dynamic_vbo = 0;
 
@@ -137,6 +161,7 @@ void main() { FragColor = vColor; }
         g_loc_view = glx::GetUniformLocation(g_program, "uView");
         g_loc_proj = glx::GetUniformLocation(g_program, "uProj");
         g_loc_lighting = glx::GetUniformLocation(g_program, "uLighting");
+        g_loc_alpha = glx::GetUniformLocation(g_program, "uAlpha");
 
         // Dynamic stream VAO: interleaved position (3) + colour (4); the normal
         // attribute stays disabled (a constant value) since this stream is unlit.
@@ -157,6 +182,8 @@ void main() { FragColor = vColor; }
     void set_model(const glm::mat4& model) { glx::UniformMatrix4fv(g_loc_model, 1, GL_FALSE, glm::value_ptr(model)); }
 
     void set_lighting(bool enabled) { glx::Uniform1i(g_loc_lighting, enabled ? 1 : 0); }
+
+    void set_alpha(float alpha) { glx::Uniform1f(g_loc_alpha, alpha); }
 
     /// Draw an interleaved position(3)+colour(4) vertex stream (unlit) under
     /// ``model``. Used for the grid, axes, and camera marker.
@@ -278,7 +305,7 @@ namespace {
     }
 } // namespace
 
-GpuMesh::GpuMesh(const MeshArrays& arrays) : vertex_count_(arrays.vertex_count) {
+GpuMesh::GpuMesh(const MeshArrays& arrays) : vertex_count_(arrays.vertex_count), index_count_(static_cast<int>(arrays.indices.size())) {
     glx::GenBuffers(1, &position_vbo_);
     glx::GenBuffers(1, &normal_vbo_);
     glx::GenBuffers(1, &color_vbo_);
@@ -286,7 +313,7 @@ GpuMesh::GpuMesh(const MeshArrays& arrays) : vertex_count_(arrays.vertex_count) 
     upload_buffer(normal_vbo_, arrays.normals);
     upload_buffer(color_vbo_, arrays.colors);
 
-    // Bake the attribute layout into a VAO so draw() is a bind + glDrawArrays.
+    // Bake the attribute layout into a VAO so draw() is a bind + draw call.
     glx::GenVertexArrays(1, &vao_);
     glx::BindVertexArray(vao_);
     glx::BindBuffer(GL_ARRAY_BUFFER, position_vbo_);
@@ -298,28 +325,40 @@ GpuMesh::GpuMesh(const MeshArrays& arrays) : vertex_count_(arrays.vertex_count) 
     glx::BindBuffer(GL_ARRAY_BUFFER, color_vbo_);
     glx::EnableVertexAttribArray(ATTRIB_COLOR);
     glx::VertexAttribPointer(ATTRIB_COLOR, 4, GL_FLOAT, GL_FALSE, 0, nullptr);
+    // Indexed meshes keep an element buffer bound in the VAO; draw() uses it.
+    if (index_count_ > 0) {
+        glx::GenBuffers(1, &index_ebo_);
+        glx::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, index_ebo_);
+        glx::BufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(arrays.indices.size() * sizeof(std::uint16_t)), arrays.indices.data(), GL_STATIC_DRAW);
+    }
     glx::BindVertexArray(0);
     glx::BindBuffer(GL_ARRAY_BUFFER, 0);
+    glx::BindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 }
 
 GpuMesh::GpuMesh(GpuMesh&& other) noexcept :
-    vertex_count_(other.vertex_count_), vao_(other.vao_), position_vbo_(other.position_vbo_), normal_vbo_(other.normal_vbo_), color_vbo_(other.color_vbo_) {
+    vertex_count_(other.vertex_count_), index_count_(other.index_count_), vao_(other.vao_), position_vbo_(other.position_vbo_), normal_vbo_(other.normal_vbo_),
+    color_vbo_(other.color_vbo_), index_ebo_(other.index_ebo_) {
     other.vertex_count_ = 0;
+    other.index_count_ = 0;
     other.vao_ = 0;
-    other.position_vbo_ = other.normal_vbo_ = other.color_vbo_ = 0;
+    other.position_vbo_ = other.normal_vbo_ = other.color_vbo_ = other.index_ebo_ = 0;
 }
 
 GpuMesh& GpuMesh::operator=(GpuMesh&& other) noexcept {
     if (this != &other) {
         release();
         vertex_count_ = other.vertex_count_;
+        index_count_ = other.index_count_;
         vao_ = other.vao_;
         position_vbo_ = other.position_vbo_;
         normal_vbo_ = other.normal_vbo_;
         color_vbo_ = other.color_vbo_;
+        index_ebo_ = other.index_ebo_;
         other.vertex_count_ = 0;
+        other.index_count_ = 0;
         other.vao_ = 0;
-        other.position_vbo_ = other.normal_vbo_ = other.color_vbo_ = 0;
+        other.position_vbo_ = other.normal_vbo_ = other.color_vbo_ = other.index_ebo_ = 0;
     }
     return *this;
 }
@@ -330,21 +369,23 @@ void GpuMesh::release() {
     if (vao_ != 0) {
         glx::DeleteVertexArrays(1, &vao_);
     }
-    if (position_vbo_ != 0 || normal_vbo_ != 0 || color_vbo_ != 0) {
-        unsigned int buffers[3] = {position_vbo_, normal_vbo_, color_vbo_};
-        glx::DeleteBuffers(3, buffers);
+    if (position_vbo_ != 0 || normal_vbo_ != 0 || color_vbo_ != 0 || index_ebo_ != 0) {
+        unsigned int buffers[4] = {position_vbo_, normal_vbo_, color_vbo_, index_ebo_};
+        glx::DeleteBuffers(4, buffers);
     }
     vertex_count_ = 0;
+    index_count_ = 0;
     vao_ = 0;
-    position_vbo_ = normal_vbo_ = color_vbo_ = 0;
+    position_vbo_ = normal_vbo_ = color_vbo_ = index_ebo_ = 0;
 }
 
 void GpuMesh::draw() const {
-    if (vertex_count_ == 0) {
-        return;
-    }
     glx::BindVertexArray(vao_);
-    glDrawArrays(GL_TRIANGLES, 0, vertex_count_);
+    if (index_count_ > 0) {
+        glDrawElements(GL_TRIANGLES, index_count_, GL_UNSIGNED_SHORT, nullptr);
+    } else if (vertex_count_ > 0) {
+        glDrawArrays(GL_TRIANGLES, 0, vertex_count_);
+    }
     glx::BindVertexArray(0);
 }
 
@@ -353,15 +394,13 @@ void GpuMesh::draw() const {
 void SceneMesh::upload(const std::string& path, const PreparedMesh& prepared) {
     release();
     joints_ = std::make_unique<GpuMesh>(prepared.joints);
-    hand_solid_ = std::make_unique<GpuMesh>(prepared.hand_solid);
-    hand_translucent_ = std::make_unique<GpuMesh>(prepared.hand_translucent);
+    hand_ = std::make_unique<GpuMesh>(prepared.hand);
     path_ = path;
 }
 
 void SceneMesh::release() {
     joints_.reset();
-    hand_solid_.reset();
-    hand_translucent_.reset();
+    hand_.reset();
     path_.reset();
 }
 
@@ -371,15 +410,20 @@ void SceneMesh::draw(bool translucent) const {
     if (joints_) {
         joints_->draw();
     }
-    if (translucent && hand_translucent_) {
+    if (!hand_) {
+        return;
+    }
+    if (translucent) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
-        hand_translucent_->draw();
+        set_alpha(0.30f);
+        hand_->draw();
+        set_alpha(1.0f);
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
-    } else if (hand_solid_) {
-        hand_solid_->draw();
+    } else {
+        hand_->draw();
     }
 }
 
@@ -407,8 +451,7 @@ FrameGpu::FrameGpu(const PreparedFrame& prepared_hands) {
     for (const PreparedHand& prepared : prepared_hands) {
         HandGpu hand;
         hand.joints = std::make_unique<GpuMesh>(prepared.mesh.joints);
-        hand.hand_solid = std::make_unique<GpuMesh>(prepared.mesh.hand_solid);
-        hand.hand_translucent = std::make_unique<GpuMesh>(prepared.mesh.hand_translucent);
+        hand.hand = std::make_unique<GpuMesh>(prepared.mesh.hand);
         hands_.push_back(std::move(hand));
         depths_.push_back(prepared.depth);
         is_overlay_.push_back(prepared.is_overlay ? 1 : 0);
@@ -448,15 +491,17 @@ void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
+        set_alpha(0.30f);
     }
     for (std::size_t index = 0; index < hands_.size(); ++index) {
         if (is_overlay_[index] && !show_overlay) {
             continue;
         }
         set_model(hand_matrix(transform, scales[index]));
-        (translucent ? hands_[index].hand_translucent : hands_[index].hand_solid)->draw();
+        hands_[index].hand->draw();
     }
     if (translucent) {
+        set_alpha(1.0f);
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
     }
@@ -632,8 +677,7 @@ PreparedMesh prepare_mesh(const std::string& path) {
 
     PreparedMesh prepared;
     prepared.joints = build_arrays(joints);
-    prepared.hand_solid = build_arrays(hand);
-    prepared.hand_translucent = build_arrays(hand, 0.30f);
+    prepared.hand = build_arrays(hand); // drawn opaque or translucent via the alpha uniform
     prepared.hand_triangle_count = static_cast<int>(hand.faces.size());
     prepared.joint_triangle_count = static_cast<int>(joints.faces.size());
     return prepared;
@@ -846,6 +890,7 @@ void render_scene(
     glx::UseProgram(g_program);
     glx::UniformMatrix4fv(g_loc_proj, 1, GL_FALSE, glm::value_ptr(projection));
     glx::UniformMatrix4fv(g_loc_view, 1, GL_FALSE, glm::value_ptr(camera.view_matrix()));
+    set_alpha(1.0f); // opaque by default; translucent hand draws flip it transiently
 
     // Grid (flat-coloured; draw_grid keeps lighting off).
     draw_grid(10, 1.0f, 0.0f);

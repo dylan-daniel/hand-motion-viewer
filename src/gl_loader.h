@@ -59,6 +59,7 @@ namespace glx {
     extern PFNGLGETUNIFORMLOCATIONPROC GetUniformLocation;
     extern PFNGLUNIFORMMATRIX4FVPROC UniformMatrix4fv;
     extern PFNGLUNIFORM1IPROC Uniform1i;
+    extern PFNGLUNIFORM1FPROC Uniform1f;
 
     /// Resolve every entry point above; returns false if any could not be loaded.
     bool load();

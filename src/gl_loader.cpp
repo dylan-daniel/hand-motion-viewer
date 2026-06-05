@@ -45,6 +45,7 @@ namespace glx {
     PFNGLGETUNIFORMLOCATIONPROC GetUniformLocation = nullptr;
     PFNGLUNIFORMMATRIX4FVPROC UniformMatrix4fv = nullptr;
     PFNGLUNIFORM1IPROC Uniform1i = nullptr;
+    PFNGLUNIFORM1FPROC Uniform1f = nullptr;
 
     namespace {
         /// Resolve one entry point, recording failure in ``ok``.
@@ -101,6 +102,7 @@ namespace glx {
         resolve(GetUniformLocation, "glGetUniformLocation", ok);
         resolve(UniformMatrix4fv, "glUniformMatrix4fv", ok);
         resolve(Uniform1i, "glUniform1i", ok);
+        resolve(Uniform1f, "glUniform1f", ok);
         return ok;
     }
 } // namespace glx
