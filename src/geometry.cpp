@@ -337,8 +337,9 @@ const std::vector<glm::ivec3>& mano_faces(bool is_right) {
 namespace {
     using Triangle = std::array<glm::vec3, 3>;
 
-    /// A unit icosphere (radius 1, centred at origin) as a triangle soup, built
-    /// once: an icosahedron subdivided one level for rounder joint markers.
+    /// A unit sphere (radius 1, centred at origin) as a triangle soup, built once:
+    /// a bare icosahedron (20 triangles) — low-poly markers keep the joint mesh
+    /// small, which dominates per-hand memory.
     const std::vector<Triangle>& unit_sphere() {
         static const std::vector<Triangle> sphere = [] {
             const float phi = (1.0f + std::sqrt(5.0f)) * 0.5f;
@@ -362,18 +363,9 @@ namespace {
             const int ico[20][3] = {{0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
                                     {3, 9, 4},  {3, 4, 2}, {3, 2, 6}, {3, 6, 8},  {3, 8, 9},   {4, 9, 5}, {2, 4, 11}, {6, 2, 10},  {8, 6, 7},  {9, 8, 1}};
             std::vector<Triangle> tris;
-            tris.reserve(80);
+            tris.reserve(20);
             for (const auto& face : ico) {
-                const glm::vec3& a = verts[face[0]];
-                const glm::vec3& b = verts[face[1]];
-                const glm::vec3& c = verts[face[2]];
-                const glm::vec3 ab = glm::normalize(a + b);
-                const glm::vec3 bc = glm::normalize(b + c);
-                const glm::vec3 ca = glm::normalize(c + a);
-                tris.push_back({a, ab, ca});
-                tris.push_back({b, bc, ab});
-                tris.push_back({c, ca, bc});
-                tris.push_back({ab, bc, ca});
+                tris.push_back({verts[face[0]], verts[face[1]], verts[face[2]]});
             }
             return tris;
         }();
