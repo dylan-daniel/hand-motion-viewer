@@ -406,8 +406,10 @@ void SceneMesh::release() {
 
 void SceneMesh::draw(bool translucent) const {
     set_lighting(true);
-    // Joints first (opaque) so a translucent hand blends correctly over them.
-    if (joints_) {
+    // The joint skeleton only shows in translucent mode (it reads through the
+    // see-through hand); an opaque hand would hide it anyway. Drawn first so the
+    // translucent hand blends correctly over it.
+    if (translucent && joints_) {
         joints_->draw();
     }
     if (!hand_) {
@@ -479,12 +481,17 @@ void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<
     }
 
     set_lighting(true);
-    for (std::size_t index = 0; index < hands_.size(); ++index) {
-        if (is_overlay_[index] && !show_overlay) {
-            continue;
+    // The joint skeleton only shows in translucent mode — it reads through the
+    // see-through hand, and an opaque hand would hide it. Drawn first so the
+    // translucent hand blends correctly over it.
+    if (translucent) {
+        for (std::size_t index = 0; index < hands_.size(); ++index) {
+            if (is_overlay_[index] && !show_overlay) {
+                continue;
+            }
+            set_model(hand_matrix(transform, scales[index]));
+            hands_[index].joints->draw();
         }
-        set_model(hand_matrix(transform, scales[index]));
-        hands_[index].joints->draw();
     }
 
     if (translucent) {
