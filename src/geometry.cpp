@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <fstream>
 #include <stdexcept>
 
+#include <glm/gtc/constants.hpp>
 #include <rapidobj/rapidobj.hpp>
 
 MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha) {
@@ -59,40 +62,38 @@ std::vector<glm::vec3> face_normals(const std::vector<glm::vec3>& positions, con
     return normals;
 }
 
-PreparedMesh prepare_hand(
-    const std::vector<glm::vec3>& positions,
-    const std::vector<glm::ivec3>& faces,
-    const std::vector<glm::vec4>& colors,
-    const std::vector<std::uint8_t>& hand_face_mask,
-    float alpha
-) {
-    const std::vector<glm::vec3> normals = face_normals(positions, faces);
-
-    MeshPart hand_part;
-    MeshPart joint_part;
-    hand_part.verts = positions;
-    hand_part.colors = colors;
-    joint_part.verts = positions;
-    joint_part.colors = colors;
-
-    int hand_triangle_count = 0;
-    for (std::size_t face = 0; face < faces.size(); ++face) {
-        if (hand_face_mask[face]) {
-            hand_part.faces.push_back(faces[face]);
-            hand_part.normals.push_back(normals[face]);
-            ++hand_triangle_count;
-        } else {
-            joint_part.faces.push_back(faces[face]);
-            joint_part.normals.push_back(normals[face]);
+namespace {
+    /// Bounding-box diagonal of a point set (0 if empty), the size cue the joint
+    /// markers scale against.
+    float bounding_diagonal(const std::vector<glm::vec3>& points) {
+        if (points.empty()) {
+            return 0.0f;
         }
+        glm::vec3 low = points.front();
+        glm::vec3 high = points.front();
+        for (const glm::vec3& point : points) {
+            low = glm::min(low, point);
+            high = glm::max(high, point);
+        }
+        return glm::length(high - low);
     }
+} // namespace
+
+PreparedMesh prepare_hand(
+    const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& surface_color, const std::vector<glm::vec3>& joints, float alpha
+) {
+    MeshPart hand_part;
+    hand_part.verts = verts;
+    hand_part.faces = faces;
+    hand_part.normals = face_normals(verts, faces);
+    hand_part.colors.assign(verts.size(), surface_color);
 
     PreparedMesh prepared;
-    prepared.joints = build_arrays(joint_part);
     prepared.hand_solid = build_arrays(hand_part);
     prepared.hand_translucent = build_arrays(hand_part, alpha);
-    prepared.hand_triangle_count = hand_triangle_count;
-    prepared.joint_triangle_count = static_cast<int>(faces.size()) - hand_triangle_count;
+    prepared.joints = build_joint_mesh(joints, bounding_diagonal(verts));
+    prepared.hand_triangle_count = static_cast<int>(faces.size());
+    prepared.joint_triangle_count = static_cast<int>(prepared.joints.vertex_count / 3);
     return prepared;
 }
 
@@ -200,4 +201,237 @@ std::pair<MeshPart, MeshPart> load_mesh(const std::string& path) {
         }
     }
     return {hand, joints};
+}
+
+// ── Binary .hmesh format ───────────────────────
+
+namespace {
+    /// Read ``count`` little-endian float32 vec3s from ``data`` at ``offset``,
+    /// rotating each 180° about X (negate y and z) into the OBJ-export pose.
+    std::vector<glm::vec3> read_posed_vec3(const std::string& data, std::size_t offset, std::size_t count) {
+        std::vector<glm::vec3> points;
+        points.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            float xyz[3];
+            std::memcpy(xyz, data.data() + offset + index * 3 * sizeof(float), 3 * sizeof(float));
+            points.emplace_back(xyz[0], -xyz[1], -xyz[2]);
+        }
+        return points;
+    }
+} // namespace
+
+HMesh load_hmesh(const std::string& path) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        throw std::runtime_error("Could not open hmesh " + path);
+    }
+    const std::streamsize size = file.tellg();
+    if (size < 8) {
+        throw std::runtime_error("Truncated hmesh " + path);
+    }
+    std::string data(static_cast<std::size_t>(size), '\0');
+    file.seekg(0);
+    file.read(data.data(), size);
+
+    if (std::memcmp(data.data(), "HMH", 3) != 0) {
+        throw std::runtime_error("Not an hmesh file: " + path);
+    }
+    HMesh mesh;
+    mesh.is_right = static_cast<std::uint8_t>(data[3]) != 0;
+    std::uint16_t n_verts = 0;
+    std::uint16_t n_joints = 0;
+    std::memcpy(&n_verts, data.data() + 4, sizeof(n_verts));
+    std::memcpy(&n_joints, data.data() + 6, sizeof(n_joints));
+
+    const std::size_t expected = 8 + (static_cast<std::size_t>(n_verts) + n_joints) * 3 * sizeof(float);
+    if (static_cast<std::size_t>(size) < expected) {
+        throw std::runtime_error("Truncated hmesh body: " + path);
+    }
+    mesh.verts = read_posed_vec3(data, 8, n_verts);
+    mesh.joints = read_posed_vec3(data, 8 + static_cast<std::size_t>(n_verts) * 3 * sizeof(float), n_joints);
+    return mesh;
+}
+
+// ── Shared MANO face topology ──────────────────
+
+namespace {
+    std::vector<glm::ivec3> g_faces_right;
+    std::vector<glm::ivec3> g_faces_left;
+} // namespace
+
+void init_mano_topology(const std::string& faces_path) {
+    std::ifstream file(faces_path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        throw std::runtime_error("Could not open MANO faces " + faces_path);
+    }
+    const std::streamsize size = file.tellg();
+    if (size <= 0 || size % (3 * sizeof(std::uint16_t)) != 0) {
+        throw std::runtime_error("Malformed MANO faces " + faces_path);
+    }
+    std::vector<std::uint16_t> indices(static_cast<std::size_t>(size) / sizeof(std::uint16_t));
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(indices.data()), size);
+
+    const std::size_t face_count = indices.size() / 3;
+    g_faces_right.clear();
+    g_faces_left.clear();
+    g_faces_right.reserve(face_count);
+    g_faces_left.reserve(face_count);
+    for (std::size_t face = 0; face < face_count; ++face) {
+        const int a = indices[face * 3 + 0];
+        const int b = indices[face * 3 + 1];
+        const int c = indices[face * 3 + 2];
+        g_faces_right.emplace_back(a, b, c);
+        g_faces_left.emplace_back(a, c, b); // flip winding for a left hand
+    }
+}
+
+const std::vector<glm::ivec3>& mano_faces(bool is_right) {
+    const std::vector<glm::ivec3>& faces = is_right ? g_faces_right : g_faces_left;
+    if (faces.empty()) {
+        throw std::runtime_error("MANO topology not initialised (call init_mano_topology first)");
+    }
+    return faces;
+}
+
+// ── Procedural joint skeleton ──────────────────
+
+namespace {
+    using Triangle = std::array<glm::vec3, 3>;
+
+    /// A unit icosphere (radius 1, centred at origin) as a triangle soup, built
+    /// once: an icosahedron subdivided one level for rounder joint markers.
+    const std::vector<Triangle>& unit_sphere() {
+        static const std::vector<Triangle> sphere = [] {
+            const float phi = (1.0f + std::sqrt(5.0f)) * 0.5f;
+            std::vector<glm::vec3> verts = {
+                {-1, phi, 0},
+                {1, phi, 0},
+                {-1, -phi, 0},
+                {1, -phi, 0},
+                {0, -1, phi},
+                {0, 1, phi},
+                {0, -1, -phi},
+                {0, 1, -phi},
+                {phi, 0, -1},
+                {phi, 0, 1},
+                {-phi, 0, -1},
+                {-phi, 0, 1}
+            };
+            for (glm::vec3& vertex : verts) {
+                vertex = glm::normalize(vertex);
+            }
+            const int ico[20][3] = {{0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
+                                    {3, 9, 4},  {3, 4, 2}, {3, 2, 6}, {3, 6, 8},  {3, 8, 9},   {4, 9, 5}, {2, 4, 11}, {6, 2, 10},  {8, 6, 7},  {9, 8, 1}};
+            std::vector<Triangle> tris;
+            tris.reserve(80);
+            for (const auto& face : ico) {
+                const glm::vec3& a = verts[face[0]];
+                const glm::vec3& b = verts[face[1]];
+                const glm::vec3& c = verts[face[2]];
+                const glm::vec3 ab = glm::normalize(a + b);
+                const glm::vec3 bc = glm::normalize(b + c);
+                const glm::vec3 ca = glm::normalize(c + a);
+                tris.push_back({a, ab, ca});
+                tris.push_back({b, bc, ab});
+                tris.push_back({c, ca, bc});
+                tris.push_back({ab, bc, ca});
+            }
+            return tris;
+        }();
+        return sphere;
+    }
+
+    /// A unit cylinder (radius 1, spanning y in [0, 1]) as a triangle soup, built
+    /// once. Sides plus end caps.
+    const std::vector<Triangle>& unit_cylinder() {
+        static const std::vector<Triangle> cylinder = [] {
+            constexpr int segments = 10;
+            std::vector<Triangle> tris;
+            for (int segment = 0; segment < segments; ++segment) {
+                const float a0 = glm::two_pi<float>() * segment / segments;
+                const float a1 = glm::two_pi<float>() * (segment + 1) / segments;
+                const glm::vec3 p0(std::cos(a0), 0.0f, std::sin(a0));
+                const glm::vec3 p1(std::cos(a1), 0.0f, std::sin(a1));
+                const glm::vec3 t0 = p0 + glm::vec3(0, 1, 0);
+                const glm::vec3 t1 = p1 + glm::vec3(0, 1, 0);
+                tris.push_back({p0, p1, t1}); // side quad
+                tris.push_back({p0, t1, t0});
+                tris.push_back({glm::vec3(0, 0, 0), p1, p0}); // bottom cap
+                tris.push_back({glm::vec3(0, 1, 0), t0, t1}); // top cap
+            }
+            return tris;
+        }();
+        return cylinder;
+    }
+
+    /// An orthonormal basis whose Y axis points along ``direction`` (unit length).
+    glm::mat3 basis_from_y(const glm::vec3& direction) {
+        const glm::vec3 reference = std::fabs(direction.y) < 0.99f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+        const glm::vec3 x_axis = glm::normalize(glm::cross(reference, direction));
+        const glm::vec3 z_axis = glm::cross(direction, x_axis);
+        return glm::mat3(x_axis, direction, z_axis);
+    }
+
+    /// Append a transformed primitive (``origin + transform * local``) to ``out``,
+    /// recomputing a flat per-triangle normal in world space.
+    void
+    append_primitive(MeshArrays& out, const std::vector<Triangle>& primitive, const glm::vec3& origin, const glm::mat3& transform, const glm::vec4& color) {
+        for (const Triangle& local : primitive) {
+            const glm::vec3 a = origin + transform * local[0];
+            const glm::vec3 b = origin + transform * local[1];
+            const glm::vec3 c = origin + transform * local[2];
+            const glm::vec3 raw = glm::cross(b - a, c - a);
+            const float length = glm::length(raw);
+            const glm::vec3 normal = length == 0.0f ? glm::vec3(0.0f) : raw / length;
+            for (const glm::vec3& position : {a, b, c}) {
+                out.positions.push_back(position.x);
+                out.positions.push_back(position.y);
+                out.positions.push_back(position.z);
+                out.normals.push_back(normal.x);
+                out.normals.push_back(normal.y);
+                out.normals.push_back(normal.z);
+                out.colors.push_back(color.r);
+                out.colors.push_back(color.g);
+                out.colors.push_back(color.b);
+                out.colors.push_back(color.a);
+            }
+        }
+    }
+} // namespace
+
+MeshArrays build_joint_mesh(const std::vector<glm::vec3>& joints, float hand_diagonal) {
+    MeshArrays out;
+    if (joints.empty()) {
+        return out;
+    }
+    const float joint_radius = (hand_diagonal > 0.0f ? hand_diagonal : 1.0f) * 0.02f;
+    const float bone_radius = joint_radius * 0.45f;
+
+    for (std::size_t joint = 0; joint < joints.size(); ++joint) {
+        const glm::vec4& color = FINGER_COLORS[static_cast<std::size_t>(finger_of(static_cast<int>(joint)))];
+        append_primitive(out, unit_sphere(), joints[joint], glm::mat3(joint_radius), color);
+    }
+    for (const glm::ivec2& bone : HAND_BONES) {
+        if (bone[0] >= static_cast<int>(joints.size()) || bone[1] >= static_cast<int>(joints.size())) {
+            continue;
+        }
+        const glm::vec3& parent = joints[static_cast<std::size_t>(bone[0])];
+        const glm::vec3& child = joints[static_cast<std::size_t>(bone[1])];
+        const glm::vec3 along = child - parent;
+        const float length = glm::length(along);
+        if (length <= 0.0f) {
+            continue;
+        }
+        // Bone takes its child joint's finger colour so the wrist bones inherit
+        // the finger they lead to (matching the OBJ skeleton).
+        const glm::vec4& color = FINGER_COLORS[static_cast<std::size_t>(finger_of(bone[1]))];
+        glm::mat3 transform = basis_from_y(along / length);
+        transform[0] *= bone_radius;
+        transform[1] *= length;
+        transform[2] *= bone_radius;
+        append_primitive(out, unit_cylinder(), parent, transform, color);
+    }
+    out.vertex_count = static_cast<int>(out.positions.size() / 3);
+    return out;
 }

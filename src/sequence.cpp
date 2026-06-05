@@ -15,136 +15,8 @@
 namespace {
     namespace fs = std::filesystem;
 
-    // frame_0001_0.obj → frame number 0001, hand slot 0.
-    const std::regex kFrameRe(R"(frame_(\d+)_(\d+)\.obj$)", std::regex::icase);
-
-    // Hand colour as a 0..1 float triple, matched against parsed vertex colours.
-    const glm::vec3 kHandColorFloat = {HAND_COLOR_8BIT.r / 255.0f, HAND_COLOR_8BIT.g / 255.0f, HAND_COLOR_8BIT.b / 255.0f};
-
-    /// Read a whole file into a string in one pass (the string stays null
-    /// terminated, so the strtof/strtol scanners below never run past the buffer).
-    std::string read_file(const std::string& path) {
-        std::ifstream obj_file(path, std::ios::binary | std::ios::ate);
-        if (!obj_file) {
-            return {};
-        }
-        const std::streamsize size = obj_file.tellg();
-        if (size <= 0) {
-            return {};
-        }
-        std::string data(static_cast<std::size_t>(size), '\0');
-        obj_file.seekg(0);
-        obj_file.read(data.data(), size);
-        return data;
-    }
-
-    /// 64-bit FNV-1a hash of a byte range, used to intern identical topologies.
-    std::uint64_t fnv1a(const char* begin, const char* end) {
-        std::uint64_t hash = 1469598103934665603ull;
-        for (const char* cursor = begin; cursor < end; ++cursor) {
-            hash ^= static_cast<std::uint8_t>(*cursor);
-            hash *= 1099511628211ull;
-        }
-        return hash;
-    }
-
-    /// Advance ``cursor`` past the current line's newline (handles the final line
-    /// with no trailing newline).
-    void skip_line(const char*& cursor, const char* end) {
-        while (cursor < end && *cursor != '\n') {
-            ++cursor;
-        }
-        if (cursor < end) {
-            ++cursor;
-        }
-    }
-
-    /// Read an obj's vertex positions plus a key identifying its face block. The key
-    /// is a hash of the raw face bytes, so identical topologies intern without
-    /// re-parsing their faces. Relies on the trimesh export layout: a comment, then
-    /// all ``v`` lines, then all ``f`` lines.
-    ///
-    /// Parsing walks the raw buffer with strtof — no per-line std::string or
-    /// std::istringstream allocation, which is what made the first cut slow.
-    std::pair<std::vector<glm::vec3>, std::uint64_t> parse_positions(const std::string& path) {
-        const std::string data = read_file(path);
-        const char* begin = data.data();
-        const char* end = begin + data.size();
-
-        const std::size_t face_pos = data.find("\nf ");
-        const char* vertex_end = face_pos == std::string::npos ? end : begin + face_pos;
-        const char* face_begin = face_pos == std::string::npos ? end : begin + face_pos + 1;
-        const std::uint64_t key = fnv1a(face_begin, end);
-
-        std::vector<glm::vec3> positions;
-        positions.reserve(800); // a MANO hand is ~778 vertices
-        const char* cursor = begin;
-        while (cursor < vertex_end) {
-            if (cursor[0] == 'v' && cursor + 1 < vertex_end && cursor[1] == ' ') {
-                char* scan = const_cast<char*>(cursor + 2);
-                const float x = std::strtof(scan, &scan);
-                const float y = std::strtof(scan, &scan);
-                const float z = std::strtof(scan, &scan);
-                positions.emplace_back(x, y, z);
-                cursor = scan;
-            }
-            skip_line(cursor, vertex_end);
-        }
-        return {std::move(positions), key};
-    }
-
-    /// Fully parse one obj's faces, vertex colours and hand/joint split. Run only
-    /// once per distinct topology, so this stays off the per-frame hot path.
-    Topology parse_topology(const std::string& path) {
-        const std::string data = read_file(path);
-        const char* begin = data.data();
-        const char* end = begin + data.size();
-
-        Topology topology;
-        std::vector<std::uint8_t> is_hand_vertex;
-        topology.colors.reserve(800);
-        is_hand_vertex.reserve(800);
-        topology.faces.reserve(1600);
-
-        const char* cursor = begin;
-        while (cursor < end) {
-            if (cursor[0] == 'v' && cursor + 1 < end && cursor[1] == ' ') {
-                char* scan = const_cast<char*>(cursor + 2);
-                std::strtof(scan, &scan); // x
-                std::strtof(scan, &scan); // y
-                std::strtof(scan, &scan); // z
-                const float r = std::strtof(scan, &scan);
-                const float g = std::strtof(scan, &scan);
-                const float b = std::strtof(scan, &scan);
-                topology.colors.emplace_back(r, g, b, 1.0f);
-                const bool is_hand =
-                    std::fabs(r - kHandColorFloat.r) < 1e-3f && std::fabs(g - kHandColorFloat.g) < 1e-3f && std::fabs(b - kHandColorFloat.b) < 1e-3f;
-                is_hand_vertex.push_back(is_hand ? 1 : 0);
-                cursor = scan;
-            } else if (cursor[0] == 'f' && cursor + 1 < end && cursor[1] == ' ') {
-                char* scan = const_cast<char*>(cursor + 2);
-                int indices[3] = {0, 0, 0};
-                for (int corner = 0; corner < 3; ++corner) {
-                    indices[corner] = static_cast<int>(std::strtol(scan, &scan, 10)) - 1; // obj is 1-based
-                    // Skip any /vt/vn part so the next strtol starts at the next index.
-                    while (scan < end && *scan != ' ' && *scan != '\n' && *scan != '\r' && *scan != '\0') {
-                        ++scan;
-                    }
-                }
-                topology.faces.emplace_back(indices[0], indices[1], indices[2]);
-                cursor = scan;
-            }
-            skip_line(cursor, end);
-        }
-
-        topology.hand_face_mask.reserve(topology.faces.size());
-        for (const glm::ivec3& face : topology.faces) {
-            const bool is_hand = is_hand_vertex[static_cast<std::size_t>(face[0])] || is_hand_vertex[static_cast<std::size_t>(face[1])] ||
-                is_hand_vertex[static_cast<std::size_t>(face[2])];
-            topology.hand_face_mask.push_back(is_hand ? 1 : 0);
-        }
-        return topology;
-    }
+    // frame_0001_0.hmesh → frame number 0001, hand slot 0.
+    const std::regex kFrameRe(R"(frame_(\d+)_(\d+)\.hmesh$)", std::regex::icase);
 } // namespace
 
 std::vector<std::vector<std::string>> discover_frames(const std::string& folder) {
@@ -197,7 +69,7 @@ Transform compute_transform(const Frame& hands) {
     glm::vec3 low(std::numeric_limits<float>::max());
     glm::vec3 high(std::numeric_limits<float>::lowest());
     for (const HandData& hand : hands) {
-        for (const glm::vec3& position : hand.positions) {
+        for (const glm::vec3& position : hand.verts) {
             low = glm::min(low, position);
             high = glm::max(high, position);
         }
@@ -215,7 +87,7 @@ Transform compute_transform(const Frame& hands) {
     glm::vec3 hand_low(std::numeric_limits<float>::max());
     glm::vec3 hand_high(std::numeric_limits<float>::lowest());
     if (!hands.empty()) {
-        for (const glm::vec3& position : hands.front().positions) {
+        for (const glm::vec3& position : hands.front().verts) {
             hand_low = glm::min(hand_low, position);
             hand_high = glm::max(hand_high, position);
         }
@@ -232,7 +104,7 @@ float reference_depth(const Frame& hands) {
     double sum = 0.0;
     std::size_t count = 0;
     for (const HandData& hand : hands) {
-        for (const glm::vec3& position : hand.positions) {
+        for (const glm::vec3& position : hand.verts) {
             sum += position.z;
             ++count;
         }
@@ -316,46 +188,6 @@ int SequenceLoader::claim_next() {
     return -1;
 }
 
-std::shared_ptr<const Topology> SequenceLoader::get_topology(std::uint64_t key, const std::string& path) {
-    {
-        std::lock_guard<std::mutex> guard(mutex_);
-        auto found = topologies_.find(key);
-        if (found != topologies_.end()) {
-            return found->second;
-        }
-    }
-    auto parsed = std::make_shared<const Topology>(parse_topology(path));
-    std::lock_guard<std::mutex> guard(mutex_);
-    auto [iterator, inserted] = topologies_.emplace(key, parsed);
-    return iterator->second;
-}
-
-std::shared_ptr<const Topology> SequenceLoader::get_tinted_topology(std::uint64_t key, const std::string& path) {
-    {
-        std::lock_guard<std::mutex> guard(mutex_);
-        auto found = tinted_topologies_.find(key);
-        if (found != tinted_topologies_.end()) {
-            return found->second;
-        }
-    }
-    // Start from the untinted topology, then recolour the hand-surface vertices
-    // with the overlay tint (joint-skeleton vertices keep their vivid colours).
-    auto base = get_topology(key, path);
-    auto tinted = std::make_shared<Topology>(*base);
-    const glm::vec4 tint = overlay_->tint();
-    for (std::size_t vertex = 0; vertex < tinted->colors.size(); ++vertex) {
-        const glm::vec4& original = tinted->colors[vertex];
-        const bool is_hand = std::fabs(original.r - kHandColorFloat.r) < 1e-3f && std::fabs(original.g - kHandColorFloat.g) < 1e-3f &&
-            std::fabs(original.b - kHandColorFloat.b) < 1e-3f;
-        if (is_hand) {
-            tinted->colors[vertex] = tint;
-        }
-    }
-    std::lock_guard<std::mutex> guard(mutex_);
-    auto [iterator, inserted] = tinted_topologies_.emplace(key, std::move(tinted));
-    return iterator->second;
-}
-
 void SequenceLoader::worker() {
     while (!stop_.load()) {
         const int index = claim_next();
@@ -364,10 +196,11 @@ void SequenceLoader::worker() {
         }
         auto hands = std::make_shared<Frame>();
         for (const std::string& path : frame_paths_[static_cast<std::size_t>(index)]) {
-            auto [positions, key] = parse_positions(path);
+            HMesh mesh = load_hmesh(path);
             HandData hand;
-            hand.positions = std::move(positions);
-            hand.topology = get_topology(key, path);
+            hand.verts = std::move(mesh.verts);
+            hand.joints = std::move(mesh.joints);
+            hand.is_right = mesh.is_right;
             hands->push_back(std::move(hand));
             meshes_loaded_.fetch_add(1);
         }
@@ -375,14 +208,20 @@ void SequenceLoader::worker() {
         // coordinate space by the estimated similarity transform and tinted apart.
         if (overlay_) {
             const SimilarityTransform& transform = overlay_->transform();
+            const glm::vec4 tint = overlay_->tint();
             for (const std::string& path : overlay_->oh_paths(index)) {
-                auto [positions, key] = parse_positions(path);
-                for (glm::vec3& position : positions) {
+                HMesh mesh = load_hmesh(path);
+                HandData hand;
+                hand.verts = std::move(mesh.verts);
+                hand.joints = std::move(mesh.joints);
+                hand.is_right = mesh.is_right;
+                for (glm::vec3& position : hand.verts) {
                     position = transform.apply(position);
                 }
-                HandData hand;
-                hand.positions = std::move(positions);
-                hand.topology = get_tinted_topology(key, path);
+                for (glm::vec3& position : hand.joints) {
+                    position = transform.apply(position);
+                }
+                hand.surface_color = tint;
                 hand.is_overlay = true;
                 hands->push_back(std::move(hand));
                 meshes_loaded_.fetch_add(1);

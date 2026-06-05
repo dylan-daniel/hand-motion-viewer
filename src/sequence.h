@@ -1,11 +1,12 @@
 #pragma once
 
 // Loading and holding a folder of per-frame hand meshes for motion playback. A
-// sequence folder holds files named ``frame_NNNN_<slot>.obj`` — one mesh per
-// detected hand per video frame. Every mesh shares the same MANO topology
-// (faces + per-vertex colours), so the topology is parsed once and interned
-// while just the positions are streamed in for every frame. Parsing runs on
-// background worker threads so the UI stays responsive.
+// sequence folder holds files named ``frame_NNNN_<slot>.hmesh`` — one compact
+// binary mesh per detected hand per video frame, storing just the MANO surface
+// vertices and 21 joint positions. The face topology is identical for every hand
+// and shared globally (see geometry's mano_faces), so only the moving vertices
+// are streamed in per frame. Parsing runs on background worker threads so the UI
+// stays responsive.
 
 #include <atomic>
 #include <cstdint>
@@ -22,18 +23,15 @@
 
 #include "crossview.h"
 
-/// Shared per-vertex/face data for one MANO hand mesh, identical across frames.
-struct Topology {
-    std::vector<glm::ivec3> faces;            // 0-based vertex indices
-    std::vector<glm::vec4> colors;            // per-vertex RGBA in 0..1
-    std::vector<std::uint8_t> hand_face_mask; // 1 for hand-surface faces, 0 for joints
-};
-
-/// One hand in one frame: moving vertex positions plus its shared topology.
+/// One hand in one frame, decoded from a ``.hmesh``: the moving MANO surface
+/// vertices and joint positions. The face topology is shared globally (see
+/// mano_faces) so it is not stored here; only the handedness needed to pick it.
 struct HandData {
-    std::vector<glm::vec3> positions;
-    std::shared_ptr<const Topology> topology;
-    bool is_overlay = false; // true for OHView hands folded in via the cross-view overlay
+    std::vector<glm::vec3> verts;                        // MANO surface vertices (778)
+    std::vector<glm::vec3> joints;                       // joint positions (21)
+    bool is_right = true;                                // handedness, picks the shared face winding
+    glm::vec4 surface_color = {0.6f, 0.75f, 0.9f, 1.0f}; // hand-surface tint (overlay hands differ)
+    bool is_overlay = false;                             // true for OHView hands folded in via the cross-view overlay
 };
 
 /// A fixed translate-then-scale that frames the whole sequence on the grid.
@@ -44,10 +42,10 @@ struct Transform {
 
 using Frame = std::vector<HandData>;
 
-/// Group a folder's ``frame_NNNN_<slot>.obj`` files into ordered frames.
+/// Group a folder's ``frame_NNNN_<slot>.hmesh`` files into ordered frames.
 std::vector<std::vector<std::string>> discover_frames(const std::string& folder);
 
-/// Map a frame hand's mesh path (``frame_NNNN_<slot>.obj``) to the modeled image
+/// Map a frame hand's mesh path (``frame_NNNN_<slot>.hmesh``) to the modeled image
 /// that sits beside it (``frame_NNNN_all_keypoints.jpg``). Returns empty if the
 /// path does not match the expected ``frame_NNNN_<slot>`` shape.
 std::string frame_image_path(const std::string& mesh_path);
@@ -98,10 +96,6 @@ public:
 
 private:
     int claim_next();
-    std::shared_ptr<const Topology> get_topology(std::uint64_t key, const std::string& path);
-    /// Topology recoloured with the overlay tint so OHView hands read apart from
-    /// the BabyView hands; interned separately from the untinted topology.
-    std::shared_ptr<const Topology> get_tinted_topology(std::uint64_t key, const std::string& path);
     void worker();
 
     std::string folder_;
@@ -113,8 +107,6 @@ private:
 
     mutable std::mutex mutex_;
     std::vector<std::shared_ptr<const Frame>> frames_; // nullptr until parsed
-    std::unordered_map<std::uint64_t, std::shared_ptr<const Topology>> topologies_;
-    std::unordered_map<std::uint64_t, std::shared_ptr<const Topology>> tinted_topologies_;
     int cursor_ = 0;
     std::deque<int> priority_;
     std::unordered_set<int> claimed_;

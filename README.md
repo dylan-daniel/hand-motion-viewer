@@ -7,11 +7,13 @@ first camera's coordinate space so both views line up.
 
 ## Features
 
-- **Sequence playback** — loads a folder of per-frame `frame_NNNN_<slot>.obj`
-  hand meshes (one mesh per detected hand per video frame) and plays them back at
-  30 FPS. Shared MANO topology is parsed once and interned; only the moving
-  vertex positions are streamed per frame, with parsing on background worker
-  threads to keep the UI responsive.
+- **Sequence playback** — loads a folder of per-frame `frame_NNNN_<slot>.hmesh`
+  hand meshes (one compact binary mesh per detected hand per video frame) and
+  plays them back at 30 FPS. Each `.hmesh` stores only the 778 MANO surface
+  vertices and 21 joint positions; the face topology is shared globally (loaded
+  once from `mano/mano_faces.bin`) and the colored joint skeleton is regenerated
+  procedurally, so only the moving vertices are streamed per frame. Parsing runs
+  on background worker threads to keep the UI responsive.
 - **Cross-view overlay** — aligns an over-hand (OHView) camera's hands into a
   BabyView camera's frame using a per-frame scaled Kabsch fit over the 3D joints,
   so both reconstructions can be drawn together.
@@ -33,8 +35,10 @@ first camera's coordinate space so both views line up.
 All third-party libraries — SDL2, glm, nlohmann/json, Dear ImGui,
 portable-file-dialogs, rapidobj, and stb — are downloaded and built
 automatically by CMake via `FetchContent`. There is nothing to install by hand.
-On Windows the SDL2 runtime DLL and the bundled font are copied next to the
-executable automatically.
+On Windows the SDL2 runtime DLL is copied next to the executable automatically.
+The bundled font (`fonts/`) and the shared MANO face topology (`mano/`) are
+copied next to the executable on every build as well, so the viewer finds them
+relative to the binary.
 
 ## Building
 
@@ -64,10 +68,14 @@ sequence ships under `data/SUBJECT/`.
 
 A sequence folder holds per-frame files:
 
-- `frame_NNNN_<slot>.obj` — one hand mesh per detected hand per frame
+- `frame_NNNN_<slot>.hmesh` — one compact binary hand mesh per detected hand per
+  frame (778 MANO surface vertices + 21 joint positions)
 - `frame_NNNN_<slot>_joints3d.npy`, `_cam.npy`, `_pose.npy`, `_shape.npy` —
   per-hand sidecars (joints and camera are used for cross-view alignment)
 - `frame_NNNN_all_keypoints.jpg` — the keypoint overlay image for that frame
+
+The MANO face topology shared by every hand lives in `mano/mano_faces.bin`
+(`uint16` triangle indices, right-hand winding) and is loaded once at startup.
 
 ## Project layout
 
@@ -86,5 +94,6 @@ src/
 ├── gl_loader.*     OpenGL function loading
 └── worker_queue.h  Background parsing job queue
 fonts/              Bundled UI font (copied next to the exe)
+mano/               Shared MANO face topology (copied next to the exe)
 data/               Sample sequence(s)
 ```

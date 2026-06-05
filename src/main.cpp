@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cstdio>
+#include <exception>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -35,6 +36,22 @@ int main(int, char**) {
 
     const std::string config_path = default_config_path();
     Config settings = load_config(config_path);
+
+    // Load the shared MANO face topology the .hmesh sequences render against. The
+    // binary stores only vertices/joints, so faces come from this one file.
+    {
+        std::string faces_path = "mano/mano_faces.bin";
+        char* base = SDL_GetBasePath();
+        if (base != nullptr) {
+            faces_path = std::string(base) + "mano/mano_faces.bin";
+            SDL_free(base);
+        }
+        try {
+            init_mano_topology(faces_path);
+        } catch (const std::exception& error) {
+            std::printf("Warning: %s — hand sequences will not render.\n", error.what());
+        }
+    }
 
     WindowGeometry geometry = compute_initial_geometry(settings);
     WindowGeometry windowed_geometry = geometry;
@@ -141,7 +158,7 @@ int main(int, char**) {
         }
         auto loader = std::make_unique<SequenceLoader>(folder, 1, overlay);
         if (loader->frame_count() == 0) {
-            std::printf("No frame_*.obj files found in %s\n", folder.c_str());
+            std::printf("No frame_*.hmesh files found in %s\n", folder.c_str());
             return;
         }
         frame_cache.reset();

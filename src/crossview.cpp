@@ -14,18 +14,18 @@ namespace {
     namespace fs = std::filesystem;
 
     // HaMeR camera-space joints come out in a vision frame (y/z down/forward);
-    // the exported .obj flips y and z to the GL frame. Applying the same flip to
-    // both views' joints keeps the estimate in the .obj space the viewer renders.
+    // the exported mesh flips y and z to the GL frame. Applying the same flip to
+    // both views' joints keeps the estimate in the mesh space the viewer renders.
     const glm::vec3 kObjAxisFlip = {1.0f, -1.0f, -1.0f};
 
     constexpr int kJointCount = 21;
     constexpr int kRefineIterations = 8;
 
-    // frame_0001_0.obj → frame number 0001.
-    const std::regex kFrameNumberRe(R"(frame_(\d+)_\d+\.obj$)", std::regex::icase);
+    // frame_0001_0.hmesh → frame number 0001.
+    const std::regex kFrameNumberRe(R"(frame_(\d+)_\d+\.hmesh$)", std::regex::icase);
 
-    int frame_number_of(const std::string& obj_path) {
-        const std::string name = fs::path(obj_path).filename().string();
+    int frame_number_of(const std::string& mesh_path) {
+        const std::string name = fs::path(mesh_path).filename().string();
         std::smatch match;
         if (!std::regex_search(name, match, kFrameNumberRe)) {
             return -1;
@@ -33,10 +33,10 @@ namespace {
         return std::stoi(match[1].str());
     }
 
-    /// One hand's 21 obj-space 3D joints, read from the npy sidecars beside its
-    /// ``.obj``. Empty if either sidecar is missing or the wrong shape.
-    std::vector<glm::vec3> read_hand_joints(const std::string& obj_path) {
-        const std::string base = obj_path.substr(0, obj_path.size() - 4); // strip ".obj"
+    /// One hand's 21 mesh-space 3D joints, read from the npy sidecars beside its
+    /// ``.hmesh``. Empty if either sidecar is missing or the wrong shape.
+    std::vector<glm::vec3> read_hand_joints(const std::string& mesh_path) {
+        const std::string base = mesh_path.substr(0, mesh_path.size() - 6); // strip ".hmesh"
         const NpyArray joints = load_npy_f32(base + "_joints3d.npy");
         const NpyArray cam = load_npy_f32(base + "_cam.npy");
         if (joints.size() != static_cast<std::size_t>(kJointCount) * 3 || cam.size() != 3) {

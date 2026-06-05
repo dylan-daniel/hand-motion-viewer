@@ -4,6 +4,7 @@
 // the joint skeleton by vertex colour, and expanded into flat per-vertex arrays
 // ready for a GPU vertex buffer.
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -24,6 +25,28 @@ inline constexpr glm::vec4 DEFAULT_COLOR = {0.6f, 0.75f, 0.9f, 1.0f};
 // (compute_transform) so both render a hand at the same on-screen size; this is
 // the one knob for the overall scene scale.
 inline constexpr float MODEL_FIT_SPAN = 1.0f;
+
+// ── MANO joint skeleton ────────────────────────
+// The .hmesh format stores only the 21 joint positions, not the colored sphere/
+// bone geometry the OBJ baked in, so we regenerate that visualization here. The
+// definitions below mirror the authoritative ones in HaMeR's demo.py.
+
+/// 20 (parent, child) bone pairs in standard MANO/OpenPose joint order.
+inline constexpr std::array<glm::ivec2, 20> HAND_BONES = {{{0, 1},   {1, 2},   {2, 3},  {3, 4},   {0, 5},   {5, 6},   {6, 7},  {7, 8},   {0, 9},   {9, 10},
+                                                           {10, 11}, {11, 12}, {0, 13}, {13, 14}, {14, 15}, {15, 16}, {0, 17}, {17, 18}, {18, 19}, {19, 20}}};
+
+/// Per-finger colour: 0 wrist (white), 1 thumb, 2 index, 3 middle, 4 ring, 5 pinky.
+inline constexpr std::array<glm::vec4, 6> FINGER_COLORS = {
+    {{1.0f, 1.0f, 1.0f, 1.0f},
+     {0.90f, 0.13f, 0.13f, 1.0f},
+     {0.13f, 0.80f, 0.13f, 1.0f},
+     {0.20f, 0.40f, 1.00f, 1.0f},
+     {0.95f, 0.85f, 0.10f, 1.0f},
+     {0.70f, 0.20f, 0.85f, 1.0f}}
+};
+
+/// Finger group a joint belongs to: 0 = wrist, 1 = thumb, …, 5 = pinky.
+inline int finger_of(int joint) { return joint == 0 ? 0 : (joint - 1) / 4 + 1; }
 
 /// A drawable chunk of geometry: shared vertices plus per-face indices/normals.
 struct MeshPart {
@@ -59,15 +82,46 @@ MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha = std::
 /// Load an obj file and split it into (hand, joints) by vertex colour.
 std::pair<MeshPart, MeshPart> load_mesh(const std::string& path);
 
+// ── Binary .hmesh format ───────────────────────
+
+/// One hand decoded from a ``.hmesh`` file: the 778 MANO surface vertices and 21
+/// joint positions, both rotated 180° about X into the on-screen pose the OBJ
+/// export used (so they line up with the rest of the viewer).
+struct HMesh {
+    bool is_right = true;
+    std::vector<glm::vec3> verts;  // MANO surface vertices (778 for MANO)
+    std::vector<glm::vec3> joints; // joint positions (21 for MANO)
+};
+
+/// Read a ``.hmesh`` binary file. Throws std::runtime_error on a bad header.
+HMesh load_hmesh(const std::string& path);
+
+/// Load the shared MANO face topology from ``mano_faces.bin`` once at startup.
+/// Builds both the right-hand winding and the left-hand (flipped) winding so a
+/// hand only needs its handedness to pick a face list. Throws if the file is
+/// missing or malformed.
+void init_mano_topology(const std::string& faces_path);
+
+/// The shared MANO triangle indices for the given handedness. init_mano_topology
+/// must have run first.
+const std::vector<glm::ivec3>& mano_faces(bool is_right);
+
+/// Build the colored joint skeleton (a sphere per joint, a cylinder per bone)
+/// from the 21 joint positions. ``hand_radius`` is the hand's bounding-box
+/// diagonal; markers scale to ~2% of it (matching the OBJ export).
+MeshArrays build_joint_mesh(const std::vector<glm::vec3>& joints, float hand_diagonal);
+
 /// Per-face unit normals for triangles, recomputed each frame for a sequence.
 std::vector<glm::vec3> face_normals(const std::vector<glm::vec3>& positions, const std::vector<glm::ivec3>& faces);
 
-/// Build GPU-ready arrays for one sequence hand from shared topology + positions.
+/// Build GPU-ready arrays for one sequence hand: the surface from ``verts`` plus
+/// the shared MANO ``faces`` painted a uniform ``surface_color``, and a
+/// regenerated joint skeleton from ``joints``.
 PreparedMesh prepare_hand(
-    const std::vector<glm::vec3>& positions,
+    const std::vector<glm::vec3>& verts,
     const std::vector<glm::ivec3>& faces,
-    const std::vector<glm::vec4>& colors,
-    const std::vector<std::uint8_t>& hand_face_mask,
+    const glm::vec4& surface_color,
+    const std::vector<glm::vec3>& joints,
     float alpha = 0.30f
 );
 

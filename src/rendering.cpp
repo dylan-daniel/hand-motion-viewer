@@ -389,12 +389,12 @@ PreparedFrame prepare_frame(const Frame& hands) {
     PreparedFrame prepared;
     prepared.reserve(hands.size());
     for (const HandData& hand : hands) {
-        PreparedMesh arrays = prepare_hand(hand.positions, hand.topology->faces, hand.topology->colors, hand.topology->hand_face_mask);
+        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), hand.surface_color, hand.joints);
         double sum = 0.0;
-        for (const glm::vec3& position : hand.positions) {
+        for (const glm::vec3& position : hand.verts) {
             sum += position.z;
         }
-        const float depth = hand.positions.empty() ? 0.0f : static_cast<float>(sum / hand.positions.size());
+        const float depth = hand.verts.empty() ? 0.0f : static_cast<float>(sum / hand.verts.size());
         prepared.push_back({std::move(arrays), depth, hand.is_overlay});
     }
     return prepared;

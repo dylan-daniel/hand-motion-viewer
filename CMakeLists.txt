@@ -168,3 +168,12 @@ add_custom_command(TARGET hand_motion_viewer POST_BUILD
     ${CMAKE_CURRENT_SOURCE_DIR}/fonts
     $<TARGET_FILE_DIR:hand_motion_viewer>/fonts
 )
+
+# Copy the shared MANO face topology next to the executable so the .hmesh loader
+# finds it (main.cpp resolves mano/mano_faces.bin relative to the binary). This
+# keeps mano/ a single source of truth and avoids a stale hand-copied build copy.
+add_custom_command(TARGET hand_motion_viewer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/mano
+    $<TARGET_FILE_DIR:hand_motion_viewer>/mano
+)
