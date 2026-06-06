@@ -1,6 +1,7 @@
 #include "graphics/image.h"
 
 #include <cstdio>
+#include <filesystem>
 #include <utility>
 
 #include <SDL_opengl.h>
@@ -105,7 +106,12 @@ void ImageTexture::upload_ready() {
     }
 
     if (ready.pixels == nullptr) {
-        std::printf("Failed to load image %s: %s\n", ready.path.c_str(), stbi_failure_reason());
+        // An absent file is an expected case (not every frame has an image), so
+        // stay quiet for it; only report genuine decode failures of files that
+        // do exist.
+        if (!ready.path.empty() && std::filesystem::exists(ready.path)) {
+            std::printf("Failed to load image %s: %s\n", ready.path.c_str(), stbi_failure_reason());
+        }
         // A missing or unreadable image must not leave the previous frame's
         // texture on screen. Drop it so the pane reads as having no image. Skip
         // stale failures: a newer decode is in flight and will set the texture.
