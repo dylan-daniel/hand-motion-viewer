@@ -89,6 +89,7 @@ void ImageTexture::decode_loop() {
 
 void ImageTexture::upload_ready() {
     Decoded ready;
+    bool is_current_target = false;
     {
         std::lock_guard<std::mutex> guard(mutex_);
         if (!has_pending_) {
@@ -100,10 +101,18 @@ void ImageTexture::upload_ready() {
         if (desired_path_.empty()) {
             return;
         }
+        is_current_target = (ready.path == desired_path_);
     }
 
     if (ready.pixels == nullptr) {
         std::printf("Failed to load image %s: %s\n", ready.path.c_str(), stbi_failure_reason());
+        // A missing or unreadable image must not leave the previous frame's
+        // texture on screen. Drop it so the pane reads as having no image. Skip
+        // stale failures: a newer decode is in flight and will set the texture.
+        if (is_current_target) {
+            release();
+            path_ = ready.path;
+        }
         return;
     }
 
