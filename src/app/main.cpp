@@ -298,7 +298,11 @@ int main(int, char**) {
         if (menu.folder_requested && !folder_dialog) {
             folder_dialog = std::make_unique<pfd::select_folder>("Select mesh sequence folder");
         }
-        if (folder_dialog && folder_dialog->ready()) {
+
+        // Poll with a zero timeout: pfd's ready() defaults to a 20ms wait that
+        // blocks this thread every frame the dialog is open. A zero timeout
+        // returns immediately and keeps idle frames.
+        if (folder_dialog && folder_dialog->ready(0)) {
             const std::string folder = folder_dialog->result();
             if (!folder.empty()) {
                 open_sequence(folder, 0);
