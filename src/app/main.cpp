@@ -125,8 +125,12 @@ int main(int, char**) {
     int active_pane = 0;
 
     // ── Sequence state ─────────────────────────
-    std::unique_ptr<MeshSequenceLoader> sequence_loader;
-    std::unique_ptr<FrameCache> frame_cache;
+    std::unique_ptr<MeshSequence> sequence;
+    // GPU buffers for the frame currently on screen, rebuilt from disk whenever
+    // the frame changes. loaded_frame tracks which frame current_gpu holds (-1 =
+    // none) so we only re-read and re-upload when the frame actually advances.
+    std::unique_ptr<FrameGpu> current_gpu;
+    int loaded_frame = -1;
     std::optional<Transform> transform;
     std::optional<float> depth_reference;
     int current_frame = 0;
@@ -138,20 +142,17 @@ int main(int, char**) {
     double playback_accumulator = 0.0;
 
     auto open_sequence = [&](const std::string& folder, int start_frame) {
-        auto loader = std::make_unique<MeshSequenceLoader>(folder, 1);
-        if (loader->frame_count() == 0) {
+        auto opened = std::make_unique<MeshSequence>(folder);
+        if (opened->frame_count() == 0) {
             std::printf("No frame_*.hmesh files found in %s\n", folder.c_str());
             return;
         }
-        frame_cache.reset();
-        if (sequence_loader) {
-            sequence_loader->stop();
-        }
-        sequence_loader = std::move(loader);
-        frame_cache = std::make_unique<FrameCache>(*sequence_loader);
+        sequence = std::move(opened);
+        current_gpu.reset();
+        loaded_frame = -1;
         transform.reset();
         depth_reference.reset();
-        current_frame = std::clamp(start_frame, 0, sequence_loader->frame_count() - 1);
+        current_frame = std::clamp(start_frame, 0, sequence->frame_count() - 1);
     };
 
     // Reopen the last mesh sequence folder if present.
@@ -200,11 +201,11 @@ int main(int, char**) {
                 } else if (key == SDLK_h) {
                     settings.hand_translucent = !settings.hand_translucent;
                 } else if (key == SDLK_SPACE && event.key.repeat == 0 && !imgui_io.WantTextInput) {
-                    if (sequence_loader && sequence_loader->frame_count() > 0) {
+                    if (sequence && sequence->frame_count() > 0) {
                         playing = !playing;
                     }
-                } else if (sequence_loader && !playing && (key == SDLK_LEFT || key == SDLK_RIGHT || key == SDLK_HOME || key == SDLK_END)) {
-                    const int last = sequence_loader->frame_count() - 1;
+                } else if (sequence && !playing && (key == SDLK_LEFT || key == SDLK_RIGHT || key == SDLK_HOME || key == SDLK_END)) {
+                    const int last = sequence->frame_count() - 1;
                     if (key == SDLK_LEFT) {
                         current_frame = std::max(0, current_frame - 1);
                     } else if (key == SDLK_RIGHT) {
@@ -312,64 +313,51 @@ int main(int, char**) {
 
         // Advance playback at a fixed rate independent of the render frame rate.
         // Suspended while scrubbing so the dragged frame is not fought by auto-advance.
-        if (playing && !scrubbing && sequence_loader && sequence_loader->frame_count() > 0) {
+        if (playing && !scrubbing && sequence && sequence->frame_count() > 0) {
             playback_accumulator += dt_seconds;
             const int frame_step = static_cast<int>(playback_accumulator * PLAYBACK_FPS);
             if (frame_step > 0) {
                 playback_accumulator -= frame_step / PLAYBACK_FPS;
-                current_frame = (current_frame + frame_step) % sequence_loader->frame_count();
+                current_frame = (current_frame + frame_step) % sequence->frame_count();
             }
         } else {
             playback_accumulator = 0.0;
         }
 
-        // Decide what to draw and the status line.
-        FrameGpu* frame_ptr = nullptr;
+        // Decide what to draw and the status line. The current frame's meshes are
+        // read from disk and uploaded synchronously here, but only when the frame
+        // changes (loaded_frame tracks what current_gpu holds) so a paused frame
+        // is not re-read every render tick.
         std::string status;
-        if (sequence_loader && frame_cache) {
-            std::shared_ptr<const Frame> frame_zero = sequence_loader->get(0);
-            if (!transform && frame_zero) {
-                transform = compute_transform(*frame_zero);
-                depth_reference = reference_depth(*frame_zero);
+        if (sequence) {
+            // The scene transform is derived from frame 0 so it stays fixed across
+            // the whole sequence regardless of which frame playback starts on.
+            if (!transform) {
+                const Frame frame_zero = sequence->load_frame(0);
+                transform = compute_transform(frame_zero);
+                depth_reference = reference_depth(frame_zero);
             }
-            frame_ptr = frame_cache->ensure(current_frame);
-            const std::size_t hand_count = sequence_loader->frame_paths(current_frame).size();
-            char buffer[160];
-            const int meshes_loaded = sequence_loader->meshes_loaded();
-            const int mesh_total = sequence_loader->mesh_total();
-            if (frame_ptr == nullptr) {
-                std::snprintf(
-                    buffer,
-                    sizeof(buffer),
-                    "loading frame %d / %d...\nloaded %d / %d meshes",
-                    current_frame + 1,
-                    sequence_loader->frame_count(),
-                    meshes_loaded,
-                    mesh_total
-                );
-            } else {
-                std::snprintf(
-                    buffer,
-                    sizeof(buffer),
-                    "frame %d / %d - %zu hand%s\nloaded %d / %d meshes",
-                    current_frame + 1,
-                    sequence_loader->frame_count(),
-                    hand_count,
-                    hand_count == 1 ? "" : "s",
-                    meshes_loaded,
-                    mesh_total
-                );
+            if (current_frame != loaded_frame) {
+                Frame hands = sequence->load_frame(current_frame);
+                current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands));
+                loaded_frame = current_frame;
             }
+            const std::size_t hand_count = sequence->frame_paths(current_frame).size();
+            char buffer[128];
+            std::snprintf(
+                buffer, sizeof(buffer), "frame %d / %d - %zu hand%s", current_frame + 1, sequence->frame_count(), hand_count, hand_count == 1 ? "" : "s"
+            );
             status = buffer;
         }
 
-        const bool has_sequence = sequence_loader != nullptr;
-        const int frame_count = has_sequence ? sequence_loader->frame_count() : 0;
+        FrameGpu* frame_ptr = current_gpu.get();
+        const bool has_sequence = sequence != nullptr;
+        const int frame_count = has_sequence ? sequence->frame_count() : 0;
 
         // Decode the current frame's modeled keypoint image (cached by path, so
         // this is a no-op unless the frame changed).
         if (has_sequence) {
-            const std::vector<std::string>& hands = sequence_loader->frame_paths(current_frame);
+            const std::vector<std::string>& hands = sequence->frame_paths(current_frame);
             const std::string image_path = hands.empty() ? std::string() : frame_image_path(hands.front());
             if (!image_path.empty()) {
                 frame_image.load(image_path);
@@ -454,8 +442,8 @@ int main(int, char**) {
     }
 
     // ── Persist settings ───────────────────────
-    if (sequence_loader) {
-        settings.last_folder = sequence_loader->folder();
+    if (sequence) {
+        settings.last_folder = sequence->folder();
         settings.last_frame = current_frame;
     } else {
         settings.last_folder.reset();
@@ -471,10 +459,8 @@ int main(int, char**) {
     save_config(config_path, settings);
 
     // Release GPU resources before tearing down the GL context.
-    frame_cache.reset();
-    if (sequence_loader) {
-        sequence_loader->stop();
-    }
+    current_gpu.reset();
+    sequence.reset();
     frame_image.clear();
     shutdown_renderer();
 

@@ -7,22 +7,16 @@
 // uniforms.
 
 #include <array>
-#include <atomic>
 #include <cstdint>
-#include <list>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
 
 #include "data/geometry.h"
 #include "data/mesh_sequence.h"
-#include "util/worker_queue.h"
 
 // ── Grid + marker ──────────────────────────────
 void draw_grid(int size = 10, float step = 1.0f, float y = 0.0f);
@@ -86,49 +80,6 @@ private:
 
 /// Expand a frame's hands into GPU-ready arrays plus each hand's mean depth.
 PreparedFrame prepare_frame(const Frame& hands);
-
-// ── Frame cache ────────────────────────────────
-
-// Cap on how many frames are kept GPU-resident at once (see FrameCache).
-inline constexpr int MAX_RESIDENT_FRAMES = 1024;
-
-/// Turns the loader's in-memory frame positions into GPU buffers, keeping the
-/// whole sequence GPU-resident so playback never allocates on the hot path.
-class FrameCache {
-public:
-    explicit FrameCache(MeshSequenceLoader& loader, int gpu_capacity = MAX_RESIDENT_FRAMES);
-    ~FrameCache();
-
-    FrameCache(const FrameCache&) = delete;
-    FrameCache& operator=(const FrameCache&) = delete;
-
-    /// Return the uploaded FrameGpu for ``index`` (building it if needed), or
-    /// nullptr if the frame's positions have not finished parsing. Main thread
-    /// only — it creates GPU buffers — and advances the background warm-up.
-    FrameGpu* ensure(int index);
-
-private:
-    FrameGpu* build_now(int index);
-    void warm();
-    void prefetch_neighbors(int index);
-    void build_prepared(int index);
-    FrameGpu* insert_gpu(int index, std::unique_ptr<FrameGpu> frame);
-    void touch(int index);
-
-    MeshSequenceLoader& loader_;
-    int gpu_capacity_;
-    bool fully_resident_;
-
-    // LRU of uploaded frames: list front = least-recently-used.
-    std::list<int> lru_;
-    std::unordered_map<int, std::pair<std::unique_ptr<FrameGpu>, std::list<int>::iterator>> gpu_;
-
-    std::mutex mutex_; // guards prepared_ / prefetching_
-    std::unordered_map<int, PreparedFrame> prepared_;
-    std::unordered_set<int> prefetching_;
-    int warm_cursor_ = 0;
-    WorkerQueue prefetch_pool_;
-};
 
 // ── Offscreen render target ────────────────────
 

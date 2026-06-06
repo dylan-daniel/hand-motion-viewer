@@ -121,93 +121,25 @@ float reference_depth(const Frame& hands) {
     return count == 0 ? 0.0f : static_cast<float>(sum / static_cast<double>(count));
 }
 
-MeshSequenceLoader::MeshSequenceLoader(const std::string& folder, int workers) : folder_(folder) {
+MeshSequence::MeshSequence(const std::string& folder) : folder_(folder) {
     frame_paths_ = discover_frames(folder);
     frame_count_ = static_cast<int>(frame_paths_.size());
-    frames_.assign(static_cast<std::size_t>(frame_count_), nullptr);
-    for (const std::vector<std::string>& hands : frame_paths_) {
-        mesh_total_ += static_cast<int>(hands.size());
-    }
-
-    const int worker_count = std::max(1, std::min(workers, frame_count_));
-    threads_.reserve(static_cast<std::size_t>(worker_count));
-    for (int index = 0; index < worker_count; ++index) {
-        threads_.emplace_back([this] { worker(); });
-    }
 }
 
-MeshSequenceLoader::~MeshSequenceLoader() { stop(); }
-
-void MeshSequenceLoader::stop() {
-    stop_.store(true);
-    for (std::thread& thread : threads_) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
-    threads_.clear();
-}
-
-bool MeshSequenceLoader::frame_ready(int index) const {
+Frame MeshSequence::load_frame(int index) const {
+    Frame hands;
     if (index < 0 || index >= frame_count_) {
-        return false;
+        return hands;
     }
-    std::lock_guard<std::mutex> guard(mutex_);
-    return frames_[static_cast<std::size_t>(index)] != nullptr;
-}
-
-std::shared_ptr<const Frame> MeshSequenceLoader::get(int index) const {
-    if (index < 0 || index >= frame_count_) {
-        return nullptr;
+    const std::vector<std::string>& paths = frame_paths_[static_cast<std::size_t>(index)];
+    hands.reserve(paths.size());
+    for (const std::string& path : paths) {
+        HMesh mesh = load_hmesh(path);
+        HandData hand;
+        hand.verts = std::move(mesh.verts);
+        hand.joints = std::move(mesh.joints);
+        hand.is_right = mesh.is_right;
+        hands.push_back(std::move(hand));
     }
-    std::lock_guard<std::mutex> guard(mutex_);
-    return frames_[static_cast<std::size_t>(index)];
-}
-
-void MeshSequenceLoader::prioritize(int index) {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (index >= 0 && index < frame_count_ && frames_[static_cast<std::size_t>(index)] == nullptr && claimed_.find(index) == claimed_.end()) {
-        priority_.push_front(index);
-    }
-}
-
-int MeshSequenceLoader::claim_next() {
-    std::lock_guard<std::mutex> guard(mutex_);
-    while (!priority_.empty()) {
-        const int index = priority_.front();
-        priority_.pop_front();
-        if (frames_[static_cast<std::size_t>(index)] == nullptr && claimed_.find(index) == claimed_.end()) {
-            claimed_.insert(index);
-            return index;
-        }
-    }
-    while (cursor_ < frame_count_) {
-        const int index = cursor_++;
-        if (frames_[static_cast<std::size_t>(index)] == nullptr && claimed_.find(index) == claimed_.end()) {
-            claimed_.insert(index);
-            return index;
-        }
-    }
-    return -1;
-}
-
-void MeshSequenceLoader::worker() {
-    while (!stop_.load()) {
-        const int index = claim_next();
-        if (index < 0) {
-            return; // everything is claimed or loaded; nothing left to do
-        }
-        auto hands = std::make_shared<Frame>();
-        for (const std::string& path : frame_paths_[static_cast<std::size_t>(index)]) {
-            HMesh mesh = load_hmesh(path);
-            HandData hand;
-            hand.verts = std::move(mesh.verts);
-            hand.joints = std::move(mesh.joints);
-            hand.is_right = mesh.is_right;
-            hands->push_back(std::move(hand));
-            meshes_loaded_.fetch_add(1);
-        }
-        std::lock_guard<std::mutex> guard(mutex_);
-        frames_[static_cast<std::size_t>(index)] = std::move(hands);
-    }
+    return hands;
 }
