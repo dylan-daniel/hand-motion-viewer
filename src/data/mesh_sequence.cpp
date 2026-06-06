@@ -80,9 +80,8 @@ Transform compute_transform(const Frame& hands) {
 
     // Scale from a single reference hand's size, not the whole-scene extent. The
     // meshes are metric, so one hand is a stable size cue, whereas the full-scene
-    // bounding box balloons when hands sit far apart (e.g. the OHView overlay's
-    // monocular depth disagreement), which would shrink every hand to nothing.
-    // This keeps a hand a consistent on-screen size across takes.
+    // bounding box balloons when hands sit far apart, which would shrink every
+    // hand to nothing. This keeps a hand a consistent on-screen size across takes.
     glm::vec3 hand_low(std::numeric_limits<float>::max());
     glm::vec3 hand_high(std::numeric_limits<float>::lowest());
     if (!hands.empty()) {
@@ -111,18 +110,12 @@ float reference_depth(const Frame& hands) {
     return count == 0 ? 0.0f : static_cast<float>(sum / static_cast<double>(count));
 }
 
-MeshSequenceLoader::MeshSequenceLoader(const std::string& folder, int workers, std::shared_ptr<const CrossViewOverlay> overlay) :
-    folder_(folder), overlay_(std::move(overlay)) {
+MeshSequenceLoader::MeshSequenceLoader(const std::string& folder, int workers) : folder_(folder) {
     frame_paths_ = discover_frames(folder);
     frame_count_ = static_cast<int>(frame_paths_.size());
     frames_.assign(static_cast<std::size_t>(frame_count_), nullptr);
     for (const std::vector<std::string>& hands : frame_paths_) {
         mesh_total_ += static_cast<int>(hands.size());
-    }
-    // The folded-in OHView hands are parsed alongside each frame's BabyView hands,
-    // so count them toward the load totals too.
-    if (overlay_) {
-        mesh_total_ += overlay_->mesh_total();
     }
 
     const int worker_count = std::max(1, std::min(workers, frame_count_));
@@ -202,29 +195,6 @@ void MeshSequenceLoader::worker() {
             hand.is_right = mesh.is_right;
             hands->push_back(std::move(hand));
             meshes_loaded_.fetch_add(1);
-        }
-        // Fold in the matching OHView hands, mapped into this BabyView frame's
-        // coordinate space by the estimated similarity transform and tinted apart.
-        if (overlay_) {
-            const SimilarityTransform& transform = overlay_->transform();
-            const glm::vec4 tint = overlay_->tint();
-            for (const std::string& path : overlay_->oh_paths(index)) {
-                HMesh mesh = load_hmesh(path);
-                HandData hand;
-                hand.verts = std::move(mesh.verts);
-                hand.joints = std::move(mesh.joints);
-                hand.is_right = mesh.is_right;
-                for (glm::vec3& position : hand.verts) {
-                    position = transform.apply(position);
-                }
-                for (glm::vec3& position : hand.joints) {
-                    position = transform.apply(position);
-                }
-                hand.surface_color = tint;
-                hand.is_overlay = true;
-                hands->push_back(std::move(hand));
-                meshes_loaded_.fetch_add(1);
-            }
         }
         std::lock_guard<std::mutex> guard(mutex_);
         frames_[static_cast<std::size_t>(index)] = std::move(hands);

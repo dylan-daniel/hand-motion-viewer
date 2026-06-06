@@ -394,13 +394,13 @@ PreparedFrame prepare_frame(const Frame& hands) {
     PreparedFrame prepared;
     prepared.reserve(hands.size());
     for (const HandData& hand : hands) {
-        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), hand.surface_color, hand.joints);
+        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), DEFAULT_COLOR, hand.joints);
         double sum = 0.0;
         for (const glm::vec3& position : hand.verts) {
             sum += position.z;
         }
         const float depth = hand.verts.empty() ? 0.0f : static_cast<float>(sum / hand.verts.size());
-        prepared.push_back({std::move(arrays), depth, hand.is_overlay});
+        prepared.push_back({std::move(arrays), depth});
     }
     return prepared;
 }
@@ -408,14 +408,12 @@ PreparedFrame prepare_frame(const Frame& hands) {
 FrameGpu::FrameGpu(const PreparedFrame& prepared_hands) {
     hands_.reserve(prepared_hands.size());
     depths_.reserve(prepared_hands.size());
-    is_overlay_.reserve(prepared_hands.size());
     for (const PreparedHand& prepared : prepared_hands) {
         HandGpu hand;
         hand.joints = std::make_unique<GpuMesh>(prepared.mesh.joints);
         hand.hand = std::make_unique<GpuMesh>(prepared.mesh.hand);
         hands_.push_back(std::move(hand));
         depths_.push_back(prepared.depth);
-        is_overlay_.push_back(prepared.is_overlay ? 1 : 0);
     }
 }
 
@@ -431,7 +429,7 @@ glm::mat4 FrameGpu::hand_matrix(const Transform* transform, float scale) const {
     return model;
 }
 
-void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<float> reference_depth, bool show_overlay) const {
+void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<float> reference_depth) const {
     // Stabilise depth: snap every hand to the common reference plane.
     std::vector<float> scales;
     scales.reserve(depths_.size());
@@ -445,9 +443,6 @@ void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<
     // translucent hand blends correctly over it.
     if (translucent) {
         for (std::size_t index = 0; index < hands_.size(); ++index) {
-            if (is_overlay_[index] && !show_overlay) {
-                continue;
-            }
             set_model(hand_matrix(transform, scales[index]));
             hands_[index].joints->draw();
         }
@@ -460,9 +455,6 @@ void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<
         set_alpha(0.30f);
     }
     for (std::size_t index = 0; index < hands_.size(); ++index) {
-        if (is_overlay_[index] && !show_overlay) {
-            continue;
-        }
         set_model(hand_matrix(transform, scales[index]));
         hands_[index].hand->draw();
     }
@@ -818,8 +810,7 @@ void render_scene(
     bool translucent,
     const Transform* transform,
     std::optional<float> reference_depth,
-    bool show_camera_marker,
-    bool show_overlay
+    bool show_camera_marker
 ) {
     ensure_resources();
 
@@ -840,7 +831,7 @@ void render_scene(
     draw_grid(10, 1.0f, 0.0f);
 
     if (frame != nullptr) {
-        frame->draw(translucent, transform, reference_depth, show_overlay);
+        frame->draw(translucent, transform, reference_depth);
     }
 
     // Marker for the orbit camera's look-at point; drawn last so its

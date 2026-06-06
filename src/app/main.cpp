@@ -117,15 +117,11 @@ int main(int, char**) {
     Framebuffer framebuffer;
     framebuffer.resize(win_width, win_height);
 
-    // Decoded keypoint images for the current frame: the BabyView (front) image
-    // shown in the "Front View" pane, and the OHView (over-hand) image in the
-    // "Over Hand View" pane when a cross-view overlay is loaded.
+    // Decoded keypoint image for the current frame, shown in the "Front View" pane.
     ImageTexture frame_image;
-    ImageTexture over_image;
-    // Which pane the playback transport rides on: 0 = Viewport, 1 = Front View,
-    // 2 = Over Hand View. Tracks the focused pane so the player follows whichever
-    // the mouse last interacted with; falls back to the viewport when none is
-    // focused.
+    // Which pane the playback transport rides on: 0 = Viewport, 1 = Front View.
+    // Tracks the focused pane so the player follows whichever the mouse last
+    // interacted with; falls back to the viewport when none is focused.
     int active_pane = 0;
 
     // ── Sequence state ─────────────────────────
@@ -142,18 +138,7 @@ int main(int, char**) {
     double playback_accumulator = 0.0;
 
     auto open_sequence = [&](const std::string& folder, int start_frame) {
-        // If this is a BabyView take with a sibling OHView folder, recover the
-        // cross-view transform so the OHView hands render in BabyView's space.
-        std::shared_ptr<const CrossViewOverlay> overlay = CrossViewOverlay::create(folder);
-        if (overlay) {
-            std::printf(
-                "Cross-view overlay: OHView %s folded into BabyView space (scale %.3f, RMS residual %.3f units)\n",
-                overlay->oh_folder().c_str(),
-                overlay->transform().scale,
-                overlay->residual_rms()
-            );
-        }
-        auto loader = std::make_unique<MeshSequenceLoader>(folder, 1, overlay);
+        auto loader = std::make_unique<MeshSequenceLoader>(folder, 1);
         if (loader->frame_count() == 0) {
             std::printf("No frame_*.hmesh files found in %s\n", folder.c_str());
             return;
@@ -214,8 +199,6 @@ int main(int, char**) {
                     camera->reset();
                 } else if (key == SDLK_h) {
                     settings.hand_translucent = !settings.hand_translucent;
-                } else if (key == SDLK_o) {
-                    settings.show_overlay_hands = !settings.show_overlay_hands;
                 } else if (key == SDLK_SPACE && event.key.repeat == 0 && !imgui_io.WantTextInput) {
                     if (sequence_loader && sequence_loader->frame_count() > 0) {
                         playing = !playing;
@@ -336,7 +319,7 @@ int main(int, char**) {
             playback_accumulator = 0.0;
         }
 
-        // Decide what to draw and the overlay status line.
+        // Decide what to draw and the status line.
         FrameGpu* frame_ptr = nullptr;
         std::string status;
         if (sequence_loader && frame_cache) {
@@ -346,12 +329,7 @@ int main(int, char**) {
                 depth_reference = reference_depth(*frame_zero);
             }
             frame_ptr = frame_cache->ensure(current_frame);
-            // Hands actually in the scene: the BabyView hands plus the OHView
-            // overlay hands when shown (the toggle hides them from the count too).
-            const std::shared_ptr<const CrossViewOverlay>& count_overlay = sequence_loader->overlay();
-            const std::size_t overlay_hands =
-                (count_overlay && settings.show_overlay_hands) ? static_cast<std::size_t>(count_overlay->hand_count(current_frame)) : 0;
-            const std::size_t hand_count = sequence_loader->frame_paths(current_frame).size() + overlay_hands;
+            const std::size_t hand_count = sequence_loader->frame_paths(current_frame).size();
             char buffer[160];
             const int meshes_loaded = sequence_loader->meshes_loaded();
             const int mesh_total = sequence_loader->mesh_total();
@@ -394,19 +372,8 @@ int main(int, char**) {
             } else {
                 frame_image.clear();
             }
-            // Over-hand keypoint image, sourced from the OHView folder via the
-            // cross-view overlay (which maps this frame to its OHView meshes).
-            const std::shared_ptr<const CrossViewOverlay>& overlay = sequence_loader->overlay();
-            const std::vector<std::string>& over_hands = overlay ? overlay->oh_paths(current_frame) : std::vector<std::string>{};
-            const std::string over_path = over_hands.empty() ? std::string() : frame_image_path(over_hands.front());
-            if (!over_path.empty()) {
-                over_image.load(over_path);
-            } else {
-                over_image.clear();
-            }
         } else {
             frame_image.clear();
-            over_image.clear();
         }
 
         // The transport rides on whichever pane was active (the one the mouse last
@@ -441,18 +408,6 @@ int main(int, char**) {
             playing,
             transport_pane == 1
         );
-        const ImageViewResult over_view = draw_image_window(
-            "Over Hand View",
-            over_image.texture(),
-            over_image.width(),
-            over_image.height(),
-            dock_id,
-            has_sequence,
-            current_frame,
-            frame_count,
-            playing,
-            transport_pane == 2
-        );
 
         if (has_sequence) {
             // Only the pane that drew the transport changed the state; read it back.
@@ -460,10 +415,6 @@ int main(int, char**) {
                 current_frame = image_view.current_frame;
                 playing = image_view.playing;
                 scrubbing = image_view.scrubbing;
-            } else if (transport_pane == 2) {
-                current_frame = over_view.current_frame;
-                playing = over_view.playing;
-                scrubbing = over_view.scrubbing;
             } else {
                 current_frame = viewport.current_frame;
                 playing = viewport.playing;
@@ -480,8 +431,6 @@ int main(int, char**) {
             active_pane = 0;
         } else if (image_view.focused) {
             active_pane = 1;
-        } else if (over_view.focused) {
-            active_pane = 2;
         }
 
         ImGui::Render();
@@ -489,14 +438,7 @@ int main(int, char**) {
         // ── Render scene into the offscreen texture, then the UI ──
         framebuffer.resize(viewport.width, viewport.height);
         render_scene(
-            framebuffer,
-            *camera,
-            frame_ptr,
-            settings.hand_translucent,
-            transform ? &*transform : nullptr,
-            depth_reference,
-            settings.show_camera_marker,
-            settings.show_overlay_hands
+            framebuffer, *camera, frame_ptr, settings.hand_translucent, transform ? &*transform : nullptr, depth_reference, settings.show_camera_marker
         );
 
         glViewport(0, 0, win_width, win_height);

@@ -21,17 +21,13 @@
 
 #include <glm/glm.hpp>
 
-#include "data/crossview.h"
-
 /// One hand in one frame, decoded from a ``.hmesh``: the moving MANO surface
 /// vertices and joint positions. The face topology is shared globally (see
 /// mano_faces) so it is not stored here; only the handedness needed to pick it.
 struct HandData {
-    std::vector<glm::vec3> verts;                        // MANO surface vertices (778)
-    std::vector<glm::vec3> joints;                       // joint positions (21)
-    bool is_right = true;                                // handedness, picks the shared face winding
-    glm::vec4 surface_color = {0.6f, 0.75f, 0.9f, 1.0f}; // hand-surface tint (overlay hands differ)
-    bool is_overlay = false;                             // true for OHView hands folded in via the cross-view overlay
+    std::vector<glm::vec3> verts;  // MANO surface vertices (778)
+    std::vector<glm::vec3> joints; // joint positions (21)
+    bool is_right = true;          // handedness, picks the shared face winding
 };
 
 /// A fixed translate-then-scale that frames the whole sequence on the grid.
@@ -62,7 +58,7 @@ float reference_depth(const Frame& hands);
 /// Streams every frame's hand positions into memory on background threads.
 class MeshSequenceLoader {
 public:
-    explicit MeshSequenceLoader(const std::string& folder, int workers = 1, std::shared_ptr<const CrossViewOverlay> overlay = nullptr);
+    explicit MeshSequenceLoader(const std::string& folder, int workers = 1);
     ~MeshSequenceLoader();
 
     MeshSequenceLoader(const MeshSequenceLoader&) = delete;
@@ -71,15 +67,12 @@ public:
     int frame_count() const { return frame_count_; }
 
     /// Total number of hand meshes across every frame, and how many have finished
-    /// parsing so far (a frame may hold several hands, each its own .obj).
+    /// parsing so far (a frame may hold several hands, each its own .hmesh).
     int mesh_total() const { return mesh_total_; }
     int meshes_loaded() const { return meshes_loaded_.load(); }
 
     const std::string& folder() const { return folder_; }
 
-    /// The cross-view overlay folded into this sequence, or nullptr if this is a
-    /// plain single-view sequence (used to locate the OHView keypoint images).
-    const std::shared_ptr<const CrossViewOverlay>& overlay() const { return overlay_; }
     const std::vector<std::string>& frame_paths(int index) const { return frame_paths_[static_cast<std::size_t>(index)]; }
 
     /// True once frame ``index`` has finished parsing.
@@ -99,7 +92,6 @@ private:
     void worker();
 
     std::string folder_;
-    std::shared_ptr<const CrossViewOverlay> overlay_;
     std::vector<std::vector<std::string>> frame_paths_;
     int frame_count_;
     int mesh_total_ = 0;

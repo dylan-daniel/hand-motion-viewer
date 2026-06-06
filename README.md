@@ -1,9 +1,8 @@
 # Hand Motion Viewer
 
 A C++/OpenGL desktop viewer for inspecting reconstructed hand-motion sequences.
-It plays back per-frame MANO hand meshes recovered from video, renders them in an
-interactive 3D viewport, and can fold a second camera's reconstruction into the
-first camera's coordinate space so both views line up.
+It plays back per-frame MANO hand meshes recovered from video and renders them in
+an interactive 3D viewport.
 
 ## Features
 
@@ -14,9 +13,6 @@ first camera's coordinate space so both views line up.
   once from `mano/mano_faces.bin`) and the colored joint skeleton is regenerated
   procedurally, so only the moving vertices are streamed per frame. Parsing runs
   on background worker threads to keep the UI responsive.
-- **Cross-view overlay** — aligns an over-hand (OHView) camera's hands into a
-  BabyView camera's frame using a per-frame scaled Kabsch fit over the 3D joints,
-  so both reconstructions can be drawn together.
 - **3D viewport** — core OpenGL 3.3 renderer with an orbit camera and grid.
 - **Keypoint image view** — shows the per-frame `*_all_keypoints.jpg` alongside
   the 3D scene.
@@ -70,8 +66,6 @@ A mesh sequence folder holds per-frame files:
 
 - `frame_NNNN_<slot>.hmesh` — one compact binary hand mesh per detected hand per
   frame (778 MANO surface vertices + 21 joint positions)
-- `frame_NNNN_<slot>_joints3d.npy`, `_cam.npy`, `_pose.npy`, `_shape.npy` —
-  per-hand sidecars (joints and camera are used for cross-view alignment)
 - `frame_NNNN_all_keypoints.jpg` — the keypoint overlay image for that frame
 
 The MANO face topology shared by every hand lives in `mano/mano_faces.bin`
@@ -97,9 +91,7 @@ src/
 │   └── gui.*
 ├── data/                Hand-motion data model and loaders
 │   ├── mesh_sequence.*  Per-frame mesh loading and playback state
-│   ├── crossview.*      OHView → BabyView similarity alignment
-│   ├── geometry.*       Mesh/grid geometry + .hmesh decoding
-│   └── npy.*            NumPy .npy sidecar parsing
+│   └── geometry.*       Mesh/grid geometry + .hmesh decoding
 └── util/                Shared utilities
     └── worker_queue.h   Background parsing job queue
 fonts/                   Bundled UI font (copied next to the exe)

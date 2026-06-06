@@ -23,7 +23,7 @@ namespace {
         bool paused_only;   // dimmed while a sequence is playing
     };
 
-    const std::array<ControlRow, 13> CONTROLS = {{
+    const std::array<ControlRow, 12> CONTROLS = {{
         {"Orbit camera", "Right-drag", false, false},
         {"Pan camera", "Shift + Right-drag", false, false},
         {"Move camera", "W / A / S / D", false, false},
@@ -34,7 +34,6 @@ namespace {
         {"First / Last frame", "Home / End", true, true},
         {"Reset camera", "R", false, false},
         {"Transparent hands", "H", false, false},
-        {"Over-hand hands", "O", false, false},
         {"Fullscreen", "F11", false, false},
         {"Quit", "Esc", false, false},
     }};
