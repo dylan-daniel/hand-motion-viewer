@@ -9,7 +9,6 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
-#include <future>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -54,20 +53,6 @@ private:
     unsigned int normal_vbo_ = 0;
     unsigned int color_vbo_ = 0;
     unsigned int index_ebo_ = 0; // element buffer, 0 when non-indexed
-};
-
-/// Owns the GPU vertex buffers for the currently loaded single mesh.
-class SceneMesh {
-public:
-    void upload(const std::string& path, const PreparedMesh& prepared);
-    void release();
-    void draw(bool translucent) const;
-    bool has_mesh() const { return hand_ != nullptr; }
-
-private:
-    std::optional<std::string> path_;
-    std::unique_ptr<GpuMesh> joints_;
-    std::unique_ptr<GpuMesh> hand_;
 };
 
 /// One hand's GPU buffers within a sequence frame. The hand surface is a single
@@ -147,25 +132,6 @@ private:
     std::unordered_set<int> prefetching_;
     int warm_cursor_ = 0;
     WorkerQueue prefetch_pool_;
-};
-
-// ── Background single-mesh loading ─────────────
-
-/// Parse a mesh file and expand it into GPU-ready vertex arrays (CPU only).
-PreparedMesh prepare_mesh(const std::string& path);
-
-/// A pending background parse of a single mesh file.
-class MeshLoadJob {
-public:
-    explicit MeshLoadJob(const std::string& path);
-
-    const std::string& path() const { return path_; }
-    bool done() const;
-    PreparedMesh result(); // re-raises any error from the worker
-
-private:
-    std::string path_;
-    std::shared_future<PreparedMesh> future_;
 };
 
 // ── Offscreen render target ────────────────────
@@ -274,13 +240,11 @@ private:
 /// once on the main thread before the GL context is destroyed.
 void shutdown_renderer();
 
-/// Render the grid and the active drawable into the offscreen framebuffer.
-/// Exactly one of ``scene`` / ``frame`` is drawn (frame takes precedence);
-/// either may be null to draw just the grid.
+/// Render the grid and the active frame into the offscreen framebuffer.
+/// ``frame`` may be null to draw just the grid.
 void render_scene(
     const Framebuffer& framebuffer,
     const Camera& camera,
-    const SceneMesh* scene,
     const FrameGpu* frame,
     bool translucent,
     const Transform* transform,

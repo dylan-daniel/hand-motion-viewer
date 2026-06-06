@@ -21,7 +21,6 @@ struct MenuResult {
     bool hand_translucent;
     bool show_camera_marker;
     bool free_camera;
-    bool load_requested;
     bool folder_requested;
 };
 

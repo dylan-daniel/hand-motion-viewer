@@ -3,7 +3,6 @@
 #include "gl_loader.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 
@@ -389,46 +388,6 @@ void GpuMesh::draw() const {
     glx::BindVertexArray(0);
 }
 
-// ── SceneMesh ──────────────────────────────────
-
-void SceneMesh::upload(const std::string& path, const PreparedMesh& prepared) {
-    release();
-    joints_ = std::make_unique<GpuMesh>(prepared.joints);
-    hand_ = std::make_unique<GpuMesh>(prepared.hand);
-    path_ = path;
-}
-
-void SceneMesh::release() {
-    joints_.reset();
-    hand_.reset();
-    path_.reset();
-}
-
-void SceneMesh::draw(bool translucent) const {
-    set_lighting(true);
-    // The joint skeleton only shows in translucent mode (it reads through the
-    // see-through hand); an opaque hand would hide it anyway. Drawn first so the
-    // translucent hand blends correctly over it.
-    if (translucent && joints_) {
-        joints_->draw();
-    }
-    if (!hand_) {
-        return;
-    }
-    if (translucent) {
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glDepthMask(GL_FALSE);
-        set_alpha(0.30f);
-        hand_->draw();
-        set_alpha(1.0f);
-        glDepthMask(GL_TRUE);
-        glDisable(GL_BLEND);
-    } else {
-        hand_->draw();
-    }
-}
-
 // ── FrameGpu ───────────────────────────────────
 
 PreparedFrame prepare_frame(const Frame& hands) {
@@ -674,28 +633,6 @@ void FrameCache::build_prepared(int index) {
     prefetching_.erase(index);
 }
 
-// ── Background single-mesh loading ─────────────
-
-PreparedMesh prepare_mesh(const std::string& path) {
-    auto [hand, joints] = load_mesh(path);
-    // Both parts share the same vertex list, so centre it once and reuse.
-    center_model(hand.verts);
-    joints.verts = hand.verts;
-
-    PreparedMesh prepared;
-    prepared.joints = build_arrays(joints);
-    prepared.hand = build_arrays(hand); // drawn opaque or translucent via the alpha uniform
-    prepared.hand_triangle_count = static_cast<int>(hand.faces.size());
-    prepared.joint_triangle_count = static_cast<int>(joints.faces.size());
-    return prepared;
-}
-
-MeshLoadJob::MeshLoadJob(const std::string& path) : path_(path), future_(std::async(std::launch::async, prepare_mesh, path).share()) {}
-
-bool MeshLoadJob::done() const { return future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready; }
-
-PreparedMesh MeshLoadJob::result() { return future_.get(); }
-
 // ── Framebuffer ────────────────────────────────
 
 Framebuffer::Framebuffer() {
@@ -876,7 +813,6 @@ void FreeCamera::set_from_orbit(const OrbitCamera& orbit) {
 void render_scene(
     const Framebuffer& framebuffer,
     const Camera& camera,
-    const SceneMesh* scene,
     const FrameGpu* frame,
     bool translucent,
     const Transform* transform,
@@ -904,14 +840,6 @@ void render_scene(
 
     if (frame != nullptr) {
         frame->draw(translucent, transform, reference_depth, show_overlay);
-    } else if (scene != nullptr && scene->has_mesh()) {
-        glm::mat4 model(1.0f);
-        if (transform != nullptr) {
-            model = glm::scale(model, glm::vec3(transform->scale));
-            model = glm::translate(model, transform->translate);
-        }
-        set_model(model);
-        scene->draw(translucent);
     }
 
     // Marker for the orbit camera's look-at point; drawn last so its

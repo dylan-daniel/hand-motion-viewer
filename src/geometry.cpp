@@ -7,7 +7,6 @@
 #include <stdexcept>
 
 #include <glm/gtc/constants.hpp>
-#include <rapidobj/rapidobj.hpp>
 
 MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha) {
     MeshArrays out;
@@ -133,112 +132,6 @@ prepare_hand(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>&
     prepared.hand_triangle_count = static_cast<int>(faces.size());
     prepared.joint_triangle_count = static_cast<int>(prepared.joints.vertex_count / 3);
     return prepared;
-}
-
-float center_model(std::vector<glm::vec3>& verts) {
-    if (verts.empty()) {
-        return 1.0f;
-    }
-    glm::vec3 low = verts.front();
-    glm::vec3 high = verts.front();
-    for (const glm::vec3& vertex : verts) {
-        low = glm::min(low, vertex);
-        high = glm::max(high, vertex);
-    }
-    const float center_x = (high.x + low.x) / 2.0f;
-    const float floor_y = low.y; // sit on floor
-    const float center_z = (high.z + low.z) / 2.0f;
-    glm::vec3 extent = high - low;
-    float span = std::max({extent.x, extent.y, extent.z});
-    if (span == 0.0f) {
-        span = 1.0f;
-    }
-    const float scale = MODEL_FIT_SPAN / span;
-    for (glm::vec3& vertex : verts) {
-        vertex = glm::vec3((vertex.x - center_x) * scale, (vertex.y - floor_y) * scale, (vertex.z - center_z) * scale);
-    }
-    return scale;
-}
-
-std::pair<MeshPart, MeshPart> load_mesh(const std::string& path) {
-    rapidobj::Result result = rapidobj::ParseFile(path);
-    if (result.error) {
-        throw std::runtime_error("Could not load mesh " + path + ": " + result.error.code.message());
-    }
-    // The mesh may carry quads/n-gons; triangulate so faces are uniform triangles.
-    rapidobj::Triangulate(result);
-    if (result.error) {
-        throw std::runtime_error("Could not triangulate mesh " + path + ": " + result.error.code.message());
-    }
-
-    // rapidobj stores positions/colours as flat float arrays, 3 per vertex; colours
-    // are present only when the obj's ``v`` lines carry r g b (matching extent).
-    const rapidobj::Array<float>& position_floats = result.attributes.positions;
-    const rapidobj::Array<float>& color_floats = result.attributes.colors;
-
-    std::vector<glm::vec3> verts;
-    verts.reserve(position_floats.size() / 3);
-    for (std::size_t offset = 0; offset + 3 <= position_floats.size(); offset += 3) {
-        verts.emplace_back(position_floats[offset], position_floats[offset + 1], position_floats[offset + 2]);
-    }
-
-    std::vector<glm::vec4> colors; // one per vertex when the obj carries colours
-    if (!color_floats.empty() && color_floats.size() == position_floats.size()) {
-        colors.reserve(color_floats.size() / 3);
-        for (std::size_t offset = 0; offset + 3 <= color_floats.size(); offset += 3) {
-            colors.emplace_back(color_floats[offset], color_floats[offset + 1], color_floats[offset + 2], 1.0f);
-        }
-    }
-
-    std::vector<glm::ivec3> faces;
-    for (const rapidobj::Shape& shape : result.shapes) {
-        const rapidobj::Array<rapidobj::Index>& indices = shape.mesh.indices;
-        faces.reserve(faces.size() + indices.size() / 3);
-        for (std::size_t corner = 0; corner + 3 <= indices.size(); corner += 3) {
-            faces.emplace_back(indices[corner].position_index, indices[corner + 1].position_index, indices[corner + 2].position_index);
-        }
-    }
-
-    const std::vector<glm::vec3> normals = face_normals(verts, faces);
-
-    // Split faces by vertex colour: any face touching a hand-coloured vertex is
-    // the hand, the rest are joints. With no colours, everything is the hand.
-    MeshPart hand;
-    MeshPart joints;
-    hand.verts = verts;
-    hand.colors = colors;
-    joints.verts = verts;
-    joints.colors = colors;
-
-    if (colors.empty()) {
-        hand.faces = faces;
-        hand.normals = normals;
-        return {hand, joints};
-    }
-
-    std::vector<std::uint8_t> is_hand_vertex(verts.size(), 0);
-    for (std::size_t vertex = 0; vertex < verts.size(); ++vertex) {
-        const glm::vec4& color = colors[vertex];
-        is_hand_vertex[vertex] =
-            (static_cast<int>(std::lround(color.r * 255.0f)) == HAND_COLOR_8BIT.r && static_cast<int>(std::lround(color.g * 255.0f)) == HAND_COLOR_8BIT.g &&
-             static_cast<int>(std::lround(color.b * 255.0f)) == HAND_COLOR_8BIT.b)
-            ? 1
-            : 0;
-    }
-
-    for (std::size_t face = 0; face < faces.size(); ++face) {
-        const glm::ivec3& indices = faces[face];
-        const bool is_hand = is_hand_vertex[static_cast<std::size_t>(indices[0])] || is_hand_vertex[static_cast<std::size_t>(indices[1])] ||
-            is_hand_vertex[static_cast<std::size_t>(indices[2])];
-        if (is_hand) {
-            hand.faces.push_back(indices);
-            hand.normals.push_back(normals[face]);
-        } else {
-            joints.faces.push_back(indices);
-            joints.normals.push_back(normals[face]);
-        }
-    }
-    return {hand, joints};
 }
 
 // ── Binary .hmesh format ───────────────────────

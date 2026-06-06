@@ -65,7 +65,6 @@ Config load_config(const std::string& path) {
         return config;
     }
 
-    read_optional_string(data, "last_file", config.last_file);
     read_optional_string(data, "last_folder", config.last_folder);
     read_field(data, "last_frame", config.last_frame);
     read_field(data, "hand_translucent", config.hand_translucent);
@@ -90,7 +89,6 @@ Config load_config(const std::string& path) {
 
 void save_config(const std::string& path, const Config& config) {
     json data;
-    data["last_file"] = config.last_file ? json(*config.last_file) : json(nullptr);
     data["last_folder"] = config.last_folder ? json(*config.last_folder) : json(nullptr);
     data["last_frame"] = config.last_frame;
     data["hand_translucent"] = config.hand_translucent;

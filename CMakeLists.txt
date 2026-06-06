@@ -68,19 +68,6 @@ FetchContent_Declare(
     SOURCE_SUBDIR do-not-configure
 )
 
-# rapidobj — fast, parallel OBJ parser used for the single-file mesh loader (the
-# per-frame sequence path keeps its own hand-tuned streaming parser). Disable its
-# tests/examples/tools so only the header library is built.
-set(RAPIDOBJ_BuildTests OFF CACHE BOOL "" FORCE)
-set(RAPIDOBJ_BuildExamples OFF CACHE BOOL "" FORCE)
-set(RAPIDOBJ_BuildTools OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-    rapidobj
-    GIT_REPOSITORY https://github.com/guybrush77/rapidobj.git
-    GIT_TAG v1.1
-    GIT_SHALLOW TRUE
-)
-
 # stb — single-header image loader (stb_image.h) used to decode the per-frame
 # keypoint .jpg shown in the image viewport. The repo ships no usable CMake, so
 # SOURCE_SUBDIR points at a non-existent directory to download the headers only;
@@ -93,7 +80,7 @@ FetchContent_Declare(
     SOURCE_SUBDIR do-not-configure
 )
 
-FetchContent_MakeAvailable(SDL2 glm nlohmann_json imgui portable_file_dialogs rapidobj stb)
+FetchContent_MakeAvailable(SDL2 glm nlohmann_json imgui portable_file_dialogs stb)
 
 add_library(portable_file_dialogs INTERFACE)
 target_include_directories(portable_file_dialogs INTERFACE ${portable_file_dialogs_SOURCE_DIR})
@@ -119,19 +106,13 @@ target_include_directories(imgui_lib PUBLIC
 target_link_libraries(imgui_lib PUBLIC SDL2::SDL2 OpenGL::GL)
 
 # ── The viewer ─────────────────────────────────
-add_executable(hand_motion_viewer
-    src/gl_loader.cpp
-    src/config.cpp
-    src/geometry.cpp
-    src/npy.cpp
-    src/crossview.cpp
-    src/sequence.cpp
-    src/rendering.cpp
-    src/image.cpp
-    src/window.cpp
-    src/gui.cpp
-    src/main.cpp
-)
+# Glob the sources recursively so new files (and subfolders) are picked up
+# without editing this list. CONFIGURE_DEPENDS re-globs when the source tree
+# changes, so a build re-runs CMake instead of silently missing a new file.
+file(GLOB_RECURSE viewer_sources CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
+add_executable(hand_motion_viewer ${viewer_sources})
+
+target_include_directories(hand_motion_viewer PRIVATE src)
 
 target_link_libraries(hand_motion_viewer PRIVATE
     SDL2::SDL2
@@ -141,7 +122,6 @@ target_link_libraries(hand_motion_viewer PRIVATE
     nlohmann_json::nlohmann_json
     imgui_lib
     portable_file_dialogs
-    rapidobj::rapidobj
     stb
 )
 

@@ -21,9 +21,8 @@ inline constexpr glm::vec4 DEFAULT_COLOR = {0.6f, 0.75f, 0.9f, 1.0f};
 
 // Target world-unit span a reference hand's largest extent is scaled to fit.
 // The grid spans +/-10 units, so a hand of this size sits comfortably on it.
-// Shared by the single-mesh fit (center_model) and the sequence fit
-// (compute_transform) so both render a hand at the same on-screen size; this is
-// the one knob for the overall scene scale.
+// Used by the sequence fit (compute_transform) as the one knob for the overall
+// scene scale.
 inline constexpr float MODEL_FIT_SPAN = 1.0f;
 
 // ── MANO joint skeleton ────────────────────────
@@ -89,9 +88,6 @@ MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha = std::
 /// expanded form for a closed mesh like the MANO hand.
 MeshArrays build_indexed_surface(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& color);
 
-/// Load an obj file and split it into (hand, joints) by vertex colour.
-std::pair<MeshPart, MeshPart> load_mesh(const std::string& path);
-
 // ── Binary .hmesh format ───────────────────────
 
 /// One hand decoded from a ``.hmesh`` file: the 778 MANO surface vertices and 21
@@ -129,7 +125,3 @@ std::vector<glm::vec3> face_normals(const std::vector<glm::vec3>& positions, con
 /// and a regenerated joint skeleton from ``joints``.
 PreparedMesh
 prepare_hand(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& surface_color, const std::vector<glm::vec3>& joints);
-
-/// Translate + scale verts so the model sits on the grid (y=0) and fits nicely;
-/// returns the scale factor and centres ``verts`` in place.
-float center_model(std::vector<glm::vec3>& verts);

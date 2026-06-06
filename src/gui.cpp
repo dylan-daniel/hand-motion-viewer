@@ -180,7 +180,6 @@ std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io) {
 }
 
 MenuResult draw_menu_bar(bool translucent, bool show_marker, bool free_camera) {
-    bool load_requested = false;
     bool folder_requested = false;
 
     // Extra padding makes the bar taller; pop it right after begin so dropdown
@@ -190,9 +189,6 @@ MenuResult draw_menu_bar(bool translucent, bool show_marker, bool free_camera) {
     ImGui::PopStyleVar();
     if (opened) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Select File")) {
-                load_requested = true;
-            }
             if (ImGui::MenuItem("Open Sequence Folder")) {
                 folder_requested = true;
             }
@@ -210,7 +206,7 @@ MenuResult draw_menu_bar(bool translucent, bool show_marker, bool free_camera) {
         }
         ImGui::EndMainMenuBar();
     }
-    return {translucent, show_marker, free_camera, load_requested, folder_requested};
+    return {translucent, show_marker, free_camera, folder_requested};
 }
 
 ViewportResult draw_viewport_window(

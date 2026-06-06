@@ -82,8 +82,7 @@ Transform compute_transform(const Frame& hands) {
     // meshes are metric, so one hand is a stable size cue, whereas the full-scene
     // bounding box balloons when hands sit far apart (e.g. the OHView overlay's
     // monocular depth disagreement), which would shrink every hand to nothing.
-    // This keeps a hand the same on-screen size as the single-mesh view
-    // (center_model) and consistent across takes.
+    // This keeps a hand a consistent on-screen size across takes.
     glm::vec3 hand_low(std::numeric_limits<float>::max());
     glm::vec3 hand_high(std::numeric_limits<float>::lowest());
     if (!hands.empty()) {

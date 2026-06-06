@@ -128,10 +128,7 @@ int main(int, char**) {
     // focused.
     int active_pane = 0;
 
-    // ── Scene / sequence state ─────────────────
-    SceneMesh scene;
-    std::unique_ptr<MeshLoadJob> mesh_job;
-
+    // ── Sequence state ─────────────────────────
     std::unique_ptr<SequenceLoader> sequence_loader;
     std::unique_ptr<FrameCache> frame_cache;
     std::optional<Transform> transform;
@@ -165,8 +162,6 @@ int main(int, char**) {
         if (sequence_loader) {
             sequence_loader->stop();
         }
-        scene.release();
-        mesh_job.reset();
         sequence_loader = std::move(loader);
         frame_cache = std::make_unique<FrameCache>(*sequence_loader);
         transform.reset();
@@ -174,28 +169,12 @@ int main(int, char**) {
         current_frame = std::clamp(start_frame, 0, sequence_loader->frame_count() - 1);
     };
 
-    auto open_file = [&](const std::string& path) {
-        frame_cache.reset();
-        if (sequence_loader) {
-            sequence_loader->stop();
-            sequence_loader.reset();
-        }
-        transform.reset();
-        depth_reference.reset();
-        frame_image.clear();
-        over_image.clear();
-        mesh_job = std::make_unique<MeshLoadJob>(path);
-    };
-
-    // Reopen the last sequence folder if present, otherwise the last single file.
+    // Reopen the last sequence folder if present.
     namespace fs = std::filesystem;
     if (settings.last_folder && fs::is_directory(*settings.last_folder)) {
         open_sequence(*settings.last_folder, settings.last_frame);
-    } else if (settings.last_file && fs::is_regular_file(*settings.last_file)) {
-        mesh_job = std::make_unique<MeshLoadJob>(*settings.last_file);
     }
 
-    std::unique_ptr<pfd::open_file> open_dialog;
     std::unique_ptr<pfd::select_folder> folder_dialog;
 
     // Both cameras kept alive; ``camera`` points at the active one.
@@ -331,21 +310,8 @@ int main(int, char**) {
 
         const ImGuiID dock_id = ImGui::DockSpaceOverViewport();
 
-        // Apply open/load requests before choosing what to draw, since they free
-        // GPU buffers the drawable below must reflect.
-        if (menu.load_requested && !open_dialog) {
-            open_dialog = std::make_unique<pfd::open_file>(
-                "Select hand mesh", "", std::vector<std::string>{"Mesh files (*.obj *.ply *.stl *.glb)", "*.obj *.ply *.stl *.glb", "All files", "*"}
-            );
-        }
-        if (open_dialog && open_dialog->ready()) {
-            const std::vector<std::string> paths = open_dialog->result();
-            if (!paths.empty()) {
-                open_file(paths.front());
-            }
-            open_dialog.reset();
-        }
-
+        // Apply the open-folder request before choosing what to draw, since it
+        // frees GPU buffers the drawable below must reflect.
         if (menu.folder_requested && !folder_dialog) {
             folder_dialog = std::make_unique<pfd::select_folder>("Select sequence folder");
         }
@@ -355,19 +321,6 @@ int main(int, char**) {
                 open_sequence(folder, 0);
             }
             folder_dialog.reset();
-        }
-
-        // Apply a finished background single-mesh parse (GPU upload on this thread).
-        if (mesh_job && mesh_job->done()) {
-            try {
-                scene.upload(mesh_job->path(), mesh_job->result());
-                settings.last_file = mesh_job->path();
-                settings.last_folder.reset();
-                std::printf("Loaded %s\n", mesh_job->path().c_str());
-            } catch (const std::exception& error) {
-                std::printf("Failed to load %s: %s\n", mesh_job->path().c_str(), error.what());
-            }
-            mesh_job.reset();
         }
 
         // Advance playback at a fixed rate independent of the render frame rate.
@@ -384,7 +337,6 @@ int main(int, char**) {
         }
 
         // Decide what to draw and the overlay status line.
-        SceneMesh* scene_ptr = &scene;
         FrameGpu* frame_ptr = nullptr;
         std::string status;
         if (sequence_loader && frame_cache) {
@@ -394,7 +346,6 @@ int main(int, char**) {
                 depth_reference = reference_depth(*frame_zero);
             }
             frame_ptr = frame_cache->ensure(current_frame);
-            scene_ptr = nullptr;
             // Hands actually in the scene: the BabyView hands plus the OHView
             // overlay hands when shown (the toggle hides them from the count too).
             const std::shared_ptr<const CrossViewOverlay>& count_overlay = sequence_loader->overlay();
@@ -540,7 +491,6 @@ int main(int, char**) {
         render_scene(
             framebuffer,
             *camera,
-            scene_ptr,
             frame_ptr,
             settings.hand_translucent,
             transform ? &*transform : nullptr,
@@ -579,7 +529,6 @@ int main(int, char**) {
     if (sequence_loader) {
         sequence_loader->stop();
     }
-    scene.release();
     frame_image.clear();
     shutdown_renderer();
 

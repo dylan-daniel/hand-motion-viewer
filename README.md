@@ -33,7 +33,7 @@ first camera's coordinate space so both views line up.
 - Git (CMake fetches all dependencies from source)
 
 All third-party libraries — SDL2, glm, nlohmann/json, Dear ImGui,
-portable-file-dialogs, rapidobj, and stb — are downloaded and built
+portable-file-dialogs, and stb — are downloaded and built
 automatically by CMake via `FetchContent`. There is nothing to install by hand.
 On Windows the SDL2 runtime DLL is copied next to the executable automatically.
 The bundled font (`fonts/`) and the shared MANO face topology (`mano/`) are
