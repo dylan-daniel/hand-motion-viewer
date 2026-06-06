@@ -59,9 +59,20 @@ std::string frame_image_path(const std::string& mesh_path) {
     if (!std::regex_search(name, match, kFrameRe)) {
         return {};
     }
-    // Keep the original zero-padded frame number so the jpg name matches on disk.
-    const std::string image_name = "frame_" + match[1].str() + "_all_keypoints.jpg";
-    return (mesh.parent_path() / image_name).string();
+    // Keep the original zero-padded frame number so the name matches on disk.
+    // Both jpg and png are supported; prefer jpg, fall back to png.
+    const std::string base = "frame_" + match[1].str() + "_all_keypoints";
+    const fs::path dir = mesh.parent_path();
+    const fs::path jpg = dir / (base + ".jpg");
+    if (fs::exists(jpg)) {
+        return jpg.string();
+    }
+    const fs::path png = dir / (base + ".png");
+    if (fs::exists(png)) {
+        return png.string();
+    }
+    // Default to the jpg path; the caller treats a missing file as no image.
+    return jpg.string();
 }
 
 Transform compute_transform(const Frame& hands) {
