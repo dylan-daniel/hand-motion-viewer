@@ -7,7 +7,7 @@
 
 #include <vector>
 
-#include "config.h"
+#include "app/config.h"
 
 struct SDL_Window;
 

@@ -12,7 +12,7 @@
 #include <mutex>
 #include <string>
 
-#include "worker_queue.h"
+#include "util/worker_queue.h"
 
 /// A single GL texture holding a decoded image, refreshed on demand by path.
 class ImageTexture {

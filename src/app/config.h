@@ -8,7 +8,7 @@
 #include <string>
 
 struct Config {
-    std::optional<std::string> last_folder; // path of the most recently loaded sequence folder
+    std::optional<std::string> last_folder; // path of the most recently loaded mesh sequence folder
     int last_frame = 0;                     // frame index to reopen the sequence on
     bool hand_translucent = true;           // whether the hand is drawn see-through
     bool show_overlay_hands = true;         // whether the OHView over-hand meshes are drawn

@@ -1,7 +1,7 @@
 #pragma once
 
 // Loading and holding a folder of per-frame hand meshes for motion playback. A
-// sequence folder holds files named ``frame_NNNN_<slot>.hmesh`` — one compact
+// mesh sequence folder holds files named ``frame_NNNN_<slot>.hmesh`` — one compact
 // binary mesh per detected hand per video frame, storing just the MANO surface
 // vertices and 21 joint positions. The face topology is identical for every hand
 // and shared globally (see geometry's mano_faces), so only the moving vertices
@@ -21,7 +21,7 @@
 
 #include <glm/glm.hpp>
 
-#include "crossview.h"
+#include "data/crossview.h"
 
 /// One hand in one frame, decoded from a ``.hmesh``: the moving MANO surface
 /// vertices and joint positions. The face topology is shared globally (see
@@ -60,13 +60,13 @@ Transform compute_transform(const Frame& hands);
 float reference_depth(const Frame& hands);
 
 /// Streams every frame's hand positions into memory on background threads.
-class SequenceLoader {
+class MeshSequenceLoader {
 public:
-    explicit SequenceLoader(const std::string& folder, int workers = 1, std::shared_ptr<const CrossViewOverlay> overlay = nullptr);
-    ~SequenceLoader();
+    explicit MeshSequenceLoader(const std::string& folder, int workers = 1, std::shared_ptr<const CrossViewOverlay> overlay = nullptr);
+    ~MeshSequenceLoader();
 
-    SequenceLoader(const SequenceLoader&) = delete;
-    SequenceLoader& operator=(const SequenceLoader&) = delete;
+    MeshSequenceLoader(const MeshSequenceLoader&) = delete;
+    MeshSequenceLoader& operator=(const MeshSequenceLoader&) = delete;
 
     int frame_count() const { return frame_count_; }
 

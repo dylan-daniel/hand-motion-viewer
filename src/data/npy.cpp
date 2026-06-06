@@ -1,4 +1,4 @@
-#include "npy.h"
+#include "data/npy.h"
 
 #include <cstdint>
 #include <cstring>

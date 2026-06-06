@@ -15,13 +15,13 @@
 
 #include <portable-file-dialogs.h>
 
-#include "config.h"
-#include "gl_loader.h"
-#include "gui.h"
-#include "image.h"
-#include "rendering.h"
-#include "sequence.h"
-#include "window.h"
+#include "app/config.h"
+#include "app/window.h"
+#include "data/mesh_sequence.h"
+#include "graphics/gl_loader.h"
+#include "graphics/image.h"
+#include "graphics/rendering.h"
+#include "ui/gui.h"
 
 namespace {
     // Frames advanced per second while the sequence is playing.
@@ -129,7 +129,7 @@ int main(int, char**) {
     int active_pane = 0;
 
     // ── Sequence state ─────────────────────────
-    std::unique_ptr<SequenceLoader> sequence_loader;
+    std::unique_ptr<MeshSequenceLoader> sequence_loader;
     std::unique_ptr<FrameCache> frame_cache;
     std::optional<Transform> transform;
     std::optional<float> depth_reference;
@@ -153,7 +153,7 @@ int main(int, char**) {
                 overlay->residual_rms()
             );
         }
-        auto loader = std::make_unique<SequenceLoader>(folder, 1, overlay);
+        auto loader = std::make_unique<MeshSequenceLoader>(folder, 1, overlay);
         if (loader->frame_count() == 0) {
             std::printf("No frame_*.hmesh files found in %s\n", folder.c_str());
             return;
@@ -169,7 +169,7 @@ int main(int, char**) {
         current_frame = std::clamp(start_frame, 0, sequence_loader->frame_count() - 1);
     };
 
-    // Reopen the last sequence folder if present.
+    // Reopen the last mesh sequence folder if present.
     namespace fs = std::filesystem;
     if (settings.last_folder && fs::is_directory(*settings.last_folder)) {
         open_sequence(*settings.last_folder, settings.last_frame);
@@ -313,7 +313,7 @@ int main(int, char**) {
         // Apply the open-folder request before choosing what to draw, since it
         // frees GPU buffers the drawable below must reflect.
         if (menu.folder_requested && !folder_dialog) {
-            folder_dialog = std::make_unique<pfd::select_folder>("Select sequence folder");
+            folder_dialog = std::make_unique<pfd::select_folder>("Select mesh sequence folder");
         }
         if (folder_dialog && folder_dialog->ready()) {
             const std::string folder = folder_dialog->result();

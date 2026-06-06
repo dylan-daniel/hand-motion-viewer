@@ -1,7 +1,7 @@
-#include "crossview.h"
+#include "data/crossview.h"
 
-#include "npy.h"
-#include "sequence.h"
+#include "data/mesh_sequence.h"
+#include "data/npy.h"
 
 #include <algorithm>
 #include <cmath>

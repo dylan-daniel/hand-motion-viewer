@@ -29,7 +29,7 @@ struct SimilarityTransform {
 /// Recovered alignment for one take plus the OHView meshes to fold in.
 class CrossViewOverlay {
 public:
-    /// Build the overlay for a BabyView sequence folder by locating its sibling
+    /// Build the overlay for a BabyView mesh sequence folder by locating its sibling
     /// OHView folder (``*_BabyView`` → ``*_OHView``) and estimating the transform.
     /// Returns nullptr when there is no sibling folder or estimation fails.
     static std::shared_ptr<CrossViewOverlay> create(const std::string& baby_folder);
@@ -37,7 +37,7 @@ public:
     const SimilarityTransform& transform() const { return transform_; }
 
     /// OHView ``.obj`` paths for BabyView frame ``index`` (same ordering the
-    /// BabyView SequenceLoader assigns), empty if that frame has no OHView hands.
+    /// BabyView MeshSequenceLoader assigns), empty if that frame has no OHView hands.
     const std::vector<std::string>& oh_paths(int index) const;
 
     /// RGBA tint applied to the folded-in OHView hand surface so the two views

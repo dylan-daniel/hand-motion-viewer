@@ -1,6 +1,6 @@
-#include "sequence.h"
+#include "data/mesh_sequence.h"
 
-#include "geometry.h"
+#include "data/geometry.h"
 
 #include <algorithm>
 #include <cmath>
@@ -111,7 +111,7 @@ float reference_depth(const Frame& hands) {
     return count == 0 ? 0.0f : static_cast<float>(sum / static_cast<double>(count));
 }
 
-SequenceLoader::SequenceLoader(const std::string& folder, int workers, std::shared_ptr<const CrossViewOverlay> overlay) :
+MeshSequenceLoader::MeshSequenceLoader(const std::string& folder, int workers, std::shared_ptr<const CrossViewOverlay> overlay) :
     folder_(folder), overlay_(std::move(overlay)) {
     frame_paths_ = discover_frames(folder);
     frame_count_ = static_cast<int>(frame_paths_.size());
@@ -132,9 +132,9 @@ SequenceLoader::SequenceLoader(const std::string& folder, int workers, std::shar
     }
 }
 
-SequenceLoader::~SequenceLoader() { stop(); }
+MeshSequenceLoader::~MeshSequenceLoader() { stop(); }
 
-void SequenceLoader::stop() {
+void MeshSequenceLoader::stop() {
     stop_.store(true);
     for (std::thread& thread : threads_) {
         if (thread.joinable()) {
@@ -144,7 +144,7 @@ void SequenceLoader::stop() {
     threads_.clear();
 }
 
-bool SequenceLoader::frame_ready(int index) const {
+bool MeshSequenceLoader::frame_ready(int index) const {
     if (index < 0 || index >= frame_count_) {
         return false;
     }
@@ -152,7 +152,7 @@ bool SequenceLoader::frame_ready(int index) const {
     return frames_[static_cast<std::size_t>(index)] != nullptr;
 }
 
-std::shared_ptr<const Frame> SequenceLoader::get(int index) const {
+std::shared_ptr<const Frame> MeshSequenceLoader::get(int index) const {
     if (index < 0 || index >= frame_count_) {
         return nullptr;
     }
@@ -160,14 +160,14 @@ std::shared_ptr<const Frame> SequenceLoader::get(int index) const {
     return frames_[static_cast<std::size_t>(index)];
 }
 
-void SequenceLoader::prioritize(int index) {
+void MeshSequenceLoader::prioritize(int index) {
     std::lock_guard<std::mutex> guard(mutex_);
     if (index >= 0 && index < frame_count_ && frames_[static_cast<std::size_t>(index)] == nullptr && claimed_.find(index) == claimed_.end()) {
         priority_.push_front(index);
     }
 }
 
-int SequenceLoader::claim_next() {
+int MeshSequenceLoader::claim_next() {
     std::lock_guard<std::mutex> guard(mutex_);
     while (!priority_.empty()) {
         const int index = priority_.front();
@@ -187,7 +187,7 @@ int SequenceLoader::claim_next() {
     return -1;
 }
 
-void SequenceLoader::worker() {
+void MeshSequenceLoader::worker() {
     while (!stop_.load()) {
         const int index = claim_next();
         if (index < 0) {

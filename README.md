@@ -22,7 +22,7 @@ first camera's coordinate space so both views line up.
   the 3D scene.
 - **Dockable UI** — Dear ImGui (docking branch); dock layout and window geometry
   persist across launches.
-- **Native file dialogs** — open a sequence folder via the OS file picker.
+- **Native file dialogs** — open a mesh sequence folder via the OS file picker.
 
 ## Requirements
 
@@ -61,12 +61,12 @@ build/hand_motion_viewer.exe
 
 On non-Windows platforms the binary is `build/hand_motion_viewer`.
 
-Open a sequence folder from within the app using the file dialog. A sample
+Open a mesh sequence folder from within the app using the file dialog. A sample
 sequence ships under `data/SUBJECT/`.
 
 ## Data layout
 
-A sequence folder holds per-frame files:
+A mesh sequence folder holds per-frame files:
 
 - `frame_NNNN_<slot>.hmesh` — one compact binary hand mesh per detected hand per
   frame (778 MANO surface vertices + 21 joint positions)
@@ -79,21 +79,30 @@ The MANO face topology shared by every hand lives in `mano/mano_faces.bin`
 
 ## Project layout
 
+Sources live under `src/`, grouped into subfolders by domain. The build globs
+them recursively, so adding a file (or a new subfolder) needs no CMake edit.
+Includes are written relative to `src/` (e.g. `#include "data/geometry.h"`).
+
 ```
 src/
-├── main.cpp        Entry point, window/GL/ImGui setup, main loop
-├── window.*        SDL2 window + GL context, geometry persistence
-├── config.*        JSON config load/save
-├── sequence.*      Per-frame mesh loading and playback state
-├── crossview.*     OHView → BabyView similarity alignment
-├── geometry.*      Mesh/grid geometry helpers
-├── rendering.*     OpenGL 3.3 renderer
-├── image.*         Keypoint .jpg decoding (stb_image)
-├── npy.*           NumPy .npy sidecar parsing
-├── gui.*           ImGui panels and controls
-├── gl_loader.*     OpenGL function loading
-└── worker_queue.h  Background parsing job queue
-fonts/              Bundled UI font (copied next to the exe)
-mano/               Shared MANO face topology (copied next to the exe)
-data/               Sample sequence(s)
+├── app/                 Application shell
+│   ├── main.cpp         Entry point, window/GL/ImGui setup, main loop
+│   ├── window.*         SDL2 window + GL context, geometry persistence
+│   └── config.*         JSON config load/save
+├── graphics/            Rendering and GPU resources
+│   ├── rendering.*      OpenGL 3.3 renderer, cameras, framebuffer
+│   ├── image.*          Keypoint .jpg decoding (stb_image)
+│   └── gl_loader.*      OpenGL function loading
+├── ui/                  ImGui panels and controls
+│   └── gui.*
+├── data/                Hand-motion data model and loaders
+│   ├── mesh_sequence.*  Per-frame mesh loading and playback state
+│   ├── crossview.*      OHView → BabyView similarity alignment
+│   ├── geometry.*       Mesh/grid geometry + .hmesh decoding
+│   └── npy.*            NumPy .npy sidecar parsing
+└── util/                Shared utilities
+    └── worker_queue.h   Background parsing job queue
+fonts/                   Bundled UI font (copied next to the exe)
+mano/                    Shared MANO face topology (copied next to the exe)
+data/                    Sample sequence(s)
 ```

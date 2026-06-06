@@ -20,9 +20,9 @@
 
 #include <glm/glm.hpp>
 
-#include "geometry.h"
-#include "sequence.h"
-#include "worker_queue.h"
+#include "data/geometry.h"
+#include "data/mesh_sequence.h"
+#include "util/worker_queue.h"
 
 // ── Grid + marker ──────────────────────────────
 void draw_grid(int size = 10, float step = 1.0f, float y = 0.0f);
@@ -100,7 +100,7 @@ inline constexpr int MAX_RESIDENT_FRAMES = 1024;
 /// whole sequence GPU-resident so playback never allocates on the hot path.
 class FrameCache {
 public:
-    explicit FrameCache(SequenceLoader& loader, int gpu_capacity = MAX_RESIDENT_FRAMES);
+    explicit FrameCache(MeshSequenceLoader& loader, int gpu_capacity = MAX_RESIDENT_FRAMES);
     ~FrameCache();
 
     FrameCache(const FrameCache&) = delete;
@@ -119,7 +119,7 @@ private:
     FrameGpu* insert_gpu(int index, std::unique_ptr<FrameGpu> frame);
     void touch(int index);
 
-    SequenceLoader& loader_;
+    MeshSequenceLoader& loader_;
     int gpu_capacity_;
     bool fully_resident_;
 

@@ -1,4 +1,4 @@
-#include "gl_loader.h"
+#include "graphics/gl_loader.h"
 
 #include <SDL.h>
 

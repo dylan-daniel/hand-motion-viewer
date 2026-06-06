@@ -1,6 +1,6 @@
-#include "rendering.h"
+#include "graphics/rendering.h"
 
-#include "gl_loader.h"
+#include "graphics/gl_loader.h"
 
 #include <algorithm>
 #include <cmath>
@@ -475,7 +475,8 @@ void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<
 
 // ── FrameCache ─────────────────────────────────
 
-FrameCache::FrameCache(SequenceLoader& loader, int gpu_capacity) : loader_(loader), gpu_capacity_(std::max(1, std::min(gpu_capacity, loader.frame_count()))) {
+FrameCache::FrameCache(MeshSequenceLoader& loader, int gpu_capacity) :
+    loader_(loader), gpu_capacity_(std::max(1, std::min(gpu_capacity, loader.frame_count()))) {
     fully_resident_ = gpu_capacity_ >= loader.frame_count();
 }
 

@@ -8,7 +8,7 @@
 
 #include <imgui.h>
 
-#include "rendering.h"
+#include "graphics/rendering.h"
 
 // Pixel sizes the bundled font is baked at (baking each size keeps text crisp).
 inline constexpr float UI_FONT_SIZE = 18.0f;

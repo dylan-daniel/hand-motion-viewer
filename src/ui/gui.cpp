@@ -1,4 +1,4 @@
-#include "gui.h"
+#include "ui/gui.h"
 
 #include <algorithm>
 #include <array>
@@ -189,7 +189,7 @@ MenuResult draw_menu_bar(bool translucent, bool show_marker, bool free_camera) {
     ImGui::PopStyleVar();
     if (opened) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open Sequence Folder")) {
+            if (ImGui::MenuItem("Open Mesh Sequence Folder")) {
                 folder_requested = true;
             }
             ImGui::EndMenu();
@@ -319,7 +319,7 @@ ImageViewResult draw_image_window(
         ImGui::Image(static_cast<ImTextureID>(texture), ImVec2(draw_width, draw_height), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
         hovered = ImGui::IsItemHovered();
     } else {
-        const char* note = has_sequence ? "No keypoint image for this frame." : "Load a sequence folder to see modeled frames.";
+        const char* note = has_sequence ? "No keypoint image for this frame." : "Load a mesh sequence folder to see modeled frames.";
         const ImVec2 text_size = ImGui::CalcTextSize(note);
         ImGui::SetCursorScreenPos(ImVec2(region_pos.x + (region_width - text_size.x) * 0.5f, region_pos.y + (region_height - text_size.y) * 0.5f));
         ImGui::TextDisabled("%s", note);

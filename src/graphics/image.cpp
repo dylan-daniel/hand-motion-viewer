@@ -1,4 +1,4 @@
-#include "image.h"
+#include "graphics/image.h"
 
 #include <cstdio>
 #include <utility>
