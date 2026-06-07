@@ -12,6 +12,7 @@
 #include <imgui.h>
 #include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl2.h>
+#include <imgui_internal.h>
 
 #include <portable-file-dialogs.h>
 
@@ -108,6 +109,12 @@ int main(int, char**) {
     }
     imgui_io.IniFilename = imgui_ini_path.c_str();
 
+    // On the very first run there is no saved layout, so build a default one:
+    // the "Frame View" pane on the left half and the "Scene" viewport on the
+    // right half. Detected by the absence of the ini file imgui would have
+    // written on a previous shutdown.
+    bool build_default_layout = !std::filesystem::exists(imgui_ini_path);
+
     auto [ui_font, fps_font] = load_fonts(imgui_io);
     imgui_io.FontDefault = ui_font;
 
@@ -117,12 +124,21 @@ int main(int, char**) {
     Framebuffer framebuffer;
     framebuffer.resize(win_width, win_height);
 
-    // Decoded keypoint image for the current frame, shown in the "Front View" pane.
+    // Decoded keypoint image for the current frame, shown in the "Frame View" pane.
     ImageTexture frame_image;
-    // Which pane the playback transport rides on: 0 = Viewport, 1 = Front View.
+    // Which pane the playback transport rides on: 0 = Viewport, 1 = Frame View.
     // Tracks the focused pane so the player follows whichever the mouse last
-    // interacted with; falls back to the viewport when none is focused.
-    int active_pane = 0;
+    // interacted with; falls back to the viewport when none is focused. Seeded
+    // from the persisted pane so the previously active tab is restored on launch.
+    int active_pane = settings.active_pane;
+
+    // imgui does not reliably restore which docked tab was selected (it defaults
+    // to the last-submitted pane), so for the first few frames we re-assert focus
+    // on the persisted pane by name once its window exists. Focusing a docked
+    // window brings its tab to front, which is what selects it. It self-disables
+    // afterward so it never fights the user's own tab clicks.
+    const int restore_pane = settings.active_pane;
+    int restore_focus_frames = 3;
 
     // ── Sequence state ─────────────────────────
     std::unique_ptr<MeshSequence> sequence;
@@ -294,6 +310,21 @@ int main(int, char**) {
 
         const ImGuiID dock_id = ImGui::DockSpaceOverViewport();
 
+        if (build_default_layout) {
+            build_default_layout = false;
+            ImGui::DockBuilderRemoveNode(dock_id);
+            ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+            ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
+
+            ImGuiID dock_left = 0;
+            ImGuiID dock_right = 0;
+            ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left, 0.5f, &dock_left, &dock_right);
+
+            ImGui::DockBuilderDockWindow("Frame View", dock_left);
+            ImGui::DockBuilderDockWindow("Scene", dock_right);
+            ImGui::DockBuilderFinish(dock_id);
+        }
+
         // Apply the open-folder request before choosing what to draw, since it
         // frees GPU buffers the drawable below must reflect.
         if (menu.folder_requested && !folder_dialog) {
@@ -389,7 +420,7 @@ int main(int, char**) {
         viewport_hovered = viewport.hovered;
 
         const ImageViewResult image_view = draw_image_window(
-            "Front View",
+            "Frame View",
             frame_image.texture(),
             frame_image.width(),
             frame_image.height(),
@@ -417,9 +448,14 @@ int main(int, char**) {
             scrubbing = false;
         }
 
-        // Move the transport to follow this frame's focus; keep the current pane
-        // when none is focused so the player never disappears.
-        if (viewport.focused) {
+        // For the first few frames, re-assert focus on the persisted pane so its
+        // tab is restored, ignoring imgui's default focus. Afterward, move the
+        // transport to follow this frame's focus; keep the current pane when none
+        // is focused so the player never disappears.
+        if (restore_focus_frames > 0) {
+            restore_focus_frames--;
+            ImGui::SetWindowFocus(restore_pane == 1 ? "Frame View" : "Scene");
+        } else if (viewport.focused) {
             active_pane = 0;
         } else if (image_view.focused) {
             active_pane = 1;
@@ -448,6 +484,7 @@ int main(int, char**) {
     } else {
         settings.last_folder.reset();
     }
+    settings.active_pane = active_pane;
     if (settings.free_camera) {
         orbit_cam.set_from_free(free_cam);
     }
