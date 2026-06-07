@@ -16,8 +16,8 @@ endif ()
 option(RELEASE_STATIC "Statically link the release exe (except opengl32.dll)" OFF)
 
 # When ON, gather only the files that need shipping (exe + fonts/ + mano/, plus
-# SDL2.dll for a non-static build) into <build>/dist after each build, so that
-# folder can be zipped and distributed as-is. Set at configure time:
+# SDL2.dll for a non-static build) into <build>/dist/hand_motion_viewer after each
+# build and zip it into <build>/hand_motion_viewer.zip. Set at configure time:
 # cmake -B build -DPACKAGE_RELEASE=ON
 option(PACKAGE_RELEASE "Assemble the shippable files into <build>/dist" OFF)
 
@@ -223,28 +223,30 @@ add_custom_command(TARGET hand_motion_viewer POST_BUILD
 # Built fresh each time (the dir is removed first) so it never holds stale files.
 if (PACKAGE_RELEASE)
     set(dist_dir ${CMAKE_BINARY_DIR}/dist)
+    set(package_dir ${dist_dir}/hand_motion_viewer)
     add_custom_command(TARGET hand_motion_viewer POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E rm -rf ${dist_dir}
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${dist_dir}
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:hand_motion_viewer> ${dist_dir}
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/fonts ${dist_dir}/fonts
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/mano ${dist_dir}/mano
-        COMMENT "Packaging shippable files into ${dist_dir}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${package_dir}
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:hand_motion_viewer> ${package_dir}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/fonts ${package_dir}/fonts
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/mano ${package_dir}/mano
+        COMMENT "Packaging shippable files into ${package_dir}"
     )
     if (WIN32 AND NOT RELEASE_STATIC)
         add_custom_command(TARGET hand_motion_viewer POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2::SDL2> ${dist_dir}
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2::SDL2> ${package_dir}
         )
     endif ()
 
-    # Zip the assembled files into <build>/dist.zip for one-file distribution.
-    # Run from inside dist/ and archive its entries (".") so the zip holds the
-    # exe and asset folders at its root, not a nested dist/ directory. Uses
-    # cmake -E tar (no external zip tool needed). Ordered after the copies above
-    # since POST_BUILD commands on a target run in the order added.
+    # Zip the assembled files into <build>/hand_motion_viewer.zip for one-file
+    # distribution. Run from dist/ and archive the hand_motion_viewer/ entry so the
+    # zip holds a single top-level hand_motion_viewer folder, keeping everything
+    # contained when unzipped. Uses cmake -E tar (no external zip tool needed).
+    # Ordered after the copies above since POST_BUILD commands on a target run in
+    # the order added.
     add_custom_command(TARGET hand_motion_viewer POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E tar cf ${CMAKE_BINARY_DIR}/dist.zip --format=zip .
+        COMMAND ${CMAKE_COMMAND} -E tar cf ${CMAKE_BINARY_DIR}/hand_motion_viewer.zip --format=zip hand_motion_viewer
         WORKING_DIRECTORY ${dist_dir}
-        COMMENT "Zipping contents of ${dist_dir} into ${CMAKE_BINARY_DIR}/dist.zip"
+        COMMENT "Zipping ${package_dir} into ${CMAKE_BINARY_DIR}/hand_motion_viewer.zip"
     )
 endif ()
