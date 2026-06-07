@@ -11,11 +11,11 @@ an interactive 3D viewport.
   plays them back at 30 FPS. Each `.hmesh` stores only the 778 MANO surface
   vertices and 21 joint positions; the face topology is shared globally (loaded
   once from `mano/mano_faces.bin`) and the colored joint skeleton is regenerated
-  procedurally, so only the moving vertices are streamed per frame. Parsing runs
-  on background worker threads to keep the UI responsive.
+  procedurally, so only the moving vertices are streamed per frame. Each frame's
+  meshes are read and decoded from disk on demand as playback reaches them.
 - **3D viewport** — core OpenGL 3.3 renderer with an orbit camera and grid.
-- **Keypoint image view** — shows the per-frame `*_all_keypoints.jpg` alongside
-  the 3D scene.
+- **Keypoint image view** — shows the per-frame `*_all_keypoints` image (`.jpg`
+  or `.png`) alongside the 3D scene.
 - **Dockable UI** — Dear ImGui (docking branch); dock layout and window geometry
   persist across launches.
 - **Native file dialogs** — open a mesh sequence folder via the OS file picker.
@@ -49,6 +49,34 @@ cmake --build build --config Release
 Visual Studio or Unix Makefiles). The first configure clones the dependencies,
 so it takes longer than subsequent builds.
 
+### Distribution builds
+
+Two configure-time options help produce a release you can hand to others. Because
+they are read at configure time, set them with `-D...` when configuring; the build
+command is unchanged.
+
+- **`RELEASE_STATIC`** — links everything (SDL2, the C/C++ runtime, libgcc /
+  winpthread under GCC) into the executable so it runs with no bundled DLLs.
+  `opengl32.dll` stays dynamic — it is the system GPU driver loader and is
+  present on every Windows machine. Works under both GCC/MinGW (via `-static`)
+  and MSVC (via the static CRT, `/MT`).
+- **`PACKAGE_RELEASE`** — after each build, assembles only the shippable files
+  (the executable plus the `fonts/` and `mano/` folders, and `SDL2.dll` for a
+  non-static build) into `<build>/dist/`, then zips its contents into
+  `<build>/dist.zip` for one-file distribution.
+
+Example — a static, packaged Windows release:
+
+```sh
+cmake -S . -B build -DRELEASE_STATIC=ON -DPACKAGE_RELEASE=ON
+cmake --build build --config Release
+```
+
+Then ship `build/dist.zip` (or the `build/dist/` folder). Note that with a
+multi-config generator (e.g. Visual Studio) the executable itself lands under
+`build/Release/`, but the packaged `dist/` and `dist.zip` are always at the build
+root. The packaging step runs only when the executable is (re)linked.
+
 ## Running
 
 ```sh
@@ -57,8 +85,8 @@ build/hand_motion_viewer.exe
 
 On non-Windows platforms the binary is `build/hand_motion_viewer`.
 
-Open a mesh sequence folder from within the app using the file dialog. A sample
-sequence ships under `data/SUBJECT/`.
+Open a mesh sequence folder from within the app using the file dialog. The folder
+can live anywhere on disk.
 
 ## Data layout
 
@@ -66,7 +94,8 @@ A mesh sequence folder holds per-frame files:
 
 - `frame_NNNN_<slot>.hmesh` — one compact binary hand mesh per detected hand per
   frame (778 MANO surface vertices + 21 joint positions)
-- `frame_NNNN_all_keypoints.jpg` — the keypoint overlay image for that frame
+- `frame_NNNN_all_keypoints.jpg` (or `.png`) — the keypoint overlay image for
+  that frame
 
 The MANO face topology shared by every hand lives in `mano/mano_faces.bin`
 (`uint16` triangle indices, right-hand winding) and is loaded once at startup.
@@ -93,8 +122,7 @@ src/
 │   ├── mesh_sequence.*  Per-frame mesh loading and playback state
 │   └── geometry.*       Mesh/grid geometry + .hmesh decoding
 └── util/                Shared utilities
-    └── worker_queue.h   Background parsing job queue
+    └── worker_queue.h   Background job queue (async keypoint image decode)
 fonts/                   Bundled UI font (copied next to the exe)
 mano/                    Shared MANO face topology (copied next to the exe)
-data/                    Sample sequence(s)
 ```
