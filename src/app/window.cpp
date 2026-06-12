@@ -76,7 +76,22 @@ WindowGeometry compute_initial_geometry(const Config& config) {
     return WindowGeometry{pos_x, pos_y, width, height, display};
 }
 
-void set_relative_mouse(SDL_Window* window, bool enabled) { SDL_SetWindowRelativeMouseMode(window, enabled); }
+void set_relative_mouse(SDL_Window* window, bool enabled) {
+    if (enabled) {
+        // Pin the cursor in place for the duration of relative mode: confine it to a
+        // 1x1 rect at its current spot so it never drifts (relative motion deltas
+        // still flow). Cleared below when relative mode ends.
+        float mouse_x = 0.0f;
+        float mouse_y = 0.0f;
+        SDL_GetMouseState(&mouse_x, &mouse_y);
+        const SDL_Rect pin{static_cast<int>(mouse_x), static_cast<int>(mouse_y), 1, 1};
+        SDL_SetWindowMouseRect(window, &pin);
+    } else {
+        SDL_SetWindowMouseRect(window, nullptr);
+    }
+
+    SDL_SetWindowRelativeMouseMode(window, enabled);
+}
 
 WindowGeometry read_current_geometry(SDL_Window* window) {
     int pos_x = 0;
