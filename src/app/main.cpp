@@ -175,6 +175,8 @@ int main(int, char**) {
     // be compared against the real per-frame positions. Built from disk alongside
     // the smoothed frame; remove once the smoothing is dialled in.
     std::unique_ptr<FrameGpu> raw_overlay_gpu;
+    // TEMP: toggles the red raw-hands overlay from the Kalman pane (on by default).
+    bool show_raw_overlay = true;
     int loaded_frame = -1;
     std::optional<Transform> transform;
     std::optional<float> depth_reference;
@@ -615,6 +617,8 @@ int main(int, char**) {
                 sequence->resmooth(kalman_params);
                 loaded_frame = -1; // force the on-screen frame to rebuild from the re-smoothed data
             }
+            ImGui::Separator();
+            ImGui::Checkbox("show real hands overlay (red)", &show_raw_overlay);
             ImGui::End();
         }
 
@@ -656,7 +660,7 @@ int main(int, char**) {
                 .transform = transform ? &*transform : nullptr,
                 .reference_depth = depth_reference,
                 .show_camera_marker = settings.show_camera_marker,
-                .raw_overlay = raw_overlay_gpu.get(), // TEMP: raw-position overlay
+                .raw_overlay = show_raw_overlay ? raw_overlay_gpu.get() : nullptr, // TEMP: raw-position overlay
             }
         );
 
