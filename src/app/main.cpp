@@ -170,6 +170,10 @@ int main(int, char**) {
     // the frame changes. loaded_frame tracks which frame current_gpu holds (-1 =
     // none) so we only re-read and re-upload when the frame actually advances.
     std::unique_ptr<FrameGpu> current_gpu;
+    // TEMP: translucent overlay of the raw, unsmoothed hands so the smoothing can
+    // be compared against the real per-frame positions. Built from disk alongside
+    // the smoothed frame; remove once the smoothing is dialled in.
+    std::unique_ptr<FrameGpu> raw_overlay_gpu;
     int loaded_frame = -1;
     std::optional<Transform> transform;
     std::optional<float> depth_reference;
@@ -186,7 +190,10 @@ int main(int, char**) {
     double playback_accumulator = 0.0;
 
     auto open_sequence = [&](const std::string& folder, int start_frame) {
-        auto opened = std::make_unique<MeshSequence>(folder);
+        // Smooth the sequence on open: the source motion is recovered per 30fps
+        // frame and is visibly jittery, so a forward-backward Kalman smoother
+        // removes the noise while keeping the real motion (see kalman.h).
+        auto opened = std::make_unique<MeshSequence>(folder, /*smooth=*/true);
         const bool has_frames = opened->frame_count() > 0;
         if (!has_frames) {
             std::printf("No frame_*.hmesh files found in %s\n", folder.c_str());
@@ -196,6 +203,7 @@ int main(int, char**) {
         // screen (so opening from the Explorer always resets, like the menu does).
         sequence = has_frames ? std::move(opened) : nullptr;
         current_gpu.reset();
+        raw_overlay_gpu.reset();
         loaded_frame = -1;
         transform.reset();
         depth_reference.reset();
@@ -511,6 +519,10 @@ int main(int, char**) {
             if (current_frame != loaded_frame) {
                 Frame hands = sequence->load_frame(current_frame);
                 current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands));
+                // TEMP: prepare the raw frame in a contrasting red for the overlay.
+                const Frame raw_hands = sequence->load_raw_frame(current_frame);
+                const glm::vec4 raw_color(0.9f, 0.25f, 0.25f, 1.0f);
+                raw_overlay_gpu = std::make_unique<FrameGpu>(prepare_frame(raw_hands, raw_color));
                 loaded_frame = current_frame;
             }
             const std::size_t hand_count = sequence->frame_paths(current_frame).size();
@@ -614,6 +626,7 @@ int main(int, char**) {
                 .transform = transform ? &*transform : nullptr,
                 .reference_depth = depth_reference,
                 .show_camera_marker = settings.show_camera_marker,
+                .raw_overlay = raw_overlay_gpu.get(), // TEMP: raw-position overlay
             }
         );
 

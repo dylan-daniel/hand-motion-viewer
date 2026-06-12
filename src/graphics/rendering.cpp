@@ -384,11 +384,11 @@ void GpuMesh::draw() const {
 
 // ── FrameGpu ───────────────────────────────────
 
-PreparedFrame prepare_frame(const Frame& hands) {
+PreparedFrame prepare_frame(const Frame& hands, const glm::vec4& surface_color) {
     PreparedFrame prepared;
     prepared.reserve(hands.size());
     for (const HandData& hand : hands) {
-        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), DEFAULT_COLOR, hand.joints);
+        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), surface_color, hand.joints);
         double sum = 0.0;
         for (const glm::vec3& position : hand.verts) {
             sum += position.z;
@@ -657,6 +657,12 @@ void render_scene(const Framebuffer& framebuffer, const Camera& camera, const Sc
 
     if (scene.frame != nullptr) {
         scene.frame->draw(scene.translucent, scene.transform, scene.reference_depth);
+    }
+
+    // Overlay the raw, unsmoothed hands translucently for visual comparison.
+    // Drawn after the main frame so it blends over it.
+    if (scene.raw_overlay != nullptr) {
+        scene.raw_overlay->draw(true, scene.transform, scene.reference_depth);
     }
 
     // Marker for the orbit camera's look-at point; drawn last so its

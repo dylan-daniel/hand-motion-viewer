@@ -42,12 +42,14 @@ std::string frame_image_path(const std::string& mesh_path);
 /// stabilisation snaps every other frame's hands onto.
 float reference_depth(const Frame& hands);
 
-/// A folder of per-frame hand meshes, parsed synchronously on demand. Holds only
-/// the discovered file paths; ``load_frame`` reads and decodes a frame's hands
-/// from disk each time it is called (no caching, no background threads).
+/// A folder of per-frame hand meshes. With ``smooth`` disabled a frame's hands
+/// are parsed synchronously from disk each time ``load_frame`` is called (no
+/// caching). With ``smooth`` enabled every frame is read once at construction and
+/// run through a forward-backward Kalman smoother (see kalman.h) to remove the
+/// 30fps per-frame jitter; ``load_frame`` then returns the cached smoothed hands.
 class MeshSequence {
 public:
-    explicit MeshSequence(const std::string& folder);
+    explicit MeshSequence(const std::string& folder, bool smooth = false);
 
     int frame_count() const { return frame_count_; }
 
@@ -55,14 +57,26 @@ public:
 
     const std::vector<std::string>& frame_paths(int index) const { return frame_paths_[static_cast<std::size_t>(index)]; }
 
-    /// Read and decode the hands for frame ``index`` from disk. Returns an empty
-    /// frame for an out-of-range index.
+    /// Return the hands for frame ``index``: the cached smoothed hands when
+    /// smoothing is enabled, otherwise read and decoded from disk on the spot.
+    /// Returns an empty frame for an out-of-range index.
     Frame load_frame(int index) const;
 
+    /// Read the raw, unsmoothed hands for frame ``index`` straight from disk,
+    /// bypassing the smoothing cache. Used by the temporary raw-position overlay.
+    Frame load_raw_frame(int index) const { return load_frame_from_disk(index); }
+
 private:
+    /// Read and decode the hands for frame ``index`` straight from disk.
+    Frame load_frame_from_disk(int index) const;
+
     std::string folder_;
     std::vector<std::vector<std::string>> frame_paths_;
     int frame_count_;
+    // Populated only when smoothing is enabled: the whole sequence is read and
+    // smoothed once at construction, and load_frame serves frames from here.
+    bool smoothed_ = false;
+    std::vector<Frame> smoothed_frames_;
 };
 
 /// Build the fixed transform that sits the sequence's hands on the grid and

@@ -1,6 +1,7 @@
 #include "data/mesh_sequence.h"
 
 #include "data/geometry.h"
+#include "data/kalman.h"
 
 #include <algorithm>
 #include <cmath>
@@ -162,12 +163,35 @@ float reference_depth(const Frame& hands) {
     return count == 0 ? 0.0f : static_cast<float>(sum / static_cast<double>(count));
 }
 
-MeshSequence::MeshSequence(const std::string& folder) : folder_(folder) {
+MeshSequence::MeshSequence(const std::string& folder, bool smooth) : folder_(folder) {
     frame_paths_ = discover_frames(folder);
     frame_count_ = static_cast<int>(frame_paths_.size());
+
+    if (smooth && frame_count_ > 0) {
+        // Read the whole sequence once and replace it with its smoothed form. The
+        // forward-backward smoother needs every frame, so this is an unavoidable
+        // up-front load (no on-demand streaming for a smoothed sequence).
+        std::vector<Frame> raw;
+        raw.reserve(static_cast<std::size_t>(frame_count_));
+        for (int index = 0; index < frame_count_; ++index) {
+            raw.push_back(load_frame_from_disk(index));
+        }
+        smoothed_frames_ = smooth_sequence(raw);
+        smoothed_ = true;
+    }
 }
 
 Frame MeshSequence::load_frame(int index) const {
+    if (smoothed_) {
+        if (index < 0 || index >= frame_count_) {
+            return Frame{};
+        }
+        return smoothed_frames_[static_cast<std::size_t>(index)];
+    }
+    return load_frame_from_disk(index);
+}
+
+Frame MeshSequence::load_frame_from_disk(int index) const {
     Frame hands;
     if (index < 0 || index >= frame_count_) {
         return hands;
