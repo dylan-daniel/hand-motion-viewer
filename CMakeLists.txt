@@ -21,6 +21,12 @@ option(RELEASE_STATIC "Statically link the release exe (except opengl32.dll)" OF
 # cmake -B build -DPACKAGE_RELEASE=ON
 option(PACKAGE_RELEASE "Assemble the shippable files into <build>/dist" OFF)
 
+# When ON, build the Windows exe against the console subsystem so it keeps an
+# attached console (useful for seeing stdout/stderr while debugging) instead of
+# launching as a windowless GUI app. Set at configure time:
+# cmake -B build -DWIN32_CONSOLE=ON
+option(WIN32_CONSOLE "Build the Windows exe as a console app instead of a GUI app" OFF)
+
 # Under MSVC a static build means the static CRT (/MT). Set globally and before
 # any target is created so SDL, imgui and the exe all use the same runtime; the
 # GCC/MinGW equivalent (-static) is applied to the exe link below.
@@ -186,7 +192,7 @@ endif ()
 # Build as a GUI-subsystem app on Windows so launching it shows only the app
 # window, with no console popping up. SDL2main supplies the WinMain entry point
 # that forwards to main(), so no source change is needed.
-if (WIN32)
+if (WIN32 AND NOT WIN32_CONSOLE)
     set_target_properties(hand_motion_viewer PROPERTIES WIN32_EXECUTABLE ON)
 endif ()
 
