@@ -294,10 +294,16 @@ int main(int, char**) {
         ImGui::NewFrame();
 
         const bool was_free_camera = settings.free_camera;
-        const MenuResult menu = draw_menu_bar(settings.hand_translucent, settings.show_camera_marker, settings.free_camera);
-        settings.hand_translucent = menu.hand_translucent;
-        settings.show_camera_marker = menu.show_camera_marker;
-        settings.free_camera = menu.free_camera;
+        const MenuResult menu = draw_menu_bar(
+            MenuState{
+                .hand_translucent = settings.hand_translucent,
+                .show_camera_marker = settings.show_camera_marker,
+                .free_camera = settings.free_camera,
+            }
+        );
+        settings.hand_translucent = menu.state.hand_translucent;
+        settings.show_camera_marker = menu.state.show_camera_marker;
+        settings.free_camera = menu.state.free_camera;
         if (settings.free_camera != was_free_camera) {
             if (settings.free_camera) {
                 free_cam.set_from_orbit(orbit_cam);
@@ -403,46 +409,32 @@ int main(int, char**) {
         // focused). Capture the pane that draws it this frame so we read its state
         // back from the matching window below.
         const int transport_pane = active_pane;
-        const ViewportResult viewport = draw_viewport_window(
-            framebuffer,
-            dock_id,
-            imgui_io.Framerate,
-            fps_font,
-            status,
-            settings.show_controls,
-            has_sequence,
-            current_frame,
-            frame_count,
-            playing,
-            transport_pane == 0
-        );
+        // Shared player state; only show_transport differs between the two panes.
+        const Transport transport_base{
+            .has_sequence = has_sequence,
+            .current_frame = current_frame,
+            .frame_count = frame_count,
+            .playing = playing,
+        };
+        Transport viewport_transport = transport_base;
+        viewport_transport.show_transport = transport_pane == 0;
+        Transport image_transport = transport_base;
+        image_transport.show_transport = transport_pane == 1;
+
+        const ViewportResult viewport =
+            draw_viewport_window(framebuffer, dock_id, imgui_io.Framerate, fps_font, status, settings.show_controls, viewport_transport);
         settings.show_controls = viewport.show_controls;
         viewport_hovered = viewport.hovered;
 
-        const ImageViewResult image_view = draw_image_window(
-            "Frame View",
-            frame_image.texture(),
-            frame_image.width(),
-            frame_image.height(),
-            dock_id,
-            has_sequence,
-            current_frame,
-            frame_count,
-            playing,
-            transport_pane == 1
-        );
+        const ImageViewResult image_view =
+            draw_image_window("Frame View", frame_image.texture(), frame_image.width(), frame_image.height(), dock_id, image_transport);
 
         if (has_sequence) {
             // Only the pane that drew the transport changed the state; read it back.
-            if (transport_pane == 1) {
-                current_frame = image_view.current_frame;
-                playing = image_view.playing;
-                scrubbing = image_view.scrubbing;
-            } else {
-                current_frame = viewport.current_frame;
-                playing = viewport.playing;
-                scrubbing = viewport.scrubbing;
-            }
+            const TransportState& echo = transport_pane == 1 ? image_view.transport : viewport.transport;
+            current_frame = echo.current_frame;
+            playing = echo.playing;
+            scrubbing = echo.scrubbing;
         } else {
             playing = false;
             scrubbing = false;
@@ -466,7 +458,15 @@ int main(int, char**) {
         // ── Render scene into the offscreen texture, then the UI ──
         framebuffer.resize(viewport.width, viewport.height);
         render_scene(
-            framebuffer, *camera, frame_ptr, settings.hand_translucent, transform ? &*transform : nullptr, depth_reference, settings.show_camera_marker
+            framebuffer,
+            *camera,
+            SceneRender{
+                .frame = frame_ptr,
+                .translucent = settings.hand_translucent,
+                .transform = transform ? &*transform : nullptr,
+                .reference_depth = depth_reference,
+                .show_camera_marker = settings.show_camera_marker,
+            }
         );
 
         glViewport(0, 0, win_width, win_height);

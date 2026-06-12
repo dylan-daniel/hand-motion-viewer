@@ -636,15 +636,7 @@ void FreeCamera::set_from_orbit(const OrbitCamera& orbit) {
 
 // ── Scene render ───────────────────────────────
 
-void render_scene(
-    const Framebuffer& framebuffer,
-    const Camera& camera,
-    const FrameGpu* frame,
-    bool translucent,
-    const Transform* transform,
-    std::optional<float> reference_depth,
-    bool show_camera_marker
-) {
+void render_scene(const Framebuffer& framebuffer, const Camera& camera, const SceneRender& scene) {
     ensure_resources();
 
     glx::BindFramebuffer(GL_FRAMEBUFFER, framebuffer.fbo());
@@ -663,13 +655,13 @@ void render_scene(
     // Grid (flat-coloured; draw_grid keeps lighting off).
     draw_grid(10, 1.0f, 0.0f);
 
-    if (frame != nullptr) {
-        frame->draw(translucent, transform, reference_depth);
+    if (scene.frame != nullptr) {
+        scene.frame->draw(scene.translucent, scene.transform, scene.reference_depth);
     }
 
     // Marker for the orbit camera's look-at point; drawn last so its
     // translucency blends over the scene.
-    if (show_camera_marker && camera.draws_marker()) {
+    if (scene.show_camera_marker && camera.draws_marker()) {
         draw_camera_marker(camera.marker_target());
     }
 

@@ -121,20 +121,16 @@ namespace {
         return show_panel;
     }
 
-    // Result of drawing the transport bar: the (possibly user-changed) frame and
-    // play state, plus whether the scrubber is being dragged this frame.
-    struct TransportState {
-        int current_frame;
-        bool playing;
-        bool scrubbing;
-    };
-
     // Playback transport (play/pause button + scrubber + frame label) drawn as an
     // overlay along the bottom of whichever pane currently carries it. ``strip_top``
     // is the screen Y where the overlay strip begins; a translucent backing is
     // painted behind it so the controls stay legible over the scene. Updates and
     // returns the transport state, including whether the scrubber is being dragged.
-    TransportState draw_transport_bar(float left, float strip_top, float width, int current_frame, int frame_count, bool playing) {
+    TransportState draw_transport_bar(float left, float strip_top, float width, const Transport& transport) {
+        int current_frame = transport.current_frame;
+        const int frame_count = transport.frame_count;
+        bool playing = transport.playing;
+
         // Translucent backing so the controls read over any scene content beneath.
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         const ImU32 backing = ImGui::ColorConvertFloat4ToU32(ImVec4(0.08f, 0.08f, 0.10f, 0.65f));
@@ -178,7 +174,7 @@ std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io) {
     return {ui_font, fps_font};
 }
 
-MenuResult draw_menu_bar(bool translucent, bool show_marker, bool free_camera) {
+MenuResult draw_menu_bar(MenuState state) {
     bool folder_requested = false;
 
     // Extra padding makes the bar taller; pop it right after begin so dropdown
@@ -194,32 +190,22 @@ MenuResult draw_menu_bar(bool translucent, bool show_marker, bool free_camera) {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
-            ImGui::Checkbox("Transparent Hands", &translucent);
-            ImGui::Checkbox("Free Camera", &free_camera);
+            ImGui::Checkbox("Transparent Hands", &state.hand_translucent);
+            ImGui::Checkbox("Free Camera", &state.free_camera);
             // The marker shows the orbit camera's look-at point, which the free
             // camera lacks, so grey it out while free camera is on.
-            ImGui::BeginDisabled(free_camera);
-            ImGui::Checkbox("Camera Marker", &show_marker);
+            ImGui::BeginDisabled(state.free_camera);
+            ImGui::Checkbox("Camera Marker", &state.show_camera_marker);
             ImGui::EndDisabled();
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
     }
-    return {translucent, show_marker, free_camera, folder_requested};
+    return {state, folder_requested};
 }
 
 ViewportResult draw_viewport_window(
-    const Framebuffer& framebuffer,
-    ImGuiID dock_id,
-    float fps,
-    ImFont* fps_font,
-    const std::string& status,
-    bool show_controls,
-    bool has_sequence,
-    int current_frame,
-    int frame_count,
-    bool playing,
-    bool show_transport
+    const Framebuffer& framebuffer, ImGuiID dock_id, float fps, ImFont* fps_font, const std::string& status, bool show_controls, const Transport& transport
 ) {
     // FirstUseEver (not Once): only seed the default dock node when the window has
     // no saved .ini entry, so a layout the user rearranged is restored on launch.
@@ -230,7 +216,7 @@ ViewportResult draw_viewport_window(
     const ImVec2 avail = ImGui::GetContentRegionAvail();
     // The transport is drawn as an overlay (see below), so the scene fills the
     // whole window and does not resize when the transport moves between panes.
-    const bool draw_transport = has_sequence && show_transport;
+    const bool draw_transport = transport.has_sequence && transport.show_transport;
     const int width = std::max(1, static_cast<int>(avail.x));
     const int height = std::max(1, static_cast<int>(avail.y));
 
@@ -254,35 +240,22 @@ ViewportResult draw_viewport_window(
         draw_list->AddText(fps_font, FPS_FONT_SIZE, ImVec2(image_pos.x + 8.0f, image_pos.y + 6.0f + FPS_FONT_SIZE), status_color, status.c_str());
     }
 
-    show_controls = draw_controls_overlay(image_pos, width, has_sequence, playing, show_controls);
+    show_controls = draw_controls_overlay(image_pos, width, transport.has_sequence, transport.playing, show_controls);
 
-    // Transport overlay pinned to the bottom edge of the scene image.
-    bool scrubbing = false;
+    // Transport overlay pinned to the bottom edge of the scene image. Seed the echo
+    // from the incoming state so an unchanged frame still reports it back.
+    TransportState echo{transport.current_frame, transport.playing, false};
     if (draw_transport) {
         const float strip_top = image_pos.y + static_cast<float>(height) - PLAYBACK_BAR_HEIGHT;
-        const TransportState transport = draw_transport_bar(image_pos.x, strip_top, static_cast<float>(width), current_frame, frame_count, playing);
-        current_frame = transport.current_frame;
-        playing = transport.playing;
-        scrubbing = transport.scrubbing;
+        echo = draw_transport_bar(image_pos.x, strip_top, static_cast<float>(width), transport);
     }
 
     ImGui::End();
     ImGui::PopStyleVar();
-    return {width, height, hovered, focused, show_controls, current_frame, playing, scrubbing};
+    return {width, height, hovered, focused, show_controls, echo};
 }
 
-ImageViewResult draw_image_window(
-    const char* title,
-    unsigned int texture,
-    int texture_width,
-    int texture_height,
-    ImGuiID dock_id,
-    bool has_sequence,
-    int current_frame,
-    int frame_count,
-    bool playing,
-    bool show_transport
-) {
+ImageViewResult draw_image_window(const char* title, unsigned int texture, int texture_width, int texture_height, ImGuiID dock_id, const Transport& transport) {
     // FirstUseEver (not Once): only seed the default dock node when the window has
     // no saved .ini entry, so a layout the user rearranged is restored on launch.
     ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
@@ -293,7 +266,7 @@ ImageViewResult draw_image_window(
 
     // The transport is drawn as an overlay, so the image uses the full region and
     // does not resize when the transport moves between panes.
-    const bool draw_transport = has_sequence && show_transport;
+    const bool draw_transport = transport.has_sequence && transport.show_transport;
     const float region_width = std::max(1.0f, avail.x);
     const float region_height = std::max(1.0f, avail.y);
 
@@ -318,23 +291,21 @@ ImageViewResult draw_image_window(
         ImGui::Image(static_cast<ImTextureID>(texture), ImVec2(draw_width, draw_height), ImVec2(0.0f, 0.0f), ImVec2(1.0f, 1.0f));
         hovered = ImGui::IsItemHovered();
     } else {
-        const char* note = has_sequence ? "No keypoint image for this frame." : "Load a mesh sequence folder to see modeled frames.";
+        const char* note = transport.has_sequence ? "No keypoint image for this frame." : "Load a mesh sequence folder to see modeled frames.";
         const ImVec2 text_size = ImGui::CalcTextSize(note);
         ImGui::SetCursorScreenPos(ImVec2(region_pos.x + (region_width - text_size.x) * 0.5f, region_pos.y + (region_height - text_size.y) * 0.5f));
         ImGui::TextDisabled("%s", note);
     }
 
-    // Transport overlay pinned to the bottom edge of the image region.
-    bool scrubbing = false;
+    // Transport overlay pinned to the bottom edge of the image region. Seed the
+    // echo from the incoming state so an unchanged frame still reports it back.
+    TransportState echo{transport.current_frame, transport.playing, false};
     if (draw_transport) {
         const float strip_top = region_pos.y + region_height - PLAYBACK_BAR_HEIGHT;
-        const TransportState transport = draw_transport_bar(region_pos.x, strip_top, region_width, current_frame, frame_count, playing);
-        current_frame = transport.current_frame;
-        playing = transport.playing;
-        scrubbing = transport.scrubbing;
+        echo = draw_transport_bar(region_pos.x, strip_top, region_width, transport);
     }
 
     ImGui::End();
     ImGui::PopStyleVar();
-    return {hovered, focused, current_frame, playing, scrubbing};
+    return {hovered, focused, echo};
 }

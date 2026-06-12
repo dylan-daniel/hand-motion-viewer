@@ -187,14 +187,20 @@ private:
 /// once on the main thread before the GL context is destroyed.
 void shutdown_renderer();
 
-/// Render the grid and the active frame into the offscreen framebuffer.
-/// ``frame`` may be null to draw just the grid.
-void render_scene(
-    const Framebuffer& framebuffer,
-    const Camera& camera,
-    const FrameGpu* frame,
-    bool translucent,
-    const Transform* transform,
-    std::optional<float> reference_depth,
-    bool show_camera_marker
-);
+/// What to draw in one frame and how — the per-render inputs that vary frame to
+/// frame, grouped so render_scene takes a single descriptor instead of a long and
+/// ever-growing parameter list. Every field has a default, so new draw options
+/// are added here (not as another render_scene argument) and unused ones can be
+/// left out at the call site via designated initializers.
+struct SceneRender {
+    const FrameGpu* frame = nullptr;      // the hands to draw; null draws just the grid
+    bool translucent = false;             // draw the hand surface see-through
+    const Transform* transform = nullptr; // fixed scene fit applied to every hand
+    std::optional<float> reference_depth; // common plane every hand is depth-snapped to
+    bool show_camera_marker = false;      // draw the orbit camera's look-at marker
+};
+
+/// Render the grid and the active frame into the offscreen framebuffer. The
+/// ``framebuffer`` and ``camera`` are the stable where/viewpoint; ``scene``
+/// carries what to draw this frame (see SceneRender).
+void render_scene(const Framebuffer& framebuffer, const Camera& camera, const SceneRender& scene);
