@@ -77,6 +77,9 @@ Config load_config(const std::string& path) {
     read_optional_string(data, "data_folder", config.data_folder);
     read_field(data, "expanded_folders", config.expanded_folders);
 
+    read_field(data, "kalman_process_noise", config.kalman_process_noise);
+    read_field(data, "kalman_measurement_noise", config.kalman_measurement_noise);
+
     read_optional_int(data, "window_x", config.window_x);
     read_optional_int(data, "window_y", config.window_y);
     read_field(data, "window_width", config.window_width);
@@ -104,6 +107,9 @@ void save_config(const std::string& path, const Config& config) {
 
     data["data_folder"] = config.data_folder ? json(*config.data_folder) : json(nullptr);
     data["expanded_folders"] = config.expanded_folders;
+
+    data["kalman_process_noise"] = config.kalman_process_noise;
+    data["kalman_measurement_noise"] = config.kalman_measurement_noise;
 
     data["window_x"] = config.window_x ? json(*config.window_x) : json(nullptr);
     data["window_y"] = config.window_y ? json(*config.window_y) : json(nullptr);

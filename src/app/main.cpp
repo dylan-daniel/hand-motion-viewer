@@ -19,6 +19,7 @@
 
 #include "app/config.h"
 #include "app/window.h"
+#include "data/kalman.h" // TEMP: KalmanParams for the debug smoothing slider
 #include "data/mesh_sequence.h"
 #include "graphics/gl_loader.h"
 #include "graphics/image.h"
@@ -188,6 +189,12 @@ int main(int, char**) {
     bool scrubbing = false;
     float playback_speed = settings.playback_speed;
     double playback_accumulator = 0.0;
+    // TEMP: live Kalman tuning, seeded from the persisted config so a tuned value
+    // survives a restart. The debug slider window below edits these and re-smooths
+    // the loaded sequence on change; they are written back to config on shutdown.
+    KalmanParams kalman_params;
+    kalman_params.process_noise = settings.kalman_process_noise;
+    kalman_params.measurement_noise = settings.kalman_measurement_noise;
 
     auto open_sequence = [&](const std::string& folder, int start_frame) {
         // Smooth the sequence on open: the source motion is recovered per 30fps
@@ -202,6 +209,11 @@ int main(int, char**) {
         // frames clears the scene rather than leaving the previous sequence on
         // screen (so opening from the Explorer always resets, like the menu does).
         sequence = has_frames ? std::move(opened) : nullptr;
+        if (sequence) {
+            // The constructor smooths with the defaults; re-smooth with the saved
+            // tuning so a reopened sequence reflects the persisted params.
+            sequence->resmooth(kalman_params);
+        }
         current_gpu.reset();
         raw_overlay_gpu.reset();
         loaded_frame = -1;
@@ -588,6 +600,24 @@ int main(int, char**) {
             pending_open_folder = explorer_result.open_folder;
         }
 
+        // TEMP: Kalman tuning window. Only the ratio of the two noises sets the
+        // amount of smoothing; both are log sliders since they span orders of
+        // magnitude. Changing either re-smooths the loaded sequence (from the
+        // cached raw frames, no disk) and invalidates the uploaded frame so the
+        // new smoothing shows immediately. Remove with the rest of the temp UI.
+        {
+            ImGui::Begin("Kalman (temp)");
+            bool params_changed = false;
+            params_changed |= ImGui::SliderFloat("process noise", &kalman_params.process_noise, 1e-4f, 10.0f, "%.5f", ImGuiSliderFlags_Logarithmic);
+            params_changed |= ImGui::SliderFloat("measurement noise", &kalman_params.measurement_noise, 1e-3f, 100.0f, "%.4f", ImGuiSliderFlags_Logarithmic);
+            ImGui::TextDisabled("higher process / lower measurement = less smoothing");
+            if (params_changed && sequence) {
+                sequence->resmooth(kalman_params);
+                loaded_frame = -1; // force the on-screen frame to rebuild from the re-smoothed data
+            }
+            ImGui::End();
+        }
+
         if (has_sequence) {
             // Only the pane that drew the transport changed the state; read it back.
             const TransportState& echo = transport_pane == 1 ? image_view.transport : viewport.transport;
@@ -656,6 +686,9 @@ int main(int, char**) {
     settings.active_pane = active_pane;
     settings.playback_speed = playback_speed;
     settings.expanded_folders = explorer.expanded_paths(); // persist which tree folders are open
+    // TEMP: persist the tuned Kalman noise params so they reload next launch.
+    settings.kalman_process_noise = kalman_params.process_noise;
+    settings.kalman_measurement_noise = kalman_params.measurement_noise;
     if (settings.free_camera) {
         orbit_cam.set_from_free(free_cam);
     }

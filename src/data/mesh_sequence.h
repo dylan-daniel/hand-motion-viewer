@@ -42,6 +42,8 @@ std::string frame_image_path(const std::string& mesh_path);
 /// stabilisation snaps every other frame's hands onto.
 float reference_depth(const Frame& hands);
 
+struct KalmanParams; // see kalman.h; only referenced by const-ref below
+
 /// A folder of per-frame hand meshes. With ``smooth`` disabled a frame's hands
 /// are parsed synchronously from disk each time ``load_frame`` is called (no
 /// caching). With ``smooth`` enabled every frame is read once at construction and
@@ -66,6 +68,12 @@ public:
     /// bypassing the smoothing cache. Used by the temporary raw-position overlay.
     Frame load_raw_frame(int index) const { return load_frame_from_disk(index); }
 
+    /// TEMP: re-run the smoother over the cached raw frames with new params, so a
+    /// debug slider can retune the smoothing without re-reading the sequence from
+    /// disk. No-op when smoothing is disabled. Remove with the rest of the temp
+    /// Kalman tuning UI once the params are dialled in.
+    void resmooth(const KalmanParams& params);
+
 private:
     /// Read and decode the hands for frame ``index`` straight from disk.
     Frame load_frame_from_disk(int index) const;
@@ -73,9 +81,12 @@ private:
     std::string folder_;
     std::vector<std::vector<std::string>> frame_paths_;
     int frame_count_;
-    // Populated only when smoothing is enabled: the whole sequence is read and
-    // smoothed once at construction, and load_frame serves frames from here.
+    // Populated only when smoothing is enabled: the whole sequence is read once at
+    // construction (raw_frames_), then smoothed into smoothed_frames_, which
+    // load_frame serves from. raw_frames_ is kept so resmooth() can retune without
+    // touching disk.
     bool smoothed_ = false;
+    std::vector<Frame> raw_frames_;
     std::vector<Frame> smoothed_frames_;
 };
 

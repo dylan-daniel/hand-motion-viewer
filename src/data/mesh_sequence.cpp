@@ -168,17 +168,24 @@ MeshSequence::MeshSequence(const std::string& folder, bool smooth) : folder_(fol
     frame_count_ = static_cast<int>(frame_paths_.size());
 
     if (smooth && frame_count_ > 0) {
-        // Read the whole sequence once and replace it with its smoothed form. The
-        // forward-backward smoother needs every frame, so this is an unavoidable
-        // up-front load (no on-demand streaming for a smoothed sequence).
-        std::vector<Frame> raw;
-        raw.reserve(static_cast<std::size_t>(frame_count_));
+        // Read the whole sequence once and keep it (raw_frames_) so the smoother can
+        // be re-run with new params without touching disk. The forward-backward
+        // smoother needs every frame, so this is an unavoidable up-front load (no
+        // on-demand streaming for a smoothed sequence).
+        raw_frames_.reserve(static_cast<std::size_t>(frame_count_));
         for (int index = 0; index < frame_count_; ++index) {
-            raw.push_back(load_frame_from_disk(index));
+            raw_frames_.push_back(load_frame_from_disk(index));
         }
-        smoothed_frames_ = smooth_sequence(raw);
+        smoothed_frames_ = smooth_sequence(raw_frames_);
         smoothed_ = true;
     }
+}
+
+void MeshSequence::resmooth(const KalmanParams& params) {
+    if (!smoothed_) {
+        return;
+    }
+    smoothed_frames_ = smooth_sequence(raw_frames_, params);
 }
 
 Frame MeshSequence::load_frame(int index) const {

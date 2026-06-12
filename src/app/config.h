@@ -21,6 +21,11 @@ struct Config {
     std::optional<std::string> data_folder;    // root folder the Explorer pane browses, if chosen
     std::vector<std::string> expanded_folders; // Explorer tree folders left expanded, restored on launch
 
+    // TEMP: Kalman smoothing noise params, persisted so the tuned values survive a
+    // restart. Defaults match KalmanParams in kalman.h. Remove with the temp UI.
+    float kalman_process_noise = 0.01f;
+    float kalman_measurement_noise = 1.0f;
+
     // Window placement. Position is stored relative to ``window_display``'s
     // top-left corner so the window returns to the right monitor next launch.
     std::optional<int> window_x;
