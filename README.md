@@ -28,10 +28,10 @@ an interactive 3D viewport.
 - [Ninja](https://ninja-build.org/) (optional, recommended)
 - Git (CMake fetches all dependencies from source)
 
-All third-party libraries — SDL2, glm, nlohmann/json, Dear ImGui,
+All third-party libraries — SDL3, glm, nlohmann/json, Dear ImGui,
 portable-file-dialogs, and stb — are downloaded and built
 automatically by CMake via `FetchContent`. There is nothing to install by hand.
-On Windows the SDL2 runtime DLL is copied next to the executable automatically.
+On Windows the SDL3 runtime DLL is copied next to the executable automatically.
 The bundled font (`fonts/`) and the shared MANO face topology (`mano/`) are
 copied next to the executable on every build as well, so the viewer finds them
 relative to the binary.
@@ -55,13 +55,13 @@ Two configure-time options help produce a release you can hand to others. Becaus
 they are read at configure time, set them with `-D...` when configuring; the build
 command is unchanged.
 
-- **`RELEASE_STATIC`** — links everything (SDL2, the C/C++ runtime, libgcc /
+- **`RELEASE_STATIC`** — links everything (SDL3, the C/C++ runtime, libgcc /
   winpthread under GCC) into the executable so it runs with no bundled DLLs.
   `opengl32.dll` stays dynamic — it is the system GPU driver loader and is
   present on every Windows machine. Works under both GCC/MinGW (via `-static`)
   and MSVC (via the static CRT, `/MT`).
 - **`PACKAGE_RELEASE`** — after each build, assembles only the shippable files
-  (the executable plus the `fonts/` and `mano/` folders, and `SDL2.dll` for a
+  (the executable plus the `fonts/` and `mano/` folders, and `SDL3.dll` for a
   non-static build) into `<build>/dist/`, then zips its contents into
   `<build>/dist.zip` for one-file distribution.
 
@@ -110,7 +110,7 @@ Includes are written relative to `src/` (e.g. `#include "data/geometry.h"`).
 src/
 ├── app/                 Application shell
 │   ├── main.cpp         Entry point, window/GL/ImGui setup, main loop
-│   ├── window.*         SDL2 window + GL context, geometry persistence
+│   ├── window.*         SDL3 window + GL context, geometry persistence
 │   └── config.*         JSON config load/save
 ├── graphics/            Rendering and GPU resources
 │   ├── rendering.*      OpenGL 3.3 renderer, cameras, framebuffer

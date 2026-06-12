@@ -6,12 +6,13 @@
 #include <optional>
 #include <string>
 
-#include <SDL.h>
-#include <SDL_opengl.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
+#include <SDL3/SDL_opengl.h>
 
 #include <imgui.h>
 #include <imgui_impl_opengl3.h>
-#include <imgui_impl_sdl2.h>
+#include <imgui_impl_sdl3.h>
 #include <imgui_internal.h>
 
 #include <portable-file-dialogs.h>
@@ -30,7 +31,7 @@ namespace {
 } // namespace
 
 int main(int, char**) {
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::printf("SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
@@ -42,10 +43,9 @@ int main(int, char**) {
     // binary stores only vertices/joints, so faces come from this one file.
     {
         std::string faces_path = "mano/mano_faces.bin";
-        char* base = SDL_GetBasePath();
+        const char* base = SDL_GetBasePath();
         if (base != nullptr) {
             faces_path = std::string(base) + "mano/mano_faces.bin";
-            SDL_free(base);
         }
         try {
             init_mano_topology(faces_path);
@@ -65,13 +65,29 @@ int main(int, char**) {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 
-    Uint32 window_flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
-    if (settings.window_fullscreen) {
-        window_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
-    }
-    SDL_Window* app_window = SDL_CreateWindow("Hand Motion Viewer", geometry.x, geometry.y, geometry.width, geometry.height, window_flags);
+    // Create the window via a properties bag so its position is set before creation
+    // rather than patched in afterward (SDL_CreateWindow takes no position). It is
+    // created hidden and stays hidden through GL/ImGui init and the first rendered
+    // frame (which builds the default dock layout) so the user never sees the UI
+    // assemble itself — it is shown once after the first frame swaps, already fully
+    // laid out, below.
+    SDL_PropertiesID window_props = SDL_CreateProperties();
+    SDL_SetStringProperty(window_props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "Hand Motion Viewer");
+    SDL_SetNumberProperty(window_props, SDL_PROP_WINDOW_CREATE_X_NUMBER, geometry.x);
+    SDL_SetNumberProperty(window_props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, geometry.y);
+    SDL_SetNumberProperty(window_props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, geometry.width);
+    SDL_SetNumberProperty(window_props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, geometry.height);
+    SDL_SetBooleanProperty(window_props, SDL_PROP_WINDOW_CREATE_OPENGL_BOOLEAN, true);
+    SDL_SetBooleanProperty(window_props, SDL_PROP_WINDOW_CREATE_RESIZABLE_BOOLEAN, true);
+    SDL_SetBooleanProperty(window_props, SDL_PROP_WINDOW_CREATE_HIGH_PIXEL_DENSITY_BOOLEAN, true);
+    SDL_SetBooleanProperty(window_props, SDL_PROP_WINDOW_CREATE_HIDDEN_BOOLEAN, true);
+    SDL_SetBooleanProperty(window_props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, settings.window_fullscreen);
+
+    SDL_Window* app_window = SDL_CreateWindowWithProperties(window_props);
+    SDL_DestroyProperties(window_props);
+
     if (app_window == nullptr) {
-        std::printf("SDL_CreateWindow failed: %s\n", SDL_GetError());
+        std::printf("SDL_CreateWindowWithProperties failed: %s\n", SDL_GetError());
         SDL_Quit();
         return 1;
     }
@@ -84,9 +100,11 @@ int main(int, char**) {
         std::printf("Warning: some OpenGL entry points could not be loaded.\n");
     }
 
+    // Pixel size (not logical size) drives the final glViewport so it stays correct
+    // on high-DPI displays where the two differ.
     int win_width = 0;
     int win_height = 0;
-    SDL_GetWindowSize(app_window, &win_width, &win_height);
+    SDL_GetWindowSizeInPixels(app_window, &win_width, &win_height);
 
     glEnable(GL_DEPTH_TEST);
 
@@ -101,11 +119,8 @@ int main(int, char**) {
     // the context: imgui keeps the pointer and writes the file on shutdown.
     static std::string imgui_ini_path;
     {
-        char* base = SDL_GetBasePath();
+        const char* base = SDL_GetBasePath();
         imgui_ini_path = (base != nullptr ? std::string(base) : std::string()) + "imgui.ini";
-        if (base != nullptr) {
-            SDL_free(base);
-        }
     }
     imgui_io.IniFilename = imgui_ini_path.c_str();
 
@@ -118,7 +133,7 @@ int main(int, char**) {
     auto [ui_font, fps_font] = load_fonts(imgui_io);
     imgui_io.FontDefault = ui_font;
 
-    ImGui_ImplSDL2_InitForOpenGL(app_window, gl_context);
+    ImGui_ImplSDL3_InitForOpenGL(app_window, gl_context);
     ImGui_ImplOpenGL3_Init("#version 330");
 
     Framebuffer framebuffer;
@@ -192,29 +207,31 @@ int main(int, char**) {
     bool panning = false;
     bool viewport_hovered = false;
 
-    Uint64 last_ticks = SDL_GetTicks64();
+    Uint64 last_ticks = SDL_GetTicks();
     bool running = true;
+    // The window is created hidden and revealed after the first frame swaps below.
+    bool window_shown = false;
     while (running) {
-        const Uint64 now_ticks = SDL_GetTicks64();
+        const Uint64 now_ticks = SDL_GetTicks();
         const double dt_seconds = static_cast<double>(now_ticks - last_ticks) / 1000.0;
         last_ticks = now_ticks;
 
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-            ImGui_ImplSDL2_ProcessEvent(&event);
+            ImGui_ImplSDL3_ProcessEvent(&event);
 
-            if (event.type == SDL_QUIT) {
+            if (event.type == SDL_EVENT_QUIT) {
                 running = false;
-            } else if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+            } else if (event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
                 win_width = event.window.data1;
                 win_height = event.window.data2;
-            } else if (event.type == SDL_KEYDOWN) {
-                const SDL_Keycode key = event.key.keysym.sym;
+            } else if (event.type == SDL_EVENT_KEY_DOWN) {
+                const SDL_Keycode key = event.key.key;
                 if (key == SDLK_ESCAPE) {
                     running = false;
-                } else if (key == SDLK_r) {
+                } else if (key == SDLK_R) {
                     camera->reset();
-                } else if (key == SDLK_h) {
+                } else if (key == SDLK_H) {
                     settings.hand_translucent = !settings.hand_translucent;
                 } else if (key == SDLK_SPACE && event.key.repeat == 0 && !imgui_io.WantTextInput) {
                     if (sequence && sequence->frame_count() > 0) {
@@ -234,35 +251,35 @@ int main(int, char**) {
                 } else if (key == SDLK_F11) {
                     if (!settings.window_fullscreen) {
                         windowed_geometry = read_current_geometry(app_window);
-                        SDL_SetWindowFullscreen(app_window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+                        SDL_SetWindowFullscreen(app_window, true);
                     } else {
-                        SDL_SetWindowFullscreen(app_window, 0);
+                        SDL_SetWindowFullscreen(app_window, false);
                     }
                     settings.window_fullscreen = !settings.window_fullscreen;
-                    SDL_GetWindowSize(app_window, &win_width, &win_height);
+                    SDL_GetWindowSizeInPixels(app_window, &win_width, &win_height);
                 }
-            } else if (event.type == SDL_MOUSEBUTTONDOWN && viewport_hovered) {
+            } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && viewport_hovered) {
                 if (event.button.button == SDL_BUTTON_RIGHT) {
-                    if (SDL_GetModState() & KMOD_SHIFT) {
+                    if (SDL_GetModState() & SDL_KMOD_SHIFT) {
                         panning = true;
                     } else {
                         orbiting = true;
                     }
-                    set_relative_mouse(true);
+                    set_relative_mouse(app_window, true);
                 }
-            } else if (event.type == SDL_MOUSEBUTTONUP) {
+            } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
                 if (event.button.button == SDL_BUTTON_RIGHT) {
                     orbiting = false;
                     panning = false;
-                    set_relative_mouse(false);
+                    set_relative_mouse(app_window, false);
                 }
-            } else if (event.type == SDL_MOUSEWHEEL && viewport_hovered) {
+            } else if (event.type == SDL_EVENT_MOUSE_WHEEL && viewport_hovered) {
                 if (event.wheel.y > 0) {
                     camera->zoom(1.0f);
                 } else if (event.wheel.y < 0) {
                     camera->zoom(-1.0f);
                 }
-            } else if (event.type == SDL_MOUSEMOTION) {
+            } else if (event.type == SDL_EVENT_MOUSE_MOTION) {
                 const float dx = static_cast<float>(event.motion.xrel);
                 const float dy = static_cast<float>(event.motion.yrel);
                 if (orbiting) {
@@ -279,7 +296,7 @@ int main(int, char**) {
         // window move-id as the active item), which would otherwise freeze camera
         // movement whenever the left button is down over the viewport.
         if (!imgui_io.WantTextInput) {
-            const Uint8* keys = SDL_GetKeyboardState(nullptr);
+            const bool* keys = SDL_GetKeyboardState(nullptr);
             const float forward = (keys[SDL_SCANCODE_W] ? 1.0f : 0.0f) - (keys[SDL_SCANCODE_S] ? 1.0f : 0.0f);
             const float right = (keys[SDL_SCANCODE_D] ? 1.0f : 0.0f) - (keys[SDL_SCANCODE_A] ? 1.0f : 0.0f);
             const float up = (keys[SDL_SCANCODE_E] ? 1.0f : 0.0f) - (keys[SDL_SCANCODE_Q] ? 1.0f : 0.0f);
@@ -290,7 +307,7 @@ int main(int, char**) {
 
         // ── Build the imgui frame ──────────────
         ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplSDL2_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
         ImGui::NewFrame();
 
         const bool was_free_camera = settings.free_camera;
@@ -475,6 +492,14 @@ int main(int, char**) {
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
         SDL_GL_SwapWindow(app_window);
+
+        // Reveal the window only after the first frame has been rendered and
+        // swapped, so it appears with the dock layout already built instead of
+        // assembling itself on screen. One-shot: harmless to call once.
+        if (!window_shown) {
+            window_shown = true;
+            SDL_ShowWindow(app_window);
+        }
     }
 
     // ── Persist settings ───────────────────────
@@ -502,9 +527,9 @@ int main(int, char**) {
     shutdown_renderer();
 
     ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplSDL2_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
-    SDL_GL_DeleteContext(gl_context);
+    SDL_GL_DestroyContext(gl_context);
     SDL_DestroyWindow(app_window);
     SDL_Quit();
     return 0;

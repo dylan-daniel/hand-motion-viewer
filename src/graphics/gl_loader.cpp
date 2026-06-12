@@ -1,6 +1,6 @@
 #include "graphics/gl_loader.h"
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 namespace glx {
     PFNGLGENBUFFERSPROC GenBuffers = nullptr;

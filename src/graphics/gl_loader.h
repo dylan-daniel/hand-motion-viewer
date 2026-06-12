@@ -3,12 +3,12 @@
 // Modern OpenGL entry points the viewer needs beyond the GL 1.1 core that
 // opengl32 exports on Windows: vertex buffer objects (for the mesh GpuMesh) and
 // framebuffer objects (the offscreen render target). They are resolved at
-// runtime with SDL_GL_GetProcAddress, so the only dependency is SDL2 — no GLEW
+// runtime with SDL_GL_GetProcAddress, so the only dependency is SDL3 — no GLEW
 // or GLAD. SDL_opengl.h supplies the function-pointer typedefs and the GL_*
 // enums (it bundles a copy of glext) without declaring prototypes, so these
 // names never clash with the platform GL headers.
 
-#include <SDL_opengl.h>
+#include <SDL3/SDL_opengl.h>
 
 namespace glx {
     // Vertex buffer objects.

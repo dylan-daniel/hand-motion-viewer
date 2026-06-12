@@ -3,7 +3,7 @@
 // Window helpers: query per-monitor desktop geometry, turn the saved config into
 // a placement that always lands fully on-screen, and toggle relative mouse mode.
 // Unlike the Python viewer (which had to dig the SDL library out of pygame),
-// these call SDL2 directly.
+// these call SDL3 directly.
 
 #include <vector>
 
@@ -35,8 +35,9 @@ std::vector<DisplayBounds> get_display_bounds();
 /// target monitor, centred when nothing is saved).
 WindowGeometry compute_initial_geometry(const Config& config);
 
-/// Enable or disable relative mouse mode (cursor hidden, locked, pure deltas).
-void set_relative_mouse(bool enabled);
+/// Enable or disable relative mouse mode (cursor hidden, locked, pure deltas) for
+/// the given window. SDL3 scopes relative mouse mode per window.
+void set_relative_mouse(SDL_Window* window, bool enabled);
 
 /// Read the live window's placement and which monitor it is on (only meaningful
 /// while windowed).

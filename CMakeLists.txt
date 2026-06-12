@@ -9,14 +9,14 @@ if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif ()
 
-# When ON, link everything statically (SDL2, the C/C++ runtime, libgcc,
+# When ON, link everything statically (SDL3, the C/C++ runtime, libgcc,
 # winpthread) so the release exe runs with no bundled DLLs. opengl32.dll is the
 # one exception — it is the system GPU driver loader and is always dynamic. Set
 # at configure time: cmake -B build -DRELEASE_STATIC=ON
 option(RELEASE_STATIC "Statically link the release exe (except opengl32.dll)" OFF)
 
 # When ON, gather only the files that need shipping (exe + fonts/ + mano/, plus
-# SDL2.dll for a non-static build) into <build>/dist/hand_motion_viewer after each
+# SDL3.dll for a non-static build) into <build>/dist/hand_motion_viewer after each
 # build and zip it into <build>/hand_motion_viewer.zip. Set at configure time:
 # cmake -B build -DPACKAGE_RELEASE=ON
 option(PACKAGE_RELEASE "Assemble the shippable files into <build>/dist" OFF)
@@ -41,11 +41,11 @@ include(FetchContent)
 #  Dependencies (all fetched and built by CMake)
 # ──────────────────────────────────────────────
 
-# SDL2 — windowing, GL context, input. Building from source keeps the project
+# SDL3 — windowing, GL context, input. Building from source keeps the project
 # self-contained on every platform; the runtime DLL is copied next to the exe
-# below so there is no loose SDL2.dll to hunt down.
-set(SDL_TEST OFF CACHE BOOL "" FORCE)
-set(SDL2_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
+# below so there is no loose SDL3.dll to hunt down.
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_DISABLE_INSTALL ON CACHE BOOL "" FORCE)
 # Build SDL as a static lib for a static release, shared otherwise.
 if (RELEASE_STATIC)
     set(SDL_SHARED OFF CACHE BOOL "" FORCE)
@@ -55,9 +55,9 @@ else ()
     set(SDL_STATIC OFF CACHE BOOL "" FORCE)
 endif ()
 FetchContent_Declare(
-    SDL2
+    SDL3
     GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
-    GIT_TAG release-2.30.11
+    GIT_TAG release-3.4.8
     GIT_SHALLOW TRUE
 )
 
@@ -78,7 +78,7 @@ FetchContent_Declare(
 )
 
 # Dear ImGui (docking branch) — the UI. It ships no CMake of its own, so the
-# core sources plus the SDL2 + OpenGL3 backends are compiled into a static
+# core sources plus the SDL3 + OpenGL3 backends are compiled into a static
 # library below. The OpenGL3 backend targets the programmable pipeline, matching
 # the renderer's core 3.3 context; it bundles its own GL loader so ImGui needs no
 # external one.
@@ -114,7 +114,7 @@ FetchContent_Declare(
     SOURCE_SUBDIR do-not-configure
 )
 
-FetchContent_MakeAvailable(SDL2 glm nlohmann_json imgui portable_file_dialogs stb)
+FetchContent_MakeAvailable(SDL3 glm nlohmann_json imgui portable_file_dialogs stb)
 
 add_library(portable_file_dialogs INTERFACE)
 target_include_directories(portable_file_dialogs INTERFACE ${portable_file_dialogs_SOURCE_DIR})
@@ -124,12 +124,12 @@ target_include_directories(stb INTERFACE ${stb_SOURCE_DIR})
 
 find_package(OpenGL REQUIRED)
 
-# SDL exposes SDL2::SDL2 when built shared and SDL2::SDL2-static when static;
+# SDL exposes SDL3::SDL3 when built shared and SDL3::SDL3-static when static;
 # pick whichever this configuration produced.
 if (RELEASE_STATIC)
-    set(sdl2_target SDL2::SDL2-static)
+    set(sdl3_target SDL3::SDL3-static)
 else ()
-    set(sdl2_target SDL2::SDL2)
+    set(sdl3_target SDL3::SDL3)
 endif ()
 
 # ── Dear ImGui static library ──────────────────
@@ -138,14 +138,14 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl2.cpp
+    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
 )
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
 )
-target_link_libraries(imgui_lib PUBLIC ${sdl2_target} OpenGL::GL)
+target_link_libraries(imgui_lib PUBLIC ${sdl3_target} OpenGL::GL)
 
 # ── The viewer ─────────────────────────────────
 # Glob the sources recursively so new files (and subfolders) are picked up
@@ -157,8 +157,8 @@ add_executable(hand_motion_viewer ${viewer_sources})
 target_include_directories(hand_motion_viewer PRIVATE src)
 
 target_link_libraries(hand_motion_viewer PRIVATE
-    ${sdl2_target}
-    $<TARGET_NAME_IF_EXISTS:SDL2::SDL2main>
+    ${sdl3_target}
+    $<TARGET_NAME_IF_EXISTS:SDL3::SDL3main>
     OpenGL::GL
     glm::glm
     nlohmann_json::nlohmann_json
@@ -190,19 +190,19 @@ if (APPLE)
 endif ()
 
 # Build as a GUI-subsystem app on Windows so launching it shows only the app
-# window, with no console popping up. SDL2main supplies the WinMain entry point
-# that forwards to main(), so no source change is needed.
+# window, with no console popping up. SDL3 supplies the WinMain entry point (via
+# SDL_main.h, included in main.cpp) that forwards to main().
 if (WIN32 AND NOT WIN32_CONSOLE)
     set_target_properties(hand_motion_viewer PROPERTIES WIN32_EXECUTABLE ON)
 endif ()
 
-# Copy the SDL2 runtime library next to the executable on Windows so it launches
+# Copy the SDL3 runtime library next to the executable on Windows so it launches
 # straight from the build tree with no manual DLL placement. Skipped for a static
 # release, where SDL is linked into the exe and there is no DLL to copy.
 if (WIN32 AND NOT RELEASE_STATIC)
     add_custom_command(TARGET hand_motion_viewer POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:SDL2::SDL2>
+        $<TARGET_FILE:SDL3::SDL3>
         $<TARGET_FILE_DIR:hand_motion_viewer>
     )
 endif ()
@@ -225,7 +225,7 @@ add_custom_command(TARGET hand_motion_viewer POST_BUILD
 )
 
 # Assemble a clean, distributable folder containing only what ships: the exe and
-# the fonts/ and mano/ runtime assets (plus SDL2.dll when not statically linked).
+# the fonts/ and mano/ runtime assets (plus SDL3.dll when not statically linked).
 # Built fresh each time (the dir is removed first) so it never holds stale files.
 if (PACKAGE_RELEASE)
     set(dist_dir ${CMAKE_BINARY_DIR}/dist)
@@ -240,7 +240,7 @@ if (PACKAGE_RELEASE)
     )
     if (WIN32 AND NOT RELEASE_STATIC)
         add_custom_command(TARGET hand_motion_viewer POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL2::SDL2> ${package_dir}
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:SDL3::SDL3> ${package_dir}
         )
     endif ()
 

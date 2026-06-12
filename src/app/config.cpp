@@ -1,6 +1,6 @@
 #include "app/config.h"
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -117,10 +117,9 @@ void save_config(const std::string& path, const Config& config) {
 
 std::string default_config_path() {
     std::string result = "config.json";
-    char* base = SDL_GetBasePath();
+    const char* base = SDL_GetBasePath();
     if (base != nullptr) {
         result = std::string(base) + "config.json";
-        SDL_free(base);
     }
     return result;
 }

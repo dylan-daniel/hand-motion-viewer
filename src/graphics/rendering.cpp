@@ -6,7 +6,7 @@
 #include <cmath>
 #include <cstdio>
 
-#include <SDL_opengl.h>
+#include <SDL3/SDL_opengl.h>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 

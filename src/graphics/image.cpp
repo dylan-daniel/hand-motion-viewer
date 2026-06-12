@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <utility>
 
-#include <SDL_opengl.h>
+#include <SDL3/SDL_opengl.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>

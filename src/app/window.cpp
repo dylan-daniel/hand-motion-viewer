@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 namespace {
     // Allowance for the OS title bar / borders so the window's top stays reachable
@@ -23,12 +23,19 @@ namespace {
 
 std::vector<DisplayBounds> get_display_bounds() {
     std::vector<DisplayBounds> bounds;
-    const int count = SDL_GetNumVideoDisplays();
-    for (int index = 0; index < count; ++index) {
-        SDL_Rect rect;
-        if (SDL_GetDisplayBounds(index, &rect) == 0) {
-            bounds.push_back({rect.x, rect.y, rect.w, rect.h});
+    // SDL3 enumerates displays by opaque ID rather than index; we keep returning a
+    // vector indexed by enumeration order so config's window_display index still
+    // round-trips. The returned array is owned by SDL and freed here.
+    int count = 0;
+    SDL_DisplayID* displays = SDL_GetDisplays(&count);
+    if (displays != nullptr) {
+        for (int index = 0; index < count; ++index) {
+            SDL_Rect rect;
+            if (SDL_GetDisplayBounds(displays[index], &rect)) {
+                bounds.push_back({rect.x, rect.y, rect.w, rect.h});
+            }
         }
+        SDL_free(displays);
     }
     return bounds;
 }
@@ -69,7 +76,7 @@ WindowGeometry compute_initial_geometry(const Config& config) {
     return WindowGeometry{pos_x, pos_y, width, height, display};
 }
 
-void set_relative_mouse(bool enabled) { SDL_SetRelativeMouseMode(enabled ? SDL_TRUE : SDL_FALSE); }
+void set_relative_mouse(SDL_Window* window, bool enabled) { SDL_SetWindowRelativeMouseMode(window, enabled); }
 
 WindowGeometry read_current_geometry(SDL_Window* window) {
     int pos_x = 0;

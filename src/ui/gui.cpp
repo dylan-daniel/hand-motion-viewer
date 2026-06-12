@@ -7,7 +7,7 @@
 #include <filesystem>
 #include <vector>
 
-#include <SDL.h>
+#include <SDL3/SDL.h>
 
 namespace {
     namespace fs = std::filesystem;
@@ -41,10 +41,9 @@ namespace {
     /// Path to the first .ttf in the bundled fonts/ directory next to the binary.
     std::string find_bundled_font() {
         std::string base = "fonts";
-        char* base_path = SDL_GetBasePath();
+        const char* base_path = SDL_GetBasePath();
         if (base_path != nullptr) {
             base = std::string(base_path) + "fonts";
-            SDL_free(base_path);
         }
 
         std::error_code error;
