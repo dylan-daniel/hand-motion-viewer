@@ -113,6 +113,14 @@ int main(int, char**) {
     ImGuiIO& imgui_io = ImGui::GetIO();
     imgui_io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
+    // Remove the docking/collapse menu button (the small triangle in each pane's
+    // tab bar). Doing it via the style rather than the per-node NoWindowMenuButton
+    // flag also drops the space the tab bar reserved for it: the tab-bar layout
+    // only offsets for the button when WindowMenuButtonPosition is Left, so None
+    // hides the button and reclaims the offset everywhere — including the docking
+    // drag preview, which otherwise ignores the per-node flag and leaves a gap.
+    ImGui::GetStyle().WindowMenuButtonPosition = ImGuiDir_None;
+
     // Persist the dock layout next to the executable (like config.json) instead of
     // imgui's default cwd-relative path, so the saved window arrangement is
     // restored no matter where the app is launched from. The string must outlive
