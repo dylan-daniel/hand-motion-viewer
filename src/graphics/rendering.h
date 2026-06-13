@@ -194,12 +194,13 @@ void shutdown_renderer();
 /// are added here (not as another render_scene argument) and unused ones can be
 /// left out at the call site via designated initializers.
 struct SceneRender {
-    const FrameGpu* frame = nullptr;       // the hands to draw; null draws just the grid
-    bool translucent = false;              // draw the hand surface see-through
-    const Transform* transform = nullptr;  // fixed scene fit applied to every hand
-    std::optional<float> reference_depth;  // common plane every hand is depth-snapped to
-    bool show_camera_marker = false;       // draw the orbit camera's look-at marker
-    const FrameGpu* raw_overlay = nullptr; // optional second frame (e.g. raw, unsmoothed hands) drawn translucent over ``frame``
+    const FrameGpu* frame = nullptr;         // the hands to draw; null draws just the grid
+    bool translucent = false;                // draw the hand surface see-through
+    const Transform* transform = nullptr;    // fixed scene fit applied to every hand
+    std::optional<float> reference_depth;    // common plane every hand is depth-snapped to
+    bool show_camera_marker = false;         // draw the orbit camera's look-at marker
+    const FrameGpu* raw_overlay = nullptr;   // optional second frame (e.g. raw, unsmoothed hands) drawn translucent over ``frame``
+    const FrameGpu* adult_overlay = nullptr; // optional adult (non-baby) hands, drawn translucent (yellow) over ``frame``
 };
 
 /// Render the grid and the active frame into the offscreen framebuffer. The

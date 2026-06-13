@@ -665,6 +665,12 @@ void render_scene(const Framebuffer& framebuffer, const Camera& camera, const Sc
         scene.raw_overlay->draw(true, scene.transform, scene.reference_depth);
     }
 
+    // Adult (non-baby) hands, drawn translucent (their yellow surface colour is
+    // baked in at prepare_frame) so they read as secondary to the baby hands.
+    if (scene.adult_overlay != nullptr) {
+        scene.adult_overlay->draw(true, scene.transform, scene.reference_depth);
+    }
+
     // Marker for the orbit camera's look-at point; drawn last so its
     // translucency blends over the scene.
     if (scene.show_camera_marker && camera.draws_marker()) {

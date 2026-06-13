@@ -19,6 +19,7 @@
 
 #include "app/config.h"
 #include "app/window.h"
+#include "data/classification.h"
 #include "data/kalman.h" // TEMP: KalmanParams for the debug smoothing slider
 #include "data/mesh_sequence.h"
 #include "graphics/gl_loader.h"
@@ -177,6 +178,14 @@ int main(int, char**) {
     std::unique_ptr<FrameGpu> raw_overlay_gpu;
     // TEMP: toggles the red raw-hands overlay from the Kalman pane (on by default).
     bool show_raw_overlay = true;
+    // Adult (non-baby) hands, prepared in yellow and drawn translucent. Built from
+    // the same frame as current_gpu, split out by the per-video labels. When
+    // hide_adult_hands is set they are dropped instead of drawn.
+    std::unique_ptr<FrameGpu> adult_gpu;
+    bool hide_adult_hands = false;
+    // Baby/adult labels for the loaded sequence (from data/labels_per_video). Lives
+    // as long as the sequence so each frame's hands can be split as they load.
+    HandClassification classification;
     int loaded_frame = -1;
     std::optional<Transform> transform;
     std::optional<float> depth_reference;
@@ -198,7 +207,52 @@ int main(int, char**) {
     kalman_params.process_noise = settings.kalman_process_noise;
     kalman_params.measurement_noise = settings.kalman_measurement_noise;
 
+    // Locate the data/labels_per_video folder that labels each hmesh as a baby hand
+    // or not. Searched once: walk up from both the working dir and the exe dir so it
+    // resolves whether the app is launched from the repo root or build/.
+    const std::string labels_dir = [] {
+        std::vector<std::filesystem::path> starts;
+        starts.push_back(std::filesystem::current_path());
+        if (const char* base = SDL_GetBasePath()) {
+            starts.emplace_back(base);
+        }
+        for (std::filesystem::path start : starts) {
+            for (int up = 0; up < 6; ++up) {
+                const std::filesystem::path candidate = start / "data" / "labels_per_video";
+                std::error_code error;
+                if (std::filesystem::is_directory(candidate, error)) {
+                    return candidate.string();
+                }
+                if (!start.has_parent_path()) {
+                    break;
+                }
+                start = start.parent_path();
+            }
+        }
+        return std::string();
+    }();
+
     auto open_sequence = [&](const std::string& folder, int start_frame) {
+        // Load the per-take baby/adult labels CSV. The data layout is
+        // data/<subject>/<take> (e.g. data/AE45/T1_BabyView) and the CSV is named
+        // labels_<subject>_<take>.csv (labels_AE45_T1_BabyView.csv). Stored in the
+        // sequence-scoped ``classification`` so frames can be split as they load.
+        classification = HandClassification{};
+        if (!labels_dir.empty()) {
+            std::filesystem::path folder_path(folder);
+            if (folder_path.filename().empty()) {
+                folder_path = folder_path.parent_path(); // tolerate a trailing separator
+            }
+            const std::string take = folder_path.filename().string();
+            const std::string subject = folder_path.parent_path().filename().string();
+            const std::string csv_name = subject.empty() ? "labels_" + take + ".csv" : "labels_" + subject + "_" + take + ".csv";
+            const std::filesystem::path csv = std::filesystem::path(labels_dir) / csv_name;
+            std::error_code error;
+            if (std::filesystem::exists(csv, error)) {
+                classification = HandClassification::load(csv.string());
+            }
+        }
+
         // Smooth the sequence on open: the source motion is recovered per 30fps
         // frame and is visibly jittery, so a forward-backward Kalman smoother
         // removes the noise while keeping the real motion (see kalman.h).
@@ -218,6 +272,7 @@ int main(int, char**) {
         }
         current_gpu.reset();
         raw_overlay_gpu.reset();
+        adult_gpu.reset();
         loaded_frame = -1;
         transform.reset();
         depth_reference.reset();
@@ -532,7 +587,21 @@ int main(int, char**) {
             }
             if (current_frame != loaded_frame) {
                 Frame hands = sequence->load_frame(current_frame);
-                current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands));
+                const std::vector<std::string>& paths = sequence->frame_paths(current_frame);
+                // Split the frame's hands into baby and adult by the per-video
+                // labels (hands order matches frame_paths order). Baby hands render
+                // normally; adult hands get a yellow surface, drawn translucent (or
+                // dropped, per the toggle). Unlabeled hands default to baby.
+                Frame baby_hands;
+                Frame adult_hands;
+                for (std::size_t hand_index = 0; hand_index < hands.size(); ++hand_index) {
+                    const bool is_baby = hand_index >= paths.size() || classification.is_baby(std::filesystem::path(paths[hand_index]).filename().string());
+                    (is_baby ? baby_hands : adult_hands).push_back(std::move(hands[hand_index]));
+                }
+                current_gpu = std::make_unique<FrameGpu>(prepare_frame(baby_hands));
+                const glm::vec4 adult_color(0.9f, 0.85f, 0.2f, 1.0f);
+                adult_gpu = adult_hands.empty() ? nullptr : std::make_unique<FrameGpu>(prepare_frame(adult_hands, adult_color));
+
                 // TEMP: prepare the raw frame in a contrasting red for the overlay.
                 const Frame raw_hands = sequence->load_raw_frame(current_frame);
                 const glm::vec4 raw_color(0.9f, 0.25f, 0.25f, 1.0f);
@@ -622,6 +691,16 @@ int main(int, char**) {
             ImGui::End();
         }
 
+        // TEMP: adult (non-baby) hand display. Unchecked draws them as a yellow
+        // translucent overlay; checked hides them entirely. Driven by the per-video
+        // labels (data/labels_per_video).
+        {
+            ImGui::Begin("Classification (temp)");
+            ImGui::Checkbox("hide adult hands", &hide_adult_hands);
+            ImGui::TextDisabled("unchecked: adult hands shown yellow + transparent");
+            ImGui::End();
+        }
+
         if (has_sequence) {
             // Only the pane that drew the transport changed the state; read it back.
             const TransportState& echo = transport_pane == 1 ? image_view.transport : viewport.transport;
@@ -661,6 +740,7 @@ int main(int, char**) {
                 .reference_depth = depth_reference,
                 .show_camera_marker = settings.show_camera_marker,
                 .raw_overlay = show_raw_overlay ? raw_overlay_gpu.get() : nullptr, // TEMP: raw-position overlay
+                .adult_overlay = hide_adult_hands ? nullptr : adult_gpu.get(),     // adult hands shown yellow/translucent unless hidden
             }
         );
 
