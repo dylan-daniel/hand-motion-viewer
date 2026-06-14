@@ -17,6 +17,65 @@ namespace {
 
     // frame_0001_0.hmesh → frame number 0001, hand slot 0.
     const std::regex kFrameRe(R"(frame_(\d+)_(\d+)\.hmesh$)", std::regex::icase);
+
+    // A mesh folder ``.../data/<subject>/<view>`` is tracked by a sibling CSV
+    // ``.../data/tracking/tracks_<subject>_<view>.csv``. Returns an empty path if
+    // the layout does not match.
+    fs::path tracking_csv_path(const std::string& folder) {
+        const fs::path mesh_folder(folder);
+        const fs::path subject_dir = mesh_folder.parent_path();
+        if (subject_dir.empty() || subject_dir.filename().empty()) {
+            return {};
+        }
+        const std::string view = mesh_folder.filename().string();
+        const std::string subject = subject_dir.filename().string();
+        const std::string name = "tracks_" + subject + "_" + view + ".csv";
+        return subject_dir.parent_path() / "tracking" / name;
+    }
+
+    // Parse ``tracks_*.csv`` into (frame, idx) → track_id. The header lists
+    // columns subject,trial,view,frame,idx,track_id,is_right,... so frame is
+    // field 3, idx field 4 and track_id field 5 (zero-based).
+    std::map<std::pair<int, int>, int> load_track_ids(const std::string& folder) {
+        std::map<std::pair<int, int>, int> track_ids;
+        const fs::path csv = tracking_csv_path(folder);
+        if (csv.empty() || !fs::exists(csv)) {
+            return track_ids;
+        }
+        std::ifstream stream(csv);
+        if (!stream) {
+            return track_ids;
+        }
+        std::string line;
+        std::getline(stream, line); // discard header
+        while (std::getline(stream, line)) {
+            if (line.empty()) {
+                continue;
+            }
+            std::vector<std::string> fields;
+            std::size_t start = 0;
+            while (true) {
+                const std::size_t comma = line.find(',', start);
+                fields.push_back(line.substr(start, comma - start));
+                if (comma == std::string::npos) {
+                    break;
+                }
+                start = comma + 1;
+            }
+            if (fields.size() < 6) {
+                continue;
+            }
+            try {
+                const int frame_number = std::stoi(fields[3]);
+                const int slot = std::stoi(fields[4]);
+                const int track_id = std::stoi(fields[5]);
+                track_ids[{frame_number, slot}] = track_id;
+            } catch (const std::exception&) {
+                continue;
+            }
+        }
+        return track_ids;
+    }
 } // namespace
 
 std::vector<std::vector<std::string>> discover_frames(const std::string& folder) {
@@ -165,6 +224,7 @@ float reference_depth(const Frame& hands) {
 MeshSequence::MeshSequence(const std::string& folder) : folder_(folder) {
     frame_paths_ = discover_frames(folder);
     frame_count_ = static_cast<int>(frame_paths_.size());
+    track_ids_ = load_track_ids(folder);
 }
 
 Frame MeshSequence::load_frame(int index) const {
@@ -180,6 +240,18 @@ Frame MeshSequence::load_frame(int index) const {
         hand.verts = std::move(mesh.verts);
         hand.joints = std::move(mesh.joints);
         hand.is_right = mesh.is_right;
+        // Resolve the persistent track id from the parsed tracking CSV using the
+        // file's frame number and hand slot (frame_NNNN_<slot>.hmesh).
+        std::smatch match;
+        const std::string name = fs::path(path).filename().string();
+        if (std::regex_search(name, match, kFrameRe)) {
+            const int frame_number = std::stoi(match[1].str());
+            const int slot = std::stoi(match[2].str());
+            const auto found = track_ids_.find({frame_number, slot});
+            if (found != track_ids_.end()) {
+                hand.track_id = found->second;
+            }
+        }
         hands.push_back(std::move(hand));
     }
     return hands;

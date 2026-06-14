@@ -8,7 +8,9 @@
 // are streamed in per frame. Each frame is parsed synchronously on demand when
 // playback reaches it (no background preloading).
 
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -20,6 +22,7 @@ struct HandData {
     std::vector<glm::vec3> verts;  // MANO surface vertices (778)
     std::vector<glm::vec3> joints; // joint positions (21)
     bool is_right = true;          // handedness, picks the shared face winding
+    int track_id = -1;             // persistent hand id from the tracking CSV, -1 if unknown
 };
 
 /// A fixed translate-then-scale that frames the whole sequence on the grid.
@@ -63,6 +66,9 @@ private:
     std::string folder_;
     std::vector<std::vector<std::string>> frame_paths_;
     int frame_count_;
+    // (frame number, hand slot) → persistent track id, parsed from the sibling
+    // tracking CSV. Empty when no tracking file is found for this folder.
+    std::map<std::pair<int, int>, int> track_ids_;
 };
 
 /// Build the fixed transform that sits the sequence's hands on the grid and

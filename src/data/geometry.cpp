@@ -8,6 +8,38 @@
 
 #include <glm/gtc/constants.hpp>
 
+glm::vec4 track_color(int track_id) {
+    if (track_id < 0) {
+        return DEFAULT_COLOR;
+    }
+    // Spread hues by the golden-ratio conjugate so consecutive ids land far
+    // apart on the colour wheel and stay distinct for arbitrarily many tracks.
+    const float golden_ratio_conjugate = 0.61803398875f;
+    const float hue = std::fmod(static_cast<float>(track_id) * golden_ratio_conjugate, 1.0f);
+    const float saturation = 0.65f;
+    const float value = 0.95f;
+    const float sector = hue * 6.0f;
+    const int index = static_cast<int>(sector) % 6;
+    const float fractional = sector - std::floor(sector);
+    const float p = value * (1.0f - saturation);
+    const float q = value * (1.0f - saturation * fractional);
+    const float t = value * (1.0f - saturation * (1.0f - fractional));
+    switch (index) {
+        case 0:
+            return {value, t, p, 1.0f};
+        case 1:
+            return {q, value, p, 1.0f};
+        case 2:
+            return {p, value, t, 1.0f};
+        case 3:
+            return {p, q, value, 1.0f};
+        case 4:
+            return {t, p, value, 1.0f};
+        default:
+            return {value, p, q, 1.0f};
+    }
+}
+
 MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha) {
     MeshArrays out;
     const std::size_t face_count = part.faces.size();

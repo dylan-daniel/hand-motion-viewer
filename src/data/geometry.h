@@ -47,6 +47,11 @@ inline constexpr std::array<glm::vec4, 6> FINGER_COLORS = {
 /// Finger group a joint belongs to: 0 = wrist, 1 = thumb, …, 5 = pinky.
 inline int finger_of(int joint) { return joint == 0 ? 0 : (joint - 1) / 4 + 1; }
 
+/// A visually distinct surface colour for a tracking id. Hues are spread by the
+/// golden ratio so any number of ids stay easy to tell apart; a negative id
+/// (no tracking match) returns the neutral DEFAULT_COLOR.
+glm::vec4 track_color(int track_id);
+
 /// A drawable chunk of geometry: shared vertices plus per-face indices/normals.
 struct MeshPart {
     std::vector<glm::vec3> verts;
