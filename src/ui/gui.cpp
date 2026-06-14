@@ -8,10 +8,36 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_opengl.h>
 #include <imgui_freetype.h>
+#include <stb_image.h>
 
 namespace {
     namespace fs = std::filesystem;
+
+    /// Decode a PNG and upload it as an RGBA GL texture, returning the texture name
+    /// (0 if the file is missing or fails to decode). Linear filtered and clamped.
+    unsigned int load_texture(const std::string& path) {
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        unsigned char* pixels = stbi_load(path.c_str(), &width, &height, &channels, 4);
+        if (pixels == nullptr) {
+            std::printf("Transport icon failed to load %s: %s\n", path.c_str(), stbi_failure_reason());
+            return 0;
+        }
+        unsigned int texture = 0;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        stbi_image_free(pixels);
+        return texture;
+    }
 
     // Control reference shown by the viewport's "Controls" hover panel: each row is
     // (action, keys, sequence_only). Sequence-only rows are dimmed when no sequence
@@ -39,12 +65,12 @@ namespace {
         {"Quit", "Esc", false, false},
     }};
 
-    /// Path to the first .ttf in the bundled fonts/ directory next to the binary.
+    /// Path to the first .ttf in the bundled assets/fonts/ directory next to the binary.
     std::string find_bundled_font() {
-        std::string base = "fonts";
+        std::string base = "assets/fonts";
         const char* base_path = SDL_GetBasePath();
         if (base_path != nullptr) {
-            base = std::string(base_path) + "fonts";
+            base = std::string(base_path) + "assets/fonts";
         }
 
         std::error_code error;
@@ -71,7 +97,7 @@ namespace {
     bool draw_controls_overlay(const ImVec2& top_left, int width, bool has_sequence, bool playing, bool show_panel) {
         const char* label = "Controls";
         const float button_width = ImGui::CalcTextSize(label).x + 16.0f;
-        ImGui::SetCursorScreenPos(ImVec2(top_left.x + width - button_width - 8.0f, top_left.y + 8.0f));
+        ImGui::SetCursorScreenPos(ImVec2(top_left.x + width - button_width, top_left.y + 8.0f));
         if (ImGui::Button(label)) {
             show_panel = !show_panel;
         }
@@ -139,8 +165,28 @@ namespace {
         const float row_height = ImGui::GetFrameHeight();
         ImGui::SetCursorScreenPos(ImVec2(left + 8.0f, strip_top + (PLAYBACK_BAR_HEIGHT - row_height) * 0.5f));
 
-        if (ImGui::Button(playing ? "Pause" : "Play", ImVec2(70.0f, 0.0f))) {
-            playing = !playing;
+        // Play/pause as a filled icon button, tinted to the text colour; falls back
+        // to a text button if the icon texture is missing.
+        float button_width = 70.0f;
+        const unsigned int play_pause_icon = playing ? transport.pause_icon : transport.play_icon;
+        if (play_pause_icon != 0) {
+            const float icon_size = ImGui::GetFontSize();
+            if (ImGui::ImageButton(
+                    "transport_play_pause",
+                    static_cast<ImTextureID>(play_pause_icon),
+                    ImVec2(icon_size, icon_size),
+                    ImVec2(0.0f, 0.0f),
+                    ImVec2(1.0f, 1.0f),
+                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f),
+                    ImGui::GetStyleColorVec4(ImGuiCol_Text)
+                )) {
+                playing = !playing;
+            }
+            button_width = ImGui::GetItemRectSize().x;
+        } else {
+            if (ImGui::Button(playing ? "Pause" : "Play", ImVec2(70.0f, 0.0f))) {
+                playing = !playing;
+            }
         }
 
         // Stretch the scrubber to fill the gap between the button and the label.
@@ -148,7 +194,7 @@ namespace {
         char label[48];
         std::snprintf(label, sizeof(label), "frame %d / %d", current_frame + 1, frame_count);
         const float spacing = ImGui::GetStyle().ItemSpacing.x;
-        const float slider_width = width - 8.0f - 70.0f - spacing - ImGui::CalcTextSize(label).x - spacing - 8.0f;
+        const float slider_width = width - 8.0f - button_width - spacing - ImGui::CalcTextSize(label).x - spacing - 8.0f;
         ImGui::SetNextItemWidth(std::max(1.0f, slider_width));
         // Empty format: the standalone label shows the 1-based frame instead.
         ImGui::SliderInt("##frame", &current_frame, 0, frame_count - 1, "");
@@ -186,6 +232,21 @@ std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io) {
     return {ui_font, fps_font};
 }
 
+TransportIcons::~TransportIcons() {
+    if (play != 0) {
+        glDeleteTextures(1, &play);
+    }
+    if (pause != 0) {
+        glDeleteTextures(1, &pause);
+    }
+}
+
+void TransportIcons::load(const std::string& icons_dir) {
+    const std::string prefix = icons_dir.empty() || icons_dir.back() == '/' || icons_dir.back() == '\\' ? icons_dir : icons_dir + "/";
+    play = load_texture(prefix + "play.png");
+    pause = load_texture(prefix + "pause.png");
+}
+
 MenuResult draw_menu_bar(MenuState state) {
     bool folder_requested = false;
 
@@ -211,6 +272,31 @@ MenuResult draw_menu_bar(MenuState state) {
             ImGui::EndDisabled();
             ImGui::EndMenu();
         }
+
+        // Right-aligned path of the open sequence folder, always visible (even
+        // fullscreen) without crowding any pane. Drawn via the draw list and clipped
+        // to the space after the menus so a long path can't overlap File/Settings —
+        // when it doesn't fit, the left of the path is clipped, keeping the tail
+        // (the actual folder) at the right edge.
+        if (!state.open_folder.empty()) {
+            const ImVec2 window_pos = ImGui::GetWindowPos();
+            const float window_width = ImGui::GetWindowWidth();
+            const float window_height = ImGui::GetWindowHeight();
+            const float right_pad = 12.0f;
+            const float region_left = window_pos.x + ImGui::GetCursorPosX();
+            const float region_right = window_pos.x + window_width - right_pad;
+            if (region_right > region_left) {
+                const char* path = state.open_folder.c_str();
+                const float text_width = ImGui::CalcTextSize(path).x;
+                const float text_x = region_right - text_width; // right-aligned (may sit left of region, then clips)
+                const float text_y = window_pos.y + (window_height - ImGui::GetTextLineHeight()) * 0.5f;
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                draw_list->PushClipRect(ImVec2(region_left, window_pos.y), ImVec2(region_right, window_pos.y + window_height), true);
+                draw_list->AddText(ImVec2(text_x, text_y), ImGui::GetColorU32(ImGuiCol_TextDisabled), path);
+                draw_list->PopClipRect();
+            }
+        }
+
         ImGui::EndMainMenuBar();
     }
     return {state, folder_requested};

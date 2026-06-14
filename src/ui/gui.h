@@ -23,6 +23,7 @@ struct MenuState {
     bool hand_translucent = false;
     bool show_camera_marker = false;
     bool free_camera = false;
+    std::string open_folder; // currently-loaded sequence folder, shown right-aligned in the bar (empty = none)
 };
 
 struct MenuResult {
@@ -40,6 +41,27 @@ struct Transport {
     int frame_count = 0;
     bool playing = false;
     bool show_transport = false; // this pane carries the transport this frame
+    unsigned int play_icon = 0;  // play button texture (0 => text-button fallback)
+    unsigned int pause_icon = 0; // pause button texture (0 => text-button fallback)
+};
+
+/// GL textures for the transport's play/pause button. Loaded once after the GL
+/// context exists (plain ``GL_TEXTURE_2D`` names) and freed on destruction. A
+/// handle left at 0 (its PNG was missing) falls back to a text button.
+struct TransportIcons {
+    TransportIcons() = default;
+    ~TransportIcons();
+
+    TransportIcons(const TransportIcons&) = delete;
+    TransportIcons& operator=(const TransportIcons&) = delete;
+
+    /// Load the icon PNGs from ``icons_dir`` (the assets/icons/ folder next to the
+    /// binary). Decodes synchronously and uploads to GL, so call once on the render
+    /// thread after the GL context is current.
+    void load(const std::string& icons_dir);
+
+    unsigned int play = 0;
+    unsigned int pause = 0;
 };
 
 /// The transport's echoed-back state after a pane drew it: the (possibly

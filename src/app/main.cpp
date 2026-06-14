@@ -211,11 +211,14 @@ int main(int, char**) {
     // kicks off the background scan that builds the pruned tree; it is a no-op when no
     // folder is saved.
     FileExplorer explorer;
+    // Play/pause icons for the transport bar, loaded once here (GL context is current).
+    TransportIcons transport_icons;
     {
-        // Load the node icon textures from assets/ next to the binary (matches the
-        // fonts/ and mano/ lookup). Done here, after the GL context is current.
+        // Load icon textures from assets/icons/ next to the binary.
         const char* base = SDL_GetBasePath();
-        explorer.icons().load((base != nullptr ? std::string(base) : std::string()) + "assets");
+        const std::string icons_dir = (base != nullptr ? std::string(base) : std::string()) + "assets/icons";
+        explorer.icons().load(icons_dir);
+        transport_icons.load(icons_dir);
     }
     // Restore the tree's expanded folders from last session, then scan the root.
     explorer.set_saved_open(settings.expanded_folders);
@@ -380,11 +383,21 @@ int main(int, char**) {
         ImGui::NewFrame();
 
         const bool was_free_camera = settings.free_camera;
+
+        // Label for the menu bar: the absolute path of the open sequence folder.
+        std::string open_folder_label;
+        if (sequence) {
+            std::error_code abs_error;
+            const fs::path absolute_folder = fs::absolute(sequence->folder(), abs_error);
+            open_folder_label = abs_error ? sequence->folder() : absolute_folder.string();
+        }
+
         const MenuResult menu = draw_menu_bar(
             MenuState{
                 .hand_translucent = settings.hand_translucent,
                 .show_camera_marker = settings.show_camera_marker,
                 .free_camera = settings.free_camera,
+                .open_folder = open_folder_label,
             }
         );
         settings.hand_translucent = menu.state.hand_translucent;
@@ -536,6 +549,8 @@ int main(int, char**) {
             .current_frame = current_frame,
             .frame_count = frame_count,
             .playing = playing,
+            .play_icon = transport_icons.play,
+            .pause_icon = transport_icons.pause,
         };
         Transport viewport_transport = transport_base;
         viewport_transport.show_transport = transport_pane == 0;

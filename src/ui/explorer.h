@@ -35,7 +35,7 @@ struct ExplorerIcons {
     ExplorerIcons(const ExplorerIcons&) = delete;
     ExplorerIcons& operator=(const ExplorerIcons&) = delete;
 
-    /// Load the icon PNGs from ``assets_dir`` (the assets/ folder next to the
+    /// Load the icon PNGs from ``assets_dir`` (the assets/icons/ folder next to the
     /// binary). Decodes synchronously and uploads to GL, so call once on the render
     /// thread after the GL context is current. A file that fails to load leaves its
     /// handle at 0.
