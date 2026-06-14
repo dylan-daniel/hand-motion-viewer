@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+#include <imgui_freetype.h>
 
 namespace {
     namespace fs = std::filesystem;
@@ -78,7 +79,7 @@ namespace {
             return show_panel;
         }
 
-        const float panel_width = 360.0f;
+        const float panel_width = 420.0f;
         const float panel_x = top_left.x + width - panel_width - 8.0f;
         const float panel_y = top_left.y + 8.0f + ImGui::GetFrameHeight() + 10.0f;
         ImGui::SetCursorScreenPos(ImVec2(panel_x, panel_y));
@@ -162,6 +163,11 @@ namespace {
 } // namespace
 
 std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io) {
+    // Rasterize glyphs with FreeType using light hinting: stems are grid-fit to the
+    // pixel grid (crisp UI text) without the heavier auto-hinter distorting the
+    // bundled font's letter shapes. Applies to every font baked below.
+    io.Fonts->FontLoaderFlags = ImGuiFreeTypeBuilderFlags_LightHinting;
+
     const std::string font_path = find_bundled_font();
     if (font_path.empty()) {
         std::printf("No .ttf found in fonts/ — using imgui's default font.\n");
@@ -169,7 +175,14 @@ std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io) {
         return {default_font, default_font};
     }
     ImFont* ui_font = io.Fonts->AddFontFromFileTTF(font_path.c_str(), UI_FONT_SIZE);
-    ImFont* fps_font = io.Fonts->AddFontFromFileTTF(font_path.c_str(), FPS_FONT_SIZE);
+
+    // The FPS/status overlay sits as white text directly over the 3D scene, so bump
+    // its stroke weight a touch (RasterizerMultiply > 1 thickens glyphs) to make it
+    // read more boldly against busy backgrounds. Hinting at this size barely moves
+    // the edges, so weight is the lever that actually changes its appearance.
+    ImFontConfig fps_config;
+    fps_config.RasterizerMultiply = 1.15f;
+    ImFont* fps_font = io.Fonts->AddFontFromFileTTF(font_path.c_str(), FPS_FONT_SIZE, &fps_config);
     return {ui_font, fps_font};
 }
 

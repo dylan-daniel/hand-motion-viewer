@@ -6,6 +6,7 @@
 #include <array>
 #include <optional>
 #include <string>
+#include <vector>
 
 struct Config {
     std::optional<std::string> last_folder; // path of the most recently loaded mesh sequence folder
@@ -15,6 +16,9 @@ struct Config {
     bool show_camera_marker = false;        // whether the pink look-at marker ball is drawn
     bool free_camera = true;                // use the first-person free camera instead of the orbit camera
     int active_pane = 0;                    // last focused pane / selected tab: 0 = Scene, 1 = Frame View
+
+    std::optional<std::string> data_folder;    // root folder the Explorer pane browses, if chosen
+    std::vector<std::string> expanded_folders; // Explorer tree folders left expanded, restored on launch
 
     // Window placement. Position is stored relative to ``window_display``'s
     // top-left corner so the window returns to the right monitor next launch.

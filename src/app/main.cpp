@@ -23,6 +23,7 @@
 #include "graphics/gl_loader.h"
 #include "graphics/image.h"
 #include "graphics/rendering.h"
+#include "ui/explorer.h"
 #include "ui/gui.h"
 
 namespace {
@@ -132,10 +133,10 @@ int main(int, char**) {
     }
     imgui_io.IniFilename = imgui_ini_path.c_str();
 
-    // On the very first run there is no saved layout, so build a default one:
-    // the "Frame View" pane on the left half and the "Scene" viewport on the
-    // right half. Detected by the absence of the ini file imgui would have
-    // written on a previous shutdown.
+    // On the very first run there is no saved layout, so build a default one: the
+    // "Explorer" pane on the left, then "Frame View" and "Scene" splitting the
+    // rest. Detected by the absence of the ini file imgui would have written on a
+    // previous shutdown.
     bool build_default_layout = !std::filesystem::exists(imgui_ini_path);
 
     auto [ui_font, fps_font] = load_fonts(imgui_io);
@@ -185,16 +186,19 @@ int main(int, char**) {
 
     auto open_sequence = [&](const std::string& folder, int start_frame) {
         auto opened = std::make_unique<MeshSequence>(folder);
-        if (opened->frame_count() == 0) {
+        const bool has_frames = opened->frame_count() > 0;
+        if (!has_frames) {
             std::printf("No frame_*.hmesh files found in %s\n", folder.c_str());
-            return;
         }
-        sequence = std::move(opened);
+        // Reset the viewer to the requested folder either way: a folder with no
+        // frames clears the scene rather than leaving the previous sequence on
+        // screen (so opening from the Explorer always resets, like the menu does).
+        sequence = has_frames ? std::move(opened) : nullptr;
         current_gpu.reset();
         loaded_frame = -1;
         transform.reset();
         depth_reference.reset();
-        current_frame = std::clamp(start_frame, 0, sequence->frame_count() - 1);
+        current_frame = has_frames ? std::clamp(start_frame, 0, sequence->frame_count() - 1) : 0;
     };
 
     // Reopen the last mesh sequence folder if present.
@@ -203,7 +207,30 @@ int main(int, char**) {
         open_sequence(*settings.last_folder, settings.last_frame);
     }
 
+    // Explorer pane, rooted at the saved data folder. set_root validates the path and
+    // kicks off the background scan that builds the pruned tree; it is a no-op when no
+    // folder is saved.
+    FileExplorer explorer;
+    {
+        // Load the node icon textures from assets/ next to the binary (matches the
+        // fonts/ and mano/ lookup). Done here, after the GL context is current.
+        const char* base = SDL_GetBasePath();
+        explorer.icons().load((base != nullptr ? std::string(base) : std::string()) + "assets");
+    }
+    // Restore the tree's expanded folders from last session, then scan the root.
+    explorer.set_saved_open(settings.expanded_folders);
+    if (settings.data_folder) {
+        explorer.set_root(*settings.data_folder);
+    }
+
+    // Two independent native folder pickers: one for opening a mesh sequence (menu
+    // / Explorer click), one for choosing the Explorer's data-folder root.
     std::unique_ptr<pfd::select_folder> folder_dialog;
+    std::unique_ptr<pfd::select_folder> data_folder_dialog;
+    // A folder the Explorer asked to open, applied at the top of the next frame
+    // rather than mid-frame: open_sequence frees current_gpu, and the render below
+    // still holds a pointer to it, so opening inline would use freed memory.
+    std::optional<std::string> pending_open_folder;
 
     // Both cameras kept alive; ``camera`` points at the active one.
     OrbitCamera orbit_cam;
@@ -222,6 +249,9 @@ int main(int, char**) {
     bool running = true;
     // The window is created hidden and revealed after the first frame swaps below.
     bool window_shown = false;
+    // Tracks the main viewport width across frames so the one-time default dock
+    // layout is built only once the size has settled (see the build block below).
+    float last_viewport_width = 0.0f;
     while (running) {
         const Uint64 now_ticks = SDL_GetTicks();
         const double dt_seconds = static_cast<double>(now_ticks - last_ticks) / 1000.0;
@@ -370,20 +400,37 @@ int main(int, char**) {
             }
         }
 
+        // The docking menu button is hidden globally via WindowMenuButtonPosition
+        // (set at startup), which also reclaims the tab-bar offset it left behind.
         const ImGuiID dock_id = ImGui::DockSpaceOverViewport();
 
-        if (build_default_layout) {
+        // Build the one-time default layout only after the window is shown and its
+        // size has settled (the same width two frames running). A fullscreen window
+        // reaches its final size a frame or two after being revealed; building before
+        // then freezes the side panes at a tiny pixel size that doesn't scale up.
+        const ImVec2 viewport_size = ImGui::GetMainViewport()->Size;
+        const bool viewport_settled = window_shown && viewport_size.x > 0.0f && viewport_size.x == last_viewport_width;
+        last_viewport_width = viewport_size.x;
+
+        if (build_default_layout && viewport_settled) {
             build_default_layout = false;
             ImGui::DockBuilderRemoveNode(dock_id);
             ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
-            ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->Size);
+            ImGui::DockBuilderSetNodeSize(dock_id, viewport_size);
 
-            ImGuiID dock_left = 0;
-            ImGuiID dock_right = 0;
-            ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left, 0.5f, &dock_left, &dock_right);
+            // Explorer takes the leftmost 25% and Frame View the rightmost 25%, with
+            // the Scene filling the 50% between them. The Frame View split is taken
+            // from the remaining 75%, so its fraction is 0.25 / 0.75 of that node.
+            ImGuiID dock_explorer = 0;
+            ImGuiID dock_rest = 0;
+            ImGui::DockBuilderSplitNode(dock_id, ImGuiDir_Left, 0.25f, &dock_explorer, &dock_rest);
+            ImGuiID dock_frame = 0;
+            ImGuiID dock_scene = 0;
+            ImGui::DockBuilderSplitNode(dock_rest, ImGuiDir_Right, 0.25f / 0.75f, &dock_frame, &dock_scene);
 
-            ImGui::DockBuilderDockWindow("Frame View", dock_left);
-            ImGui::DockBuilderDockWindow("Scene", dock_right);
+            ImGui::DockBuilderDockWindow("Explorer", dock_explorer);
+            ImGui::DockBuilderDockWindow("Scene", dock_scene);
+            ImGui::DockBuilderDockWindow("Frame View", dock_frame);
             ImGui::DockBuilderFinish(dock_id);
         }
 
@@ -402,6 +449,24 @@ int main(int, char**) {
                 open_sequence(folder, 0);
             }
             folder_dialog.reset();
+        }
+
+        // A chosen data folder becomes the Explorer root (one scan here) and is
+        // persisted so it reopens next launch.
+        if (data_folder_dialog && data_folder_dialog->ready(0)) {
+            const std::string folder = data_folder_dialog->result();
+            if (!folder.empty()) {
+                explorer.set_root(folder);
+                settings.data_folder = folder;
+            }
+            data_folder_dialog.reset();
+        }
+
+        // Apply a deferred Explorer open here, before the current frame's GPU
+        // buffers are read below, so opening never frees a buffer still in use.
+        if (pending_open_folder) {
+            open_sequence(*pending_open_folder, 0);
+            pending_open_folder.reset();
         }
 
         // Advance playback at a fixed rate independent of the render frame rate.
@@ -485,6 +550,15 @@ int main(int, char**) {
         const ImageViewResult image_view =
             draw_image_window("Frame View", frame_image.texture(), frame_image.width(), frame_image.height(), dock_id, image_transport);
 
+        // Explorer pane. Lazy: only expanding a folder touches the filesystem.
+        const ExplorerResult explorer_result = draw_explorer_window(explorer, dock_id);
+        if (explorer_result.choose_root_requested && !data_folder_dialog) {
+            data_folder_dialog = std::make_unique<pfd::select_folder>("Select data folder");
+        }
+        if (explorer_result.open_folder) {
+            pending_open_folder = explorer_result.open_folder;
+        }
+
         if (has_sequence) {
             // Only the pane that drew the transport changed the state; read it back.
             const TransportState& echo = transport_pane == 1 ? image_view.transport : viewport.transport;
@@ -549,6 +623,7 @@ int main(int, char**) {
         settings.last_folder.reset();
     }
     settings.active_pane = active_pane;
+    settings.expanded_folders = explorer.expanded_paths(); // persist which tree folders are open
     if (settings.free_camera) {
         orbit_cam.set_from_free(free_cam);
     }

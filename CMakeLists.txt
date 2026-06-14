@@ -15,8 +15,8 @@ endif ()
 # at configure time: cmake -B build -DRELEASE_STATIC=ON
 option(RELEASE_STATIC "Statically link the release exe (except opengl32.dll)" OFF)
 
-# When ON, gather only the files that need shipping (exe + fonts/ + mano/, plus
-# SDL3.dll for a non-static build) into <build>/dist/hand_motion_viewer after each
+# When ON, gather only the files that need shipping (exe + fonts/ + assets/ +
+# mano/, plus SDL3.dll for a non-static build) into <build>/dist/hand_motion_viewer after each
 # build and zip it into <build>/hand_motion_viewer.zip. Set at configure time:
 # cmake -B build -DPACKAGE_RELEASE=ON
 option(PACKAGE_RELEASE "Assemble the shippable files into <build>/dist" OFF)
@@ -88,6 +88,22 @@ FetchContent_Declare(
     GIT_TAG docking
 )
 
+# FreeType — font rasterizer for Dear ImGui. The default stb_truetype builder is
+# unhinted and renders UI text softly; FreeType grid-fits (hints) the glyphs for
+# crisp text. Disable the optional helper libraries (zlib, png, harfbuzz, brotli,
+# bzip2) so the build is self-contained and never depends on system packages.
+set(FT_DISABLE_ZLIB ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BZIP2 ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_PNG ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_HARFBUZZ ON CACHE BOOL "" FORCE)
+set(FT_DISABLE_BROTLI ON CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    freetype
+    GIT_REPOSITORY https://github.com/freetype/freetype.git
+    GIT_TAG VER-2-13-3
+    GIT_SHALLOW TRUE
+)
+
 # portable-file-dialogs — native open-file / select-folder dialogs. This is the
 # C++ original of the Python ``portable_file_dialogs`` the viewer already used;
 # a single header, no binary dependency, easy to swap out. SOURCE_SUBDIR points
@@ -114,7 +130,7 @@ FetchContent_Declare(
     SOURCE_SUBDIR do-not-configure
 )
 
-FetchContent_MakeAvailable(SDL3 glm nlohmann_json imgui portable_file_dialogs stb)
+FetchContent_MakeAvailable(SDL3 glm nlohmann_json imgui freetype portable_file_dialogs stb)
 
 add_library(portable_file_dialogs INTERFACE)
 target_include_directories(portable_file_dialogs INTERFACE ${portable_file_dialogs_SOURCE_DIR})
@@ -138,14 +154,20 @@ add_library(imgui_lib STATIC
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
     ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+    ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
 )
 target_include_directories(imgui_lib PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
+    ${imgui_SOURCE_DIR}/misc/freetype
 )
-target_link_libraries(imgui_lib PUBLIC ${sdl3_target} OpenGL::GL)
+# IMGUI_ENABLE_FREETYPE switches the font atlas builder to FreeType (imgui_freetype.cpp);
+# it is PUBLIC so the viewer's translation units that include imgui.h see the same
+# config and the freetype builder flags are available where fonts are loaded.
+target_compile_definitions(imgui_lib PUBLIC IMGUI_ENABLE_FREETYPE)
+target_link_libraries(imgui_lib PUBLIC ${sdl3_target} OpenGL::GL freetype)
 
 # ── The viewer ─────────────────────────────────
 # Glob the sources recursively so new files (and subfolders) are picked up
@@ -215,6 +237,14 @@ add_custom_command(TARGET hand_motion_viewer POST_BUILD
     $<TARGET_FILE_DIR:hand_motion_viewer>/fonts
 )
 
+# Make the explorer's icon PNGs available next to the executable (assets/ lookup
+# relative to the binary, like fonts/).
+add_custom_command(TARGET hand_motion_viewer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/assets
+    $<TARGET_FILE_DIR:hand_motion_viewer>/assets
+)
+
 # Copy the shared MANO face topology next to the executable so the .hmesh loader
 # finds it (main.cpp resolves mano/mano_faces.bin relative to the binary). This
 # keeps mano/ a single source of truth and avoids a stale hand-copied build copy.
@@ -225,7 +255,7 @@ add_custom_command(TARGET hand_motion_viewer POST_BUILD
 )
 
 # Assemble a clean, distributable folder containing only what ships: the exe and
-# the fonts/ and mano/ runtime assets (plus SDL3.dll when not statically linked).
+# the fonts/, assets/ and mano/ runtime assets (plus SDL3.dll when not statically linked).
 # Built fresh each time (the dir is removed first) so it never holds stale files.
 if (PACKAGE_RELEASE)
     set(dist_dir ${CMAKE_BINARY_DIR}/dist)
@@ -235,6 +265,7 @@ if (PACKAGE_RELEASE)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${package_dir}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:hand_motion_viewer> ${package_dir}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/fonts ${package_dir}/fonts
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/assets ${package_dir}/assets
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/mano ${package_dir}/mano
         COMMENT "Packaging shippable files into ${package_dir}"
     )
