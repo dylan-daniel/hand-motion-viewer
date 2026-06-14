@@ -11,6 +11,7 @@
 struct Config {
     std::optional<std::string> last_folder; // path of the most recently loaded mesh sequence folder
     int last_frame = 0;                     // frame index to reopen the sequence on
+    float playback_speed = 1.0f;            // playback rate multiplier (0.5x .. 4x)
     bool hand_translucent = true;           // whether the hand is drawn see-through
     bool show_controls = true;              // whether the viewport controls help panel is open
     bool show_camera_marker = false;        // whether the pink look-at marker ball is drawn

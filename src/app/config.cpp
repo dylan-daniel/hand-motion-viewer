@@ -67,6 +67,7 @@ Config load_config(const std::string& path) {
 
     read_optional_string(data, "last_folder", config.last_folder);
     read_field(data, "last_frame", config.last_frame);
+    read_field(data, "playback_speed", config.playback_speed);
     read_field(data, "hand_translucent", config.hand_translucent);
     read_field(data, "show_controls", config.show_controls);
     read_field(data, "show_camera_marker", config.show_camera_marker);
@@ -94,6 +95,7 @@ void save_config(const std::string& path, const Config& config) {
     json data;
     data["last_folder"] = config.last_folder ? json(*config.last_folder) : json(nullptr);
     data["last_frame"] = config.last_frame;
+    data["playback_speed"] = config.playback_speed;
     data["hand_translucent"] = config.hand_translucent;
     data["show_controls"] = config.show_controls;
     data["show_camera_marker"] = config.show_camera_marker;

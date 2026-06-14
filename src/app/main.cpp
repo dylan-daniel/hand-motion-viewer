@@ -182,6 +182,7 @@ int main(int, char**) {
     // don't jitter between the dragged frame and the next. Carried across frames
     // since the transport (which reports it) is drawn after playback is advanced.
     bool scrubbing = false;
+    float playback_speed = settings.playback_speed;
     double playback_accumulator = 0.0;
 
     auto open_sequence = [&](const std::string& folder, int start_frame) {
@@ -486,9 +487,9 @@ int main(int, char**) {
         // Suspended while scrubbing so the dragged frame is not fought by auto-advance.
         if (playing && !scrubbing && sequence && sequence->frame_count() > 0) {
             playback_accumulator += dt_seconds;
-            const int frame_step = static_cast<int>(playback_accumulator * PLAYBACK_FPS);
+            const int frame_step = static_cast<int>(playback_accumulator * PLAYBACK_FPS * playback_speed);
             if (frame_step > 0) {
-                playback_accumulator -= frame_step / PLAYBACK_FPS;
+                playback_accumulator -= frame_step / (PLAYBACK_FPS * playback_speed);
                 current_frame = (current_frame + frame_step) % sequence->frame_count();
             }
         } else {
@@ -549,8 +550,10 @@ int main(int, char**) {
             .current_frame = current_frame,
             .frame_count = frame_count,
             .playing = playing,
+            .speed = playback_speed,
             .play_icon = transport_icons.play,
             .pause_icon = transport_icons.pause,
+            .speed_icon = transport_icons.speed,
         };
         Transport viewport_transport = transport_base;
         viewport_transport.show_transport = transport_pane == 0;
@@ -580,6 +583,7 @@ int main(int, char**) {
             current_frame = echo.current_frame;
             playing = echo.playing;
             scrubbing = echo.scrubbing;
+            playback_speed = echo.speed;
         } else {
             playing = false;
             scrubbing = false;
@@ -638,6 +642,7 @@ int main(int, char**) {
         settings.last_folder.reset();
     }
     settings.active_pane = active_pane;
+    settings.playback_speed = playback_speed;
     settings.expanded_folders = explorer.expanded_paths(); // persist which tree folders are open
     if (settings.free_camera) {
         orbit_cam.set_from_free(free_cam);

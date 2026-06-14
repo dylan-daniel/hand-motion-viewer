@@ -152,10 +152,15 @@ namespace {
     // is the screen Y where the overlay strip begins; a translucent backing is
     // painted behind it so the controls stay legible over the scene. Updates and
     // returns the transport state, including whether the scrubber is being dragged.
+    // Bounds for the playback-speed multiplier exposed by the gauge slider.
+    constexpr float MIN_PLAYBACK_SPEED = 0.5f;
+    constexpr float MAX_PLAYBACK_SPEED = 4.0f;
+
     TransportState draw_transport_bar(float left, float strip_top, float width, const Transport& transport) {
         int current_frame = transport.current_frame;
         const int frame_count = transport.frame_count;
         bool playing = transport.playing;
+        float speed = transport.speed;
 
         // Translucent backing so the controls read over any scene content beneath.
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
@@ -189,12 +194,15 @@ namespace {
             }
         }
 
-        // Stretch the scrubber to fill the gap between the button and the label.
+        // Stretch the scrubber to fill the gap between the play button and the label,
+        // leaving room for the frame label and the speed (gauge) button on the right.
         ImGui::SameLine();
         char label[48];
         std::snprintf(label, sizeof(label), "frame %d / %d", current_frame + 1, frame_count);
         const float spacing = ImGui::GetStyle().ItemSpacing.x;
-        const float slider_width = width - 8.0f - button_width - spacing - ImGui::CalcTextSize(label).x - spacing - 8.0f;
+        // The gauge button is an icon button the same size as the play button.
+        const float speed_button_width = button_width;
+        const float slider_width = width - 8.0f - button_width - spacing - ImGui::CalcTextSize(label).x - spacing - speed_button_width - spacing - 8.0f;
         ImGui::SetNextItemWidth(std::max(1.0f, slider_width));
         // Empty format: the standalone label shows the 1-based frame instead.
         ImGui::SliderInt("##frame", &current_frame, 0, frame_count - 1, "");
@@ -204,7 +212,58 @@ namespace {
 
         ImGui::SameLine();
         ImGui::TextUnformatted(label);
-        return {current_frame, playing, scrubbing};
+
+        // Speed (gauge) button at the far right: clicking opens a small popup with a
+        // vertical slider for the playback-rate multiplier.
+        ImGui::SameLine();
+        const char* speed_popup = "transport_speed_popup";
+        if (transport.speed_icon != 0) {
+            const float icon_size = ImGui::GetFontSize();
+            if (ImGui::ImageButton(
+                    "transport_speed",
+                    static_cast<ImTextureID>(transport.speed_icon),
+                    ImVec2(icon_size, icon_size),
+                    ImVec2(0.0f, 0.0f),
+                    ImVec2(1.0f, 1.0f),
+                    ImVec4(0.0f, 0.0f, 0.0f, 0.0f),
+                    ImGui::GetStyleColorVec4(ImGuiCol_Text)
+                )) {
+                ImGui::OpenPopup(speed_popup);
+            }
+        } else {
+            char speed_label[16];
+            std::snprintf(speed_label, sizeof(speed_label), "%.1fx", speed);
+            if (ImGui::Button(speed_label)) {
+                ImGui::OpenPopup(speed_popup);
+            }
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Playback speed (%.1fx)", speed);
+        }
+        // Anchor the popup above the button (pivot at its own bottom-left), so the
+        // slider rises out of the gauge instead of dropping off the window bottom.
+        const ImVec2 button_min = ImGui::GetItemRectMin();
+        ImGui::SetNextWindowPos(ImVec2(button_min.x, button_min.y - spacing), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+        // Solid black backing; window padding makes the box wider/taller than the
+        // slider and, being symmetric, centres the slider inside it.
+        const float slider_box_width = 18.0f; // matches the imgui demo's vertical sliders
+        const float slider_box_height = 140.0f;
+        const float pad_x = std::max(4.0f, (speed_button_width - slider_box_width) * 0.5f);
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(pad_x, pad_x));
+        if (ImGui::BeginPopup(speed_popup)) {
+            // Bare vertical slider (empty format => no text on the grab); the value
+            // shows only as a tooltip while hovering or dragging, like the imgui demo.
+            ImGui::VSliderFloat("##speed", ImVec2(slider_box_width, slider_box_height), &speed, MIN_PLAYBACK_SPEED, MAX_PLAYBACK_SPEED, "");
+            if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%.1fx", speed);
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+
+        return {current_frame, playing, scrubbing, speed};
     }
 } // namespace
 
@@ -245,6 +304,7 @@ void TransportIcons::load(const std::string& icons_dir) {
     const std::string prefix = icons_dir.empty() || icons_dir.back() == '/' || icons_dir.back() == '\\' ? icons_dir : icons_dir + "/";
     play = load_texture(prefix + "play.png");
     pause = load_texture(prefix + "pause.png");
+    speed = load_texture(prefix + "gauge.png");
 }
 
 MenuResult draw_menu_bar(MenuState state) {

@@ -40,9 +40,11 @@ struct Transport {
     int current_frame = 0;
     int frame_count = 0;
     bool playing = false;
+    float speed = 1.0f;          // playback rate multiplier (0.5x .. 4x)
     bool show_transport = false; // this pane carries the transport this frame
     unsigned int play_icon = 0;  // play button texture (0 => text-button fallback)
     unsigned int pause_icon = 0; // pause button texture (0 => text-button fallback)
+    unsigned int speed_icon = 0; // speed (gauge) button texture (0 => text-button fallback)
 };
 
 /// GL textures for the transport's play/pause button. Loaded once after the GL
@@ -62,6 +64,7 @@ struct TransportIcons {
 
     unsigned int play = 0;
     unsigned int pause = 0;
+    unsigned int speed = 0;
 };
 
 /// The transport's echoed-back state after a pane drew it: the (possibly
@@ -70,6 +73,7 @@ struct TransportState {
     int current_frame = 0;
     bool playing = false;
     bool scrubbing = false;
+    float speed = 1.0f; // echoed-back playback rate multiplier
 };
 
 struct ViewportResult {
