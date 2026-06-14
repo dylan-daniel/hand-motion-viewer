@@ -29,15 +29,31 @@ namespace {
         }
         const std::string view = mesh_folder.filename().string();
         const std::string subject = subject_dir.filename().string();
-        const std::string name = "tracks_" + subject + "_" + view + ".csv";
+        const std::string name = "tracks3_" + subject + "_" + view + ".csv";
         return subject_dir.parent_path() / "tracking" / name;
     }
 
-    // Parse ``tracks_*.csv`` into (frame, idx) → track_id. The header lists
-    // columns subject,trial,view,frame,idx,track_id,is_right,... so frame is
-    // field 3, idx field 4 and track_id field 5 (zero-based).
-    std::map<std::pair<int, int>, int> load_track_ids(const std::string& folder) {
-        std::map<std::pair<int, int>, int> track_ids;
+    // Split a CSV line on commas.
+    std::vector<std::string> split_csv(const std::string& line) {
+        std::vector<std::string> fields;
+        std::size_t start = 0;
+        while (true) {
+            const std::size_t comma = line.find(',', start);
+            fields.push_back(line.substr(start, comma - start));
+            if (comma == std::string::npos) {
+                break;
+            }
+            start = comma + 1;
+        }
+        return fields;
+    }
+
+    // Parse ``tracks_*.csv`` into (frame, idx) → TrackInfo. Columns are located by
+    // their header name rather than a fixed position, since some files carry an
+    // extra ``is_duplicate`` column and others do not. ``is_duplicate`` comes
+    // straight from the CSV; a missing column leaves every detection non-duplicate.
+    std::map<std::pair<int, int>, TrackInfo> load_track_ids(const std::string& folder) {
+        std::map<std::pair<int, int>, TrackInfo> track_ids;
         const fs::path csv = tracking_csv_path(folder);
         if (csv.empty() || !fs::exists(csv)) {
             return track_ids;
@@ -47,29 +63,46 @@ namespace {
             return track_ids;
         }
         std::string line;
-        std::getline(stream, line); // discard header
+        if (!std::getline(stream, line)) {
+            return track_ids;
+        }
+        // Map the columns we need from the header; -1 means the column is absent.
+        const std::vector<std::string> header = split_csv(line);
+        int frame_col = -1;
+        int idx_col = -1;
+        int track_col = -1;
+        int duplicate_col = -1;
+        for (int column = 0; column < static_cast<int>(header.size()); ++column) {
+            const std::string& name = header[static_cast<std::size_t>(column)];
+            if (name == "frame") {
+                frame_col = column;
+            } else if (name == "idx") {
+                idx_col = column;
+            } else if (name == "track_id") {
+                track_col = column;
+            } else if (name == "is_duplicate") {
+                duplicate_col = column;
+            }
+        }
+        if (frame_col < 0 || idx_col < 0 || track_col < 0) {
+            return track_ids;
+        }
+        const int min_fields = std::max({frame_col, idx_col, track_col, duplicate_col}) + 1;
         while (std::getline(stream, line)) {
             if (line.empty()) {
                 continue;
             }
-            std::vector<std::string> fields;
-            std::size_t start = 0;
-            while (true) {
-                const std::size_t comma = line.find(',', start);
-                fields.push_back(line.substr(start, comma - start));
-                if (comma == std::string::npos) {
-                    break;
-                }
-                start = comma + 1;
-            }
-            if (fields.size() < 6) {
+            const std::vector<std::string> fields = split_csv(line);
+            if (static_cast<int>(fields.size()) < min_fields) {
                 continue;
             }
             try {
-                const int frame_number = std::stoi(fields[3]);
-                const int slot = std::stoi(fields[4]);
-                const int track_id = std::stoi(fields[5]);
-                track_ids[{frame_number, slot}] = track_id;
+                const int frame_number = std::stoi(fields[static_cast<std::size_t>(frame_col)]);
+                const int slot = std::stoi(fields[static_cast<std::size_t>(idx_col)]);
+                TrackInfo info;
+                info.track_id = std::stoi(fields[static_cast<std::size_t>(track_col)]);
+                info.is_duplicate = duplicate_col >= 0 && std::stoi(fields[static_cast<std::size_t>(duplicate_col)]) != 0;
+                track_ids[{frame_number, slot}] = info;
             } catch (const std::exception&) {
                 continue;
             }
@@ -240,8 +273,8 @@ Frame MeshSequence::load_frame(int index) const {
         hand.verts = std::move(mesh.verts);
         hand.joints = std::move(mesh.joints);
         hand.is_right = mesh.is_right;
-        // Resolve the persistent track id from the parsed tracking CSV using the
-        // file's frame number and hand slot (frame_NNNN_<slot>.hmesh).
+        // Resolve the track id and duplicate flag from the parsed tracking CSV
+        // using the file's frame number and hand slot (frame_NNNN_<slot>.hmesh).
         std::smatch match;
         const std::string name = fs::path(path).filename().string();
         if (std::regex_search(name, match, kFrameRe)) {
@@ -249,7 +282,8 @@ Frame MeshSequence::load_frame(int index) const {
             const int slot = std::stoi(match[2].str());
             const auto found = track_ids_.find({frame_number, slot});
             if (found != track_ids_.end()) {
-                hand.track_id = found->second;
+                hand.track_id = found->second.track_id;
+                hand.is_duplicate = found->second.is_duplicate;
             }
         }
         hands.push_back(std::move(hand));

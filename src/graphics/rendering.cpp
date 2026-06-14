@@ -62,6 +62,7 @@ in vec4 vColor;
 
 uniform bool uLighting;
 uniform float uAlpha; // multiplies alpha; lets one buffer draw opaque or translucent
+uniform float uGlow;  // emissive boost added to the surface colour (0 = none)
 
 out vec4 FragColor;
 
@@ -101,6 +102,10 @@ void main() {
     vec3 dir1 = normalize(LIGHT1_POS - frag);
     lit += vColor.rgb * LIGHT1_DIFFUSE * max(dot(normal, dir1), 0.0);
 
+    // Emissive glow: add the surface colour back in so a flagged hand brightens
+    // and reads as glowing without washing out to white.
+    lit += vColor.rgb * uGlow;
+
     FragColor = vec4(lit, vColor.a * uAlpha);
 }
 )";
@@ -113,6 +118,7 @@ void main() {
     GLint g_loc_proj = -1;
     GLint g_loc_lighting = -1;
     GLint g_loc_alpha = -1;
+    GLint g_loc_glow = -1;
     GLuint g_dynamic_vao = 0; // pos+colour stream for grid / axes / marker
     GLuint g_dynamic_vbo = 0;
 
@@ -155,6 +161,7 @@ void main() {
         g_loc_proj = glx::GetUniformLocation(g_program, "uProj");
         g_loc_lighting = glx::GetUniformLocation(g_program, "uLighting");
         g_loc_alpha = glx::GetUniformLocation(g_program, "uAlpha");
+        g_loc_glow = glx::GetUniformLocation(g_program, "uGlow");
 
         // Dynamic stream VAO: interleaved position (3) + colour (4); the normal
         // attribute stays disabled (a constant value) since this stream is unlit.
@@ -177,6 +184,8 @@ void main() {
     void set_lighting(bool enabled) { glx::Uniform1i(g_loc_lighting, enabled ? 1 : 0); }
 
     void set_alpha(float alpha) { glx::Uniform1f(g_loc_alpha, alpha); }
+
+    void set_glow(float glow) { glx::Uniform1f(g_loc_glow, glow); }
 
     /// Draw an interleaved position(3)+colour(4) vertex stream (unlit) under
     /// ``model``. Used for the grid, axes, and camera marker.
@@ -394,7 +403,7 @@ PreparedFrame prepare_frame(const Frame& hands) {
             sum += position.z;
         }
         const float depth = hand.verts.empty() ? 0.0f : static_cast<float>(sum / hand.verts.size());
-        prepared.push_back({std::move(arrays), depth});
+        prepared.push_back({std::move(arrays), depth, hand.is_duplicate});
     }
     return prepared;
 }
@@ -406,6 +415,7 @@ FrameGpu::FrameGpu(const PreparedFrame& prepared_hands) {
         HandGpu hand;
         hand.joints = std::make_unique<GpuMesh>(prepared.mesh.joints);
         hand.hand = std::make_unique<GpuMesh>(prepared.mesh.hand);
+        hand.is_duplicate = prepared.is_duplicate;
         hands_.push_back(std::move(hand));
         depths_.push_back(prepared.depth);
     }
@@ -423,36 +433,51 @@ glm::mat4 FrameGpu::hand_matrix(const Transform* transform, float scale) const {
     return model;
 }
 
-void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<float> reference_depth) const {
+void FrameGpu::draw(const FrameDraw& options) const {
+    // A hand is drawn unless it is a duplicate and duplicates are hidden.
+    auto visible = [&](std::size_t index) { return !(options.hide_duplicates && hands_[index].is_duplicate); };
+
     // Stabilise depth: snap every hand to the common reference plane.
     std::vector<float> scales;
     scales.reserve(depths_.size());
     for (float depth : depths_) {
-        scales.push_back((reference_depth && depth != 0.0f) ? (*reference_depth / depth) : 1.0f);
+        scales.push_back((options.reference_depth && depth != 0.0f) ? (*options.reference_depth / depth) : 1.0f);
     }
 
     set_lighting(true);
+    set_glow(0.0f);
     // The joint skeleton only shows in translucent mode — it reads through the
     // see-through hand, and an opaque hand would hide it. Drawn first so the
     // translucent hand blends correctly over it.
-    if (translucent) {
+    if (options.translucent) {
         for (std::size_t index = 0; index < hands_.size(); ++index) {
-            set_model(hand_matrix(transform, scales[index]));
+            if (!visible(index)) {
+                continue;
+            }
+            set_model(hand_matrix(options.transform, scales[index]));
             hands_[index].joints->draw();
         }
     }
 
-    if (translucent) {
+    if (options.translucent) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
         set_alpha(0.30f);
     }
     for (std::size_t index = 0; index < hands_.size(); ++index) {
-        set_model(hand_matrix(transform, scales[index]));
+        if (!visible(index)) {
+            continue;
+        }
+        // Duplicate hands glow; everything else draws flat. Glow is set per hand
+        // and reset after so it never leaks onto the next hand or the marker.
+        const bool glowing = hands_[index].is_duplicate && options.duplicate_glow > 0.0f;
+        set_glow(glowing ? options.duplicate_glow : 0.0f);
+        set_model(hand_matrix(options.transform, scales[index]));
         hands_[index].hand->draw();
     }
-    if (translucent) {
+    set_glow(0.0f);
+    if (options.translucent) {
         set_alpha(1.0f);
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
@@ -651,12 +676,21 @@ void render_scene(const Framebuffer& framebuffer, const Camera& camera, const Sc
     glx::UniformMatrix4fv(g_loc_proj, 1, GL_FALSE, glm::value_ptr(projection));
     glx::UniformMatrix4fv(g_loc_view, 1, GL_FALSE, glm::value_ptr(camera.view_matrix()));
     set_alpha(1.0f); // opaque by default; translucent hand draws flip it transiently
+    set_glow(0.0f);  // no glow by default; duplicate hands flip it transiently
 
     // Grid (flat-coloured; draw_grid keeps lighting off).
     draw_grid(10, 1.0f, 0.0f);
 
     if (scene.frame != nullptr) {
-        scene.frame->draw(scene.translucent, scene.transform, scene.reference_depth);
+        scene.frame->draw(
+            FrameDraw{
+                .translucent = scene.translucent,
+                .transform = scene.transform,
+                .reference_depth = scene.reference_depth,
+                .duplicate_glow = scene.duplicate_glow,
+                .hide_duplicates = scene.hide_duplicates,
+            }
+        );
     }
 
     // Marker for the orbit camera's look-at point; drawn last so its

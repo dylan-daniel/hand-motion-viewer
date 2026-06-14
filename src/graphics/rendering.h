@@ -54,14 +54,27 @@ private:
 struct HandGpu {
     std::unique_ptr<GpuMesh> joints;
     std::unique_ptr<GpuMesh> hand;
+    bool is_duplicate = false; // shares a track id with another hand this frame
 };
 
 // A frame's prepared CPU arrays for one hand: GPU-ready mesh and mean depth.
 struct PreparedHand {
     PreparedMesh mesh;
     float depth = 0.0f;
+    bool is_duplicate = false; // shares a track id with another hand this frame
 };
 using PreparedFrame = std::vector<PreparedHand>;
+
+/// How to draw a frame's hands. Grouped into one descriptor (each field
+/// defaulted) so new draw options are added here rather than as more arguments
+/// threaded through FrameGpu::draw.
+struct FrameDraw {
+    bool translucent = false;             // draw the hand surface see-through
+    const Transform* transform = nullptr; // fixed scene fit applied to every hand
+    std::optional<float> reference_depth; // common plane every hand is depth-snapped to
+    float duplicate_glow = 0.0f;          // emissive boost added to duplicate hands (0 = none)
+    bool hide_duplicates = false;         // skip drawing duplicate hands entirely
+};
 
 /// GPU buffers for every hand of one sequence frame, drawn as a unit.
 class FrameGpu {
@@ -69,7 +82,7 @@ public:
     explicit FrameGpu(const PreparedFrame& prepared_hands);
 
     /// Draw the frame's hands as a unit.
-    void draw(bool translucent, const Transform* transform, std::optional<float> reference_depth) const;
+    void draw(const FrameDraw& options) const;
 
 private:
     glm::mat4 hand_matrix(const Transform* transform, float scale) const;
@@ -198,6 +211,8 @@ struct SceneRender {
     const Transform* transform = nullptr; // fixed scene fit applied to every hand
     std::optional<float> reference_depth; // common plane every hand is depth-snapped to
     bool show_camera_marker = false;      // draw the orbit camera's look-at marker
+    float duplicate_glow = 0.0f;          // emissive boost added to duplicate hands (0 = none)
+    bool hide_duplicates = false;         // skip drawing duplicate hands entirely
 };
 
 /// Render the grid and the active frame into the offscreen framebuffer. The

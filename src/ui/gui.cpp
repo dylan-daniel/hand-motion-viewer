@@ -467,3 +467,23 @@ ImageViewResult draw_image_window(const char* title, unsigned int texture, int t
     ImGui::PopStyleVar();
     return {hovered, focused, echo};
 }
+
+TrackingResult draw_tracking_window(ImGuiID dock_id, const TrackingState& state) {
+    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Tracking");
+    const bool focused = ImGui::IsWindowFocused();
+    const bool hovered = ImGui::IsWindowHovered();
+
+    TrackingState echo = state;
+    ImGui::Checkbox("Hide duplicate hands", &echo.hide_duplicates);
+    ImGui::Spacing();
+    if (state.duplicate_count > 0) {
+        ImGui::Text("%d duplicate hand%s in this frame.", state.duplicate_count, state.duplicate_count == 1 ? "" : "s");
+        ImGui::TextDisabled("Duplicate hands glow in the Scene view.");
+    } else {
+        ImGui::TextDisabled("No duplicate hands in this frame.");
+    }
+
+    ImGui::End();
+    return {hovered, focused, echo};
+}

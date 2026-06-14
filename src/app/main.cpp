@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -171,6 +172,7 @@ int main(int, char**) {
     // none) so we only re-read and re-upload when the frame actually advances.
     std::unique_ptr<FrameGpu> current_gpu;
     int loaded_frame = -1;
+    int frame_duplicate_count = 0; // duplicate hands in the loaded frame (for the Tracking pane)
     std::optional<Transform> transform;
     std::optional<float> depth_reference;
     int current_frame = 0;
@@ -443,6 +445,8 @@ int main(int, char**) {
             ImGui::DockBuilderSplitNode(dock_rest, ImGuiDir_Right, 0.25f / 0.75f, &dock_frame, &dock_scene);
 
             ImGui::DockBuilderDockWindow("Explorer", dock_explorer);
+            // Tracking shares the left column, tabbed behind the Explorer.
+            ImGui::DockBuilderDockWindow("Tracking", dock_explorer);
             ImGui::DockBuilderDockWindow("Scene", dock_scene);
             ImGui::DockBuilderDockWindow("Frame View", dock_frame);
             ImGui::DockBuilderFinish(dock_id);
@@ -510,6 +514,12 @@ int main(int, char**) {
             }
             if (current_frame != loaded_frame) {
                 Frame hands = sequence->load_frame(current_frame);
+                frame_duplicate_count = 0;
+                for (const HandData& hand : hands) {
+                    if (hand.is_duplicate) {
+                        ++frame_duplicate_count;
+                    }
+                }
                 current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands));
                 loaded_frame = current_frame;
             }
@@ -576,6 +586,16 @@ int main(int, char**) {
             pending_open_folder = explorer_result.open_folder;
         }
 
+        // Tracking pane: toggle hiding of duplicate hands and show this frame's count.
+        const TrackingResult tracking = draw_tracking_window(
+            dock_id,
+            TrackingState{
+                .hide_duplicates = settings.hide_duplicate_hands,
+                .duplicate_count = has_sequence ? frame_duplicate_count : 0,
+            }
+        );
+        settings.hide_duplicate_hands = tracking.state.hide_duplicates;
+
         if (has_sequence) {
             // Only the pane that drew the transport changed the state; read it back.
             const TransportState& echo = transport_pane == 1 ? image_view.transport : viewport.transport;
@@ -614,6 +634,11 @@ int main(int, char**) {
                 .transform = transform ? &*transform : nullptr,
                 .reference_depth = depth_reference,
                 .show_camera_marker = settings.show_camera_marker,
+                // Pulse the duplicate-hand glow so it reads as a soft throb rather
+                // than a flat tint; derived from the wall clock so it animates even
+                // when playback is paused.
+                .duplicate_glow = 0.35f + 0.25f * static_cast<float>(std::sin(static_cast<double>(now_ticks) / 1000.0 * 5.0)),
+                .hide_duplicates = settings.hide_duplicate_hands,
             }
         );
 

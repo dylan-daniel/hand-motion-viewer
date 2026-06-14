@@ -23,6 +23,13 @@ struct HandData {
     std::vector<glm::vec3> joints; // joint positions (21)
     bool is_right = true;          // handedness, picks the shared face winding
     int track_id = -1;             // persistent hand id from the tracking CSV, -1 if unknown
+    bool is_duplicate = false;     // another hand in the same frame shares this track id
+};
+
+/// Per-detection facts read from a hand's row in the sibling tracking CSV.
+struct TrackInfo {
+    int track_id = -1;         // persistent hand id, -1 if unknown
+    bool is_duplicate = false; // the tracker flagged this detection as a duplicate
 };
 
 /// A fixed translate-then-scale that frames the whole sequence on the grid.
@@ -66,9 +73,9 @@ private:
     std::string folder_;
     std::vector<std::vector<std::string>> frame_paths_;
     int frame_count_;
-    // (frame number, hand slot) → persistent track id, parsed from the sibling
-    // tracking CSV. Empty when no tracking file is found for this folder.
-    std::map<std::pair<int, int>, int> track_ids_;
+    // (frame number, hand slot) → tracking facts. Empty when no tracking file is
+    // found for this folder.
+    std::map<std::pair<int, int>, TrackInfo> track_ids_;
 };
 
 /// Build the fixed transform that sits the sequence's hands on the grid and

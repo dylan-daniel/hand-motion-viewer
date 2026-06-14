@@ -93,6 +93,19 @@ struct ImageViewResult {
     TransportState transport; // echoed transport state when this pane drew it
 };
 
+/// State for the Tracking pane, passed in and echoed back with the user's edits.
+/// New tracking toggles are added here, not as more draw_tracking_window args.
+struct TrackingState {
+    bool hide_duplicates = false; // hide hands flagged as duplicate track ids
+    int duplicate_count = 0;      // duplicate hands in the current frame (display only)
+};
+
+struct TrackingResult {
+    bool hovered = false;
+    bool focused = false;
+    TrackingState state; // the (possibly toggled) tracking state
+};
+
 /// Bake the bundled font for the UI and the FPS overlay. Returns (ui, fps),
 /// both the imgui default font if no .ttf is bundled in fonts/.
 std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io);
@@ -115,3 +128,8 @@ ViewportResult draw_viewport_window(
 /// are set the transport bar is drawn here too, so the player follows whichever
 /// pane the mouse is on; the result's ``transport`` carries any user changes back.
 ImageViewResult draw_image_window(const char* title, unsigned int texture, int texture_width, int texture_height, ImGuiID dock_id, const Transport& transport);
+
+/// Draw the dockable "Tracking" window: a checkbox to hide duplicate hands plus a
+/// readout of how many hands in the current frame are flagged as duplicates. The
+/// result carries the (possibly toggled) state back to the caller.
+TrackingResult draw_tracking_window(ImGuiID dock_id, const TrackingState& state);
