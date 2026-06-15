@@ -166,6 +166,9 @@ int main(int, char**) {
     std::optional<float> depth_reference;
     int current_frame = 0;
     bool playing = false;
+    // Countdown until the held left/right arrow steps again. Negative means no
+    // arrow is currently held, so the next press steps immediately.
+    double scrub_repeat_timer = -1.0;
     // True while the user drags the scrubber; suspends auto-advance so the hands
     // don't jitter between the dragged frame and the next. Carried across frames
     // since the transport (which reports it) is drawn after playback is advanced.
@@ -237,16 +240,14 @@ int main(int, char**) {
                     if (sequence && sequence->frame_count() > 0) {
                         playing = !playing;
                     }
-                } else if (sequence && !playing && (key == SDLK_LEFT || key == SDLK_RIGHT || key == SDLK_HOME || key == SDLK_END)) {
-                    const int last = sequence->frame_count() - 1;
-                    if (key == SDLK_LEFT) {
-                        current_frame = std::max(0, current_frame - 1);
-                    } else if (key == SDLK_RIGHT) {
-                        current_frame = std::min(last, current_frame + 1);
-                    } else if (key == SDLK_HOME) {
+                } else if (sequence && !playing && (key == SDLK_HOME || key == SDLK_END)) {
+                    // Left/right scrubbing is handled by per-frame polling below so
+                    // that holding an arrow keeps stepping even while another key is
+                    // pressed; Home/End are one-shot jumps and stay event-driven.
+                    if (key == SDLK_HOME) {
                         current_frame = 0;
                     } else {
-                        current_frame = last;
+                        current_frame = sequence->frame_count() - 1;
                     }
                 } else if (key == SDLK_F11) {
                     if (!settings.window_fullscreen) {
@@ -302,6 +303,36 @@ int main(int, char**) {
             const float up = (keys[SDL_SCANCODE_E] ? 1.0f : 0.0f) - (keys[SDL_SCANCODE_Q] ? 1.0f : 0.0f);
             if (forward != 0.0f || right != 0.0f || up != 0.0f) {
                 camera->move(forward, right, up, static_cast<float>(dt_seconds));
+            }
+
+            // Frame scrubbing by held left/right arrow. Polled per-frame rather
+            // than driven by OS key-repeat events so that holding an arrow keeps
+            // stepping even while another key is pressed (the OS only auto-repeats
+            // the most recently pressed key). A typematic-style delay/interval
+            // keeps held scrubbing from racing through frames at full framerate.
+            constexpr double scrub_initial_delay = 0.25;
+            constexpr double scrub_repeat_interval = 0.01;
+            const int scrub_dir = (keys[SDL_SCANCODE_RIGHT] ? 1 : 0) - (keys[SDL_SCANCODE_LEFT] ? 1 : 0);
+            if (sequence && !playing && scrub_dir != 0) {
+                bool step_now = false;
+                if (scrub_repeat_timer < 0.0) {
+                    // First frame the arrow is held: step immediately, then wait
+                    // the longer initial delay before auto-repeating.
+                    step_now = true;
+                    scrub_repeat_timer = scrub_initial_delay;
+                } else {
+                    scrub_repeat_timer -= dt_seconds;
+                    if (scrub_repeat_timer <= 0.0) {
+                        step_now = true;
+                        scrub_repeat_timer = scrub_repeat_interval;
+                    }
+                }
+                if (step_now) {
+                    const int last = sequence->frame_count() - 1;
+                    current_frame = std::clamp(current_frame + scrub_dir, 0, last);
+                }
+            } else {
+                scrub_repeat_timer = -1.0;
             }
         }
 
