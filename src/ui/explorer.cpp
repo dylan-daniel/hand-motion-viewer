@@ -13,6 +13,16 @@
 #include <SDL3/SDL_opengl.h>
 #include <stb_image.h>
 
+#ifdef _WIN32
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <windows.h>
+#endif
+
 namespace {
     namespace fs = std::filesystem;
 
@@ -107,56 +117,141 @@ namespace {
         return (left.size() - left_index) < (right.size() - right_index);
     }
 
-    /// True if ``dir`` directly contains at least one ``.hmesh`` file. Stops at the
-    /// first match. Determines whether a folder is a sequence folder (openable).
-    bool directory_has_hmesh(const fs::path& dir) {
-        std::error_code error;
-        for (const fs::directory_entry& entry : fs::directory_iterator(dir, fs::directory_options::skip_permission_denied, error)) {
-            std::error_code file_error;
-            if (!entry.is_regular_file(file_error)) {
-                continue;
-            }
-            std::string ext = entry.path().extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-            if (ext == ".hmesh") {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// Recursively build the pruned node for ``dir``: keep it only if it directly
-    /// holds ``.hmesh`` files or has a descendant that does. Returns nullopt for a
-    /// dead branch (no sequences anywhere below), so the caller drops it. Runs on the
-    /// worker thread; touches no shared state.
-    std::optional<FileExplorer::Node> scan_subtree(const fs::path& dir) {
-        FileExplorer::Node node;
-        node.path = dir.string();
-        node.name = folder_name(dir);
-        node.has_meshes = directory_has_hmesh(dir);
-
-        std::error_code error;
-        fs::directory_iterator iterator(dir, fs::directory_options::skip_permission_denied, error);
-        if (!error) {
-            for (const fs::directory_entry& entry : iterator) {
-                std::error_code dir_error;
-                if (!entry.is_directory(dir_error)) {
-                    continue;
-                }
-                if (std::optional<FileExplorer::Node> child = scan_subtree(entry.path())) {
-                    node.children.push_back(std::move(*child));
-                }
-            }
-        }
+    /// Sort a node's kept children by natural (human) folder-name order.
+    void sort_children(FileExplorer::Node& node) {
         std::sort(node.children.begin(), node.children.end(), [](const FileExplorer::Node& left, const FileExplorer::Node& right) {
             return natural_less(left.name, right.name);
         });
-
-        if (!node.has_meshes && node.children.empty()) {
-            return std::nullopt; // dead branch — no sequences below
-        }
-        return node;
     }
+
+    /// True once a kept child should stay in the pruned tree: it either directly
+    /// holds ``.hmesh`` files or has a descendant that does. A child with neither is
+    /// a dead branch and is dropped.
+    bool keep_child(const FileExplorer::Node& child) { return child.has_meshes || !child.children.empty(); }
+
+#ifdef _WIN32
+    /// Convert a UTF-8 path to UTF-16 for the wide Win32 directory APIs.
+    std::wstring widen(const std::string& utf8) {
+        if (utf8.empty()) {
+            return std::wstring();
+        }
+        const int length = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+        std::wstring result(static_cast<std::size_t>(length), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), result.data(), length);
+        return result;
+    }
+
+    /// Convert a UTF-16 file name (as returned by FindFirstFile) back to UTF-8.
+    std::string narrow(const wchar_t* wide, int wide_length) {
+        if (wide_length <= 0) {
+            return std::string();
+        }
+        const int length = WideCharToMultiByte(CP_UTF8, 0, wide, wide_length, nullptr, 0, nullptr, nullptr);
+        std::string result(static_cast<std::size_t>(length), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, wide, wide_length, result.data(), length, nullptr, nullptr);
+        return result;
+    }
+
+    /// True if ``name`` ends with a case-insensitive ``.hmesh`` extension. Tests the
+    /// suffix in place — no path/extension allocation, which matters across the
+    /// hundreds of thousands of files a sequence folder can hold.
+    bool wname_is_hmesh(const wchar_t* name) {
+        static const wchar_t ext[] = L".hmesh";
+        const std::size_t ext_length = 6; // wcslen(L".hmesh")
+        const std::size_t name_length = std::wcslen(name);
+        if (name_length < ext_length) {
+            return false;
+        }
+        for (std::size_t offset = 0; offset < ext_length; ++offset) {
+            if (std::towlower(name[name_length - ext_length + offset]) != ext[offset]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Recursively fill ``node`` (whose ``path``/``name`` are already set) with its
+    /// pruned subtree, setting ``has_meshes`` and the kept ``children`` (sorted).
+    ///
+    /// Uses FindFirstFileExW with FIND_FIRST_EX_LARGE_FETCH rather than
+    /// std::filesystem: the directory entry's type and name come straight from the
+    /// WIN32_FIND_DATA, so there is no per-entry attribute syscall and no temporary
+    /// path allocation. On a large data folder this is dramatically faster than the
+    /// std::filesystem walk, which issues a stat per entry (see bench/). Runs on the
+    /// worker thread; touches no shared state.
+    void scan_children(FileExplorer::Node& node) {
+        node.has_meshes = false;
+
+        const std::wstring pattern = widen(node.path) + L"\\*";
+        WIN32_FIND_DATAW find_data;
+        HANDLE handle = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &find_data, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+        if (handle != INVALID_HANDLE_VALUE) {
+            do {
+                const wchar_t* name = find_data.cFileName;
+                if (name[0] == L'.' && (name[1] == L'\0' || (name[1] == L'.' && name[2] == L'\0'))) {
+                    continue; // skip "." and ".."
+                }
+                if ((find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                    FileExplorer::Node child;
+                    child.name = narrow(name, static_cast<int>(std::wcslen(name)));
+                    child.path = node.path + "\\" + child.name;
+                    scan_children(child);
+                    if (keep_child(child)) {
+                        node.children.push_back(std::move(child));
+                    }
+                } else if (!node.has_meshes && wname_is_hmesh(name)) {
+                    node.has_meshes = true;
+                }
+            } while (FindNextFileW(handle, &find_data) != 0);
+            FindClose(handle);
+        }
+        sort_children(node);
+    }
+#else
+    /// True if ``name`` ends with a case-insensitive ``.hmesh`` extension, tested in
+    /// place without building a path/extension string.
+    bool name_is_hmesh(const std::string& name) {
+        static const std::string ext = ".hmesh";
+        if (name.size() < ext.size()) {
+            return false;
+        }
+        for (std::size_t offset = 0; offset < ext.size(); ++offset) {
+            const char ch = static_cast<char>(std::tolower(static_cast<unsigned char>(name[name.size() - ext.size() + offset])));
+            if (ch != ext[offset]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// Portable std::filesystem fallback for non-Windows builds. Same contract as the
+    /// Win32 ``scan_children`` above: a single pass classifies each entry as a
+    /// subdirectory (recursed and kept if it leads to a sequence) or an ``.hmesh``
+    /// file (which marks this folder openable).
+    void scan_children(FileExplorer::Node& node) {
+        node.has_meshes = false;
+
+        std::error_code error;
+        fs::directory_iterator iterator(node.path, fs::directory_options::skip_permission_denied, error);
+        if (!error) {
+            for (const fs::directory_entry& entry : iterator) {
+                std::error_code type_error;
+                if (entry.is_directory(type_error)) {
+                    FileExplorer::Node child;
+                    child.path = entry.path().string();
+                    child.name = folder_name(entry.path());
+                    scan_children(child);
+                    if (keep_child(child)) {
+                        node.children.push_back(std::move(child));
+                    }
+                } else if (!node.has_meshes && entry.is_regular_file(type_error) && name_is_hmesh(entry.path().filename().string())) {
+                    node.has_meshes = true;
+                }
+            }
+        }
+        sort_children(node);
+    }
+#endif
 
     /// Paint a node's icon and name over the tree-node row just submitted. The row
     /// itself is drawn with an empty label (so it stays full-width clickable via
@@ -298,22 +393,9 @@ FileExplorer::Node FileExplorer::scan_root(const std::string& root) {
     node.path = root;
     node.name = folder_name(fs::path(root));
     node.default_open = true; // root opens so its kept subfolders are visible
-    node.has_meshes = directory_has_hmesh(root);
-
-    std::error_code error;
-    fs::directory_iterator iterator(root, fs::directory_options::skip_permission_denied, error);
-    if (!error) {
-        for (const fs::directory_entry& entry : iterator) {
-            std::error_code dir_error;
-            if (!entry.is_directory(dir_error)) {
-                continue;
-            }
-            if (std::optional<Node> child = scan_subtree(entry.path())) {
-                node.children.push_back(std::move(*child));
-            }
-        }
-    }
-    std::sort(node.children.begin(), node.children.end(), [](const Node& left, const Node& right) { return natural_less(left.name, right.name); });
+    // Fill has_meshes and the pruned, sorted children. Unlike a subtree the root is
+    // always kept (even with no sequences below) so the pane has something to show.
+    scan_children(node);
     return node;
 }
 
