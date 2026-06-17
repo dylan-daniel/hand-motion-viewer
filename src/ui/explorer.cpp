@@ -124,6 +124,24 @@ namespace {
         });
     }
 
+    /// TEMPORARY: hide folders named ``*_OHView`` from the explorer. True when a
+    /// folder name ends with the case-insensitive ``_OHView`` suffix, so its whole
+    /// subtree is skipped during the scan. Remove this (and its call sites) to bring
+    /// those folders back.
+    bool is_hidden_folder(const std::string& name) {
+        static const std::string suffix = "_ohview";
+        if (name.size() < suffix.size()) {
+            return false;
+        }
+        for (std::size_t offset = 0; offset < suffix.size(); ++offset) {
+            const char ch = static_cast<char>(std::tolower(static_cast<unsigned char>(name[name.size() - suffix.size() + offset])));
+            if (ch != suffix[offset]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// True once a kept child should stay in the pruned tree: it either directly
     /// holds ``.hmesh`` files or has a descendant that does. A child with neither is
     /// a dead branch and is dropped.
@@ -194,6 +212,9 @@ namespace {
                 if ((find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
                     FileExplorer::Node child;
                     child.name = narrow(name, static_cast<int>(std::wcslen(name)));
+                    if (is_hidden_folder(child.name)) {
+                        continue; // TEMPORARY: hide *_OHView folders
+                    }
                     child.path = node.path + "\\" + child.name;
                     scan_children(child);
                     if (keep_child(child)) {
@@ -240,6 +261,9 @@ namespace {
                     FileExplorer::Node child;
                     child.path = entry.path().string();
                     child.name = folder_name(entry.path());
+                    if (is_hidden_folder(child.name)) {
+                        continue; // TEMPORARY: hide *_OHView folders
+                    }
                     scan_children(child);
                     if (keep_child(child)) {
                         node.children.push_back(std::move(child));

@@ -18,19 +18,91 @@ namespace {
     // frame_0001_0.hmesh → frame number 0001, hand slot 0.
     const std::regex kFrameRe(R"(frame_(\d+)_(\d+)\.hmesh$)", std::regex::icase);
 
-    // A mesh folder ``.../data/<subject>/<view>`` is tracked by a sibling CSV
-    // ``.../data/tracking/tracks_<subject>_<view>.csv``. Returns an empty path if
-    // the layout does not match.
-    fs::path tracking_csv_path(const std::string& folder) {
+    // Where a mesh folder's tracking CSVs live and the subject/view that name them.
+    // A mesh folder ``.../data/<subject>/<view>`` is tracked by sibling CSVs in
+    // ``.../tracking`` named ``tracks<N>_<subject>_<view>.csv``.
+    struct TrackingLocation {
+        fs::path dir;        // the tracking/ directory
+        std::string subject; // subject component of the file name
+        std::string view;    // view component of the file name
+        bool valid = false;
+    };
+
+    TrackingLocation tracking_location(const std::string& folder) {
         const fs::path mesh_folder(folder);
         const fs::path subject_dir = mesh_folder.parent_path();
         if (subject_dir.empty() || subject_dir.filename().empty()) {
             return {};
         }
-        const std::string view = mesh_folder.filename().string();
-        const std::string subject = subject_dir.filename().string();
-        const std::string name = "tracks3_" + subject + "_" + view + ".csv";
-        return subject_dir.parent_path().parent_path() / "tracking" / name;
+        TrackingLocation location;
+        location.view = mesh_folder.filename().string();
+        location.subject = subject_dir.filename().string();
+        location.dir = subject_dir.parent_path().parent_path() / "tracking";
+        location.valid = true;
+        return location;
+    }
+
+    // File-name prefix for a tracking version: version 1 is the unnumbered
+    // ``tracks_`` set; later versions carry the number (``tracks2_``, ``tracks3_``).
+    std::string tracking_prefix(int version) { return version <= 1 ? "tracks_" : "tracks" + std::to_string(version) + "_"; }
+
+    // Absolute path of the source's tracking CSV for ``folder``. Empty if the mesh
+    // folder layout does not match the expected ``.../<subject>/<view>`` shape. The
+    // ``_linked`` variant carries an extra suffix before ``.csv``.
+    fs::path tracking_csv_path(const std::string& folder, const TrackingSource& source) {
+        const TrackingLocation location = tracking_location(folder);
+        if (!location.valid) {
+            return {};
+        }
+        std::string name = tracking_prefix(source.version) + location.subject + "_" + location.view;
+        if (source.linked) {
+            name += "_linked";
+        }
+        name += ".csv";
+        return location.dir / name;
+    }
+
+    // The tracking sources available for ``folder``, sorted by version then with the
+    // ``_linked`` variant after its plain counterpart. A file
+    // ``tracks<N>_<subject>_<view>[_linked].csv`` contributes version N (1 for the
+    // unnumbered ``tracks_`` set), linked when the ``_linked`` suffix is present.
+    std::vector<TrackingSource> discover_tracking_sources(const std::string& folder) {
+        std::vector<TrackingSource> sources;
+        const TrackingLocation location = tracking_location(folder);
+        if (!location.valid) {
+            return sources;
+        }
+        const std::string base = "_" + location.subject + "_" + location.view; // between prefix and (_linked)?.csv
+        const std::regex prefix_re(R"(^tracks(\d*)$)");
+        std::error_code error;
+        for (const fs::directory_entry& entry : fs::directory_iterator(location.dir, error)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            std::string stem = entry.path().filename().string();
+            if (!stem.ends_with(".csv")) {
+                continue;
+            }
+            stem.resize(stem.size() - 4); // drop ".csv"
+            const bool linked = stem.ends_with("_linked");
+            if (linked) {
+                stem.resize(stem.size() - 7); // drop "_linked"
+            }
+            if (!stem.ends_with(base)) {
+                continue;
+            }
+            const std::string prefix = stem.substr(0, stem.size() - base.size()); // "tracks<N>"
+            std::smatch match;
+            if (!std::regex_match(prefix, match, prefix_re)) {
+                continue;
+            }
+            sources.push_back({match[1].str().empty() ? 1 : std::stoi(match[1].str()), linked});
+        }
+        std::sort(sources.begin(), sources.end(), [](const TrackingSource& a, const TrackingSource& b) {
+            return a.version != b.version ? a.version < b.version : (!a.linked && b.linked);
+        });
+        sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
+        return sources;
     }
 
     // Split a CSV line on commas.
@@ -49,12 +121,13 @@ namespace {
     }
 
     // Parse ``tracks_*.csv`` into (frame, idx) → TrackInfo. Columns are located by
-    // their header name rather than a fixed position, since some files carry an
-    // extra ``is_duplicate`` column and others do not. ``is_duplicate`` comes
-    // straight from the CSV; a missing column leaves every detection non-duplicate.
-    std::map<std::pair<int, int>, TrackInfo> load_track_ids(const std::string& folder) {
+    // their header name rather than a fixed position, since files vary in which
+    // columns they carry. The colour id is ``hand_id`` for a linked source and
+    // ``track_id`` otherwise; ``is_duplicate`` comes straight from the CSV (a
+    // missing column leaves every detection non-duplicate).
+    std::map<std::pair<int, int>, TrackInfo> load_track_ids(const std::string& folder, const TrackingSource& source) {
         std::map<std::pair<int, int>, TrackInfo> track_ids;
-        const fs::path csv = tracking_csv_path(folder);
+        const fs::path csv = tracking_csv_path(folder, source);
         if (csv.empty() || !fs::exists(csv)) {
             return track_ids;
         }
@@ -68,9 +141,10 @@ namespace {
         }
         // Map the columns we need from the header; -1 means the column is absent.
         const std::vector<std::string> header = split_csv(line);
+        const std::string color_column = source.linked ? "hand_id" : "track_id";
         int frame_col = -1;
         int idx_col = -1;
-        int track_col = -1;
+        int color_col = -1;
         int duplicate_col = -1;
         for (int column = 0; column < static_cast<int>(header.size()); ++column) {
             const std::string& name = header[static_cast<std::size_t>(column)];
@@ -78,16 +152,16 @@ namespace {
                 frame_col = column;
             } else if (name == "idx") {
                 idx_col = column;
-            } else if (name == "track_id") {
-                track_col = column;
+            } else if (name == color_column) {
+                color_col = column;
             } else if (name == "is_duplicate") {
                 duplicate_col = column;
             }
         }
-        if (frame_col < 0 || idx_col < 0 || track_col < 0) {
+        if (frame_col < 0 || idx_col < 0 || color_col < 0) {
             return track_ids;
         }
-        const int min_fields = std::max({frame_col, idx_col, track_col, duplicate_col}) + 1;
+        const int min_fields = std::max({frame_col, idx_col, color_col, duplicate_col}) + 1;
         while (std::getline(stream, line)) {
             if (line.empty()) {
                 continue;
@@ -100,7 +174,7 @@ namespace {
                 const int frame_number = std::stoi(fields[static_cast<std::size_t>(frame_col)]);
                 const int slot = std::stoi(fields[static_cast<std::size_t>(idx_col)]);
                 TrackInfo info;
-                info.track_id = std::stoi(fields[static_cast<std::size_t>(track_col)]);
+                info.color_id = std::stoi(fields[static_cast<std::size_t>(color_col)]);
                 info.is_duplicate = duplicate_col >= 0 && std::stoi(fields[static_cast<std::size_t>(duplicate_col)]) != 0;
                 track_ids[{frame_number, slot}] = info;
             } catch (const std::exception&) {
@@ -257,7 +331,26 @@ float reference_depth(const Frame& hands) {
 MeshSequence::MeshSequence(const std::string& folder) : folder_(folder) {
     frame_paths_ = discover_frames(folder);
     frame_count_ = static_cast<int>(frame_paths_.size());
-    track_ids_ = load_track_ids(folder);
+    tracking_sources_ = discover_tracking_sources(folder);
+    // Default to the first available source (lowest version, non-linked); fall back
+    // to {1, false} when none are found so the path logic still resolves a
+    // (possibly missing) ``tracks_`` file.
+    tracking_source_ = tracking_sources_.empty() ? TrackingSource{} : tracking_sources_.front();
+    track_ids_ = load_track_ids(folder, tracking_source_);
+}
+
+void MeshSequence::set_tracking_source(TrackingSource source) {
+    if (source == tracking_source_) {
+        return;
+    }
+    tracking_source_ = source;
+    track_ids_ = load_track_ids(folder_, source);
+}
+
+void MeshSequence::prefer_tracking_source(TrackingSource source) {
+    if (std::find(tracking_sources_.begin(), tracking_sources_.end(), source) != tracking_sources_.end()) {
+        set_tracking_source(source);
+    }
 }
 
 Frame MeshSequence::load_frame(int index) const {
@@ -282,7 +375,7 @@ Frame MeshSequence::load_frame(int index) const {
             const int slot = std::stoi(match[2].str());
             const auto found = track_ids_.find({frame_number, slot});
             if (found != track_ids_.end()) {
-                hand.track_id = found->second.track_id;
+                hand.track_id = found->second.color_id;
                 hand.is_duplicate = found->second.is_duplicate;
             }
         }

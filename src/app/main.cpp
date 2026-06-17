@@ -189,6 +189,9 @@ int main(int, char**) {
 
     auto open_sequence = [&](const std::string& folder, int start_frame) {
         auto opened = std::make_unique<MeshSequence>(folder);
+        // Carry the remembered tracking source into the new sequence when it has
+        // that source; otherwise the sequence keeps its own default.
+        opened->prefer_tracking_source({settings.tracking_version, settings.tracking_linked});
         const bool has_frames = opened->frame_count() > 0;
         if (!has_frames) {
             std::printf("No frame_*.hmesh files found in %s\n", folder.c_str());
@@ -586,15 +589,50 @@ int main(int, char**) {
             pending_open_folder = explorer_result.open_folder;
         }
 
-        // Tracking pane: toggle hiding of duplicate hands and show this frame's count.
+        // Tracking pane: pick the tracking-CSV version, toggle hiding of duplicate
+        // hands, and show this frame's duplicate count.
         const TrackingResult tracking = draw_tracking_window(
             dock_id,
             TrackingState{
                 .hide_duplicates = settings.hide_duplicate_hands,
                 .duplicate_count = has_sequence ? frame_duplicate_count : 0,
+                .sources = has_sequence ? sequence->tracking_sources() : std::vector<TrackingSource>{},
+                .selected_source = has_sequence ? sequence->tracking_source() : TrackingSource{},
             }
         );
         settings.hide_duplicate_hands = tracking.state.hide_duplicates;
+
+        // Resolve the target tracking source from the pane's combo and, when the
+        // Scene viewport is focused, the Up/Down arrows — Up steps to the next entry
+        // in the source list, Down to the previous, clamped to the ones that exist.
+        TrackingSource target_source = tracking.state.selected_source;
+        if (has_sequence && viewport.focused) {
+            const std::vector<TrackingSource>& sources = sequence->tracking_sources();
+            int step = 0;
+            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
+                step = 1;
+            } else if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
+                step = -1;
+            }
+            if (step != 0) {
+                const auto current = std::find(sources.begin(), sources.end(), sequence->tracking_source());
+                if (current != sources.end()) {
+                    const auto last = static_cast<std::ptrdiff_t>(sources.size()) - 1;
+                    const auto next = std::clamp((current - sources.begin()) + step, static_cast<std::ptrdiff_t>(0), last);
+                    target_source = sources[static_cast<std::size_t>(next)];
+                }
+            }
+        }
+
+        // Switching source re-parses the colour ids; force a reload so the scene
+        // re-renders with the new colours and duplicate flags.
+        if (has_sequence && !(target_source == sequence->tracking_source())) {
+            sequence->set_tracking_source(target_source);
+            // Remember the choice so it carries to the next sequence and next run.
+            settings.tracking_version = target_source.version;
+            settings.tracking_linked = target_source.linked;
+            loaded_frame = -1;
+        }
 
         if (has_sequence) {
             // Only the pane that drew the transport changed the state; read it back.

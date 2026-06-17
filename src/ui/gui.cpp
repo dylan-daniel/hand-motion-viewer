@@ -475,6 +475,31 @@ TrackingResult draw_tracking_window(ImGuiID dock_id, const TrackingState& state)
     const bool hovered = ImGui::IsWindowHovered();
 
     TrackingState echo = state;
+
+    // Tracking-source selector. Picking a source re-parses the sequence's colour
+    // ids from that CSV; the caller applies the change and re-renders. The linked
+    // variant colours hands by hand_id instead of track_id.
+    auto source_label = [](const TrackingSource& source) { return "Version " + std::to_string(source.version) + (source.linked ? " (linked)" : ""); };
+    if (state.sources.empty()) {
+        ImGui::TextDisabled("No tracking files for this sequence.");
+    } else {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##tracking_source", source_label(state.selected_source).c_str())) {
+            for (const TrackingSource& source : state.sources) {
+                const bool is_selected = source == state.selected_source;
+                if (ImGui::Selectable(source_label(source).c_str(), is_selected)) {
+                    echo.selected_source = source;
+                }
+                if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("Up/Down arrows switch versions in the Scene.");
+    }
+    ImGui::Spacing();
+
     ImGui::Checkbox("Hide duplicate hands", &echo.hide_duplicates);
     ImGui::Spacing();
     if (state.duplicate_count > 0) {

@@ -73,6 +73,8 @@ Config load_config(const std::string& path) {
     read_field(data, "show_camera_marker", config.show_camera_marker);
     read_field(data, "free_camera", config.free_camera);
     read_field(data, "hide_duplicate_hands", config.hide_duplicate_hands);
+    read_field(data, "tracking_version", config.tracking_version);
+    read_field(data, "tracking_linked", config.tracking_linked);
     read_field(data, "active_pane", config.active_pane);
 
     read_optional_string(data, "data_folder", config.data_folder);
@@ -102,6 +104,8 @@ void save_config(const std::string& path, const Config& config) {
     data["show_camera_marker"] = config.show_camera_marker;
     data["free_camera"] = config.free_camera;
     data["hide_duplicate_hands"] = config.hide_duplicate_hands;
+    data["tracking_version"] = config.tracking_version;
+    data["tracking_linked"] = config.tracking_linked;
     data["active_pane"] = config.active_pane;
 
     data["data_folder"] = config.data_folder ? json(*config.data_folder) : json(nullptr);

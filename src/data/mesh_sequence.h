@@ -28,8 +28,18 @@ struct HandData {
 
 /// Per-detection facts read from a hand's row in the sibling tracking CSV.
 struct TrackInfo {
-    int track_id = -1;         // persistent hand id, -1 if unknown
+    int color_id = -1;         // id the hand is coloured by (track_id, or hand_id when linked)
     bool is_duplicate = false; // the tracker flagged this detection as a duplicate
+};
+
+/// Identifies one tracking CSV beside a sequence: a numbered version, optionally
+/// the ``_linked`` variant that colours hands by the linked ``hand_id`` instead of
+/// the raw ``track_id``.
+struct TrackingSource {
+    int version = 1;
+    bool linked = false;
+
+    bool operator==(const TrackingSource& other) const { return version == other.version && linked == other.linked; }
 };
 
 /// A fixed translate-then-scale that frames the whole sequence on the grid.
@@ -69,10 +79,29 @@ public:
     /// frame for an out-of-range index.
     Frame load_frame(int index) const;
 
+    /// Tracking CSVs found beside this sequence (numbered versions plus any
+    /// ``_linked`` variants), sorted by version then linked-last. Empty when no
+    /// tracking files exist for the folder.
+    const std::vector<TrackingSource>& tracking_sources() const { return tracking_sources_; }
+
+    /// The tracking source currently applied to ``load_frame``'s colour ids.
+    TrackingSource tracking_source() const { return tracking_source_; }
+
+    /// Re-parse the colour ids from ``source``'s tracking CSV. A no-op if it is
+    /// already the active source; otherwise the next ``load_frame`` reflects it.
+    void set_tracking_source(TrackingSource source);
+
+    /// Apply ``source`` only if it exists for this sequence; otherwise keep the
+    /// current one. Lets a remembered preference carry across sequences while still
+    /// falling back gracefully when a sequence lacks that source.
+    void prefer_tracking_source(TrackingSource source);
+
 private:
     std::string folder_;
     std::vector<std::vector<std::string>> frame_paths_;
     int frame_count_;
+    std::vector<TrackingSource> tracking_sources_; // available CSVs for this folder, sorted
+    TrackingSource tracking_source_;               // source currently parsed into track_ids_
     // (frame number, hand slot) → tracking facts. Empty when no tracking file is
     // found for this folder.
     std::map<std::pair<int, int>, TrackInfo> track_ids_;

@@ -5,6 +5,7 @@
 
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <imgui.h>
 
@@ -96,8 +97,10 @@ struct ImageViewResult {
 /// State for the Tracking pane, passed in and echoed back with the user's edits.
 /// New tracking toggles are added here, not as more draw_tracking_window args.
 struct TrackingState {
-    bool hide_duplicates = false; // hide hands flagged as duplicate track ids
-    int duplicate_count = 0;      // duplicate hands in the current frame (display only)
+    bool hide_duplicates = false;        // hide hands flagged as duplicate track ids
+    int duplicate_count = 0;             // duplicate hands in the current frame (display only)
+    std::vector<TrackingSource> sources; // tracking CSVs available for the sequence
+    TrackingSource selected_source;      // the chosen tracking source (echoed back on change)
 };
 
 struct TrackingResult {
