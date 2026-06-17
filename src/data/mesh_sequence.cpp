@@ -30,7 +30,7 @@ namespace {
         const std::string view = mesh_folder.filename().string();
         const std::string subject = subject_dir.filename().string();
         const std::string name = "tracks3_" + subject + "_" + view + ".csv";
-        return subject_dir.parent_path() / "tracking" / name;
+        return subject_dir.parent_path().parent_path() / "tracking" / name;
     }
 
     // Split a CSV line on commas.
