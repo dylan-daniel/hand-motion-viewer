@@ -80,6 +80,7 @@ struct TransportState {
 struct ViewportResult {
     int width;
     int height;
+    ImVec2 image_pos; // screen-space top-left of the scene image (for picking rays)
     bool hovered;
     // True when this window is the one the mouse is interacting with (focused),
     // used to decide which pane carries the playback transport.
@@ -109,6 +110,27 @@ struct TrackingResult {
     TrackingState state; // the (possibly toggled) tracking state
 };
 
+/// State for the Manual Tracking pane, passed in and echoed back with the user's
+/// edits. The pane lets the user relabel a hand's colour id by picking it in the
+/// scene: a row of colour swatches (one per id present, selectable with number
+/// keys) chooses the active id, and a button saves the relabeled CSV.
+struct ManualTrackingState {
+    bool has_sequence = false;
+    std::vector<int> present_ids; // distinct colour ids present, drives the swatch row (keys 1..N)
+    int active_id = 0;            // id assigned to the next picked hand
+    bool propagate = true;        // also relabel the rest of the picked hand's track forward
+    int override_count = 0;       // manual overrides recorded so far (display only)
+    std::string save_status;      // last save result message (display only)
+};
+
+struct ManualTrackingResult {
+    bool hovered = false;
+    bool focused = false;
+    int active_id = 0;           // the (possibly changed) active id
+    bool propagate = true;       // the (possibly toggled) forward-propagation choice
+    bool save_requested = false; // user pressed "Save to truth CSV"
+};
+
 /// Bake the bundled font for the UI and the FPS overlay. Returns (ui, fps),
 /// both the imgui default font if no .ttf is bundled in fonts/.
 std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io);
@@ -136,3 +158,10 @@ ImageViewResult draw_image_window(const char* title, unsigned int texture, int t
 /// readout of how many hands in the current frame are flagged as duplicates. The
 /// result carries the (possibly toggled) state back to the caller.
 TrackingResult draw_tracking_window(ImGuiID dock_id, const TrackingState& state);
+
+/// Draw the dockable "Manual Tracking" window: a row of colour swatches (one per
+/// id present, labeled 1..N and selectable with the matching number key) to choose
+/// the active id, a readout of the active id and override count, and a button to
+/// save the relabeled CSV into the truth folder. Picking a hand in the Scene is
+/// handled by the caller; this pane only chooses the active id and triggers saves.
+ManualTrackingResult draw_manual_tracking_window(ImGuiID dock_id, const ManualTrackingState& state);

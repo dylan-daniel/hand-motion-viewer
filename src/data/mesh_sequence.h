@@ -24,6 +24,7 @@ struct HandData {
     bool is_right = true;          // handedness, picks the shared face winding
     int track_id = -1;             // persistent hand id from the tracking CSV, -1 if unknown
     bool is_duplicate = false;     // another hand in the same frame shares this track id
+    int slot = -1;                 // hand slot within the frame (the ``_<slot>`` in the file name)
 };
 
 /// Per-detection facts read from a hand's row in the sibling tracking CSV.
@@ -75,6 +76,12 @@ public:
 
     const std::vector<std::string>& frame_paths(int index) const { return frame_paths_[static_cast<std::size_t>(index)]; }
 
+    /// The on-disk frame number (the ``frame_NNNN`` in the file names, as used by
+    /// the tracking CSV) for the sequence position ``index``. This differs from the
+    /// 0-based ``index`` whenever the numbering does not start at 0, so override and
+    /// CSV lookups must key by this, not by ``index``. Returns -1 if unavailable.
+    int frame_number(int index) const;
+
     /// Read and decode the hands for frame ``index`` from disk. Returns an empty
     /// frame for an out-of-range index.
     Frame load_frame(int index) const;
@@ -96,6 +103,47 @@ public:
     /// falling back gracefully when a sequence lacks that source.
     void prefer_tracking_source(TrackingSource source);
 
+    // ── Manual id overrides ────────────────────
+    // A manual labeling pass over the active source: the user picks a hand in the
+    // scene and assigns it a colour id, overriding whatever the CSV said. Overrides
+    // are keyed by (frame number, hand slot) so they survive switching the source,
+    // and they feed ``load_frame``'s colour id and the saved truth CSV.
+
+    /// Override the colour id of the hand at (``frame``, ``slot``). Takes effect on
+    /// the next ``load_frame`` for that frame.
+    void set_override(int frame, int slot, int hand_id);
+
+    /// Drop a manual override, falling back to the source CSV's colour id.
+    void clear_override(int frame, int slot);
+
+    /// Snapshot the current overrides onto the undo stack. Call once before an edit
+    /// (a pick, which may set one override and propagate many) so a single ``undo``
+    /// reverts that whole edit.
+    void push_undo_state();
+
+    /// Restore the most recent snapshot pushed by ``push_undo_state``. Returns true
+    /// if an edit was undone, false if there was nothing to undo.
+    bool undo();
+
+    /// Re-label a whole track forward: every hand from ``from_frame`` onward whose
+    /// current colour id equals ``old_id`` is overridden to ``new_id``. This is how
+    /// relabeling one detection carries to the rest of that track. A negative
+    /// ``old_id`` is a no-op (an unlabeled hand has no track to follow).
+    void propagate_id(int from_frame, int old_id, int new_id);
+
+    /// Number of manual overrides recorded so far (for a UI readout).
+    int override_count() const { return static_cast<int>(overrides_.size()); }
+
+    /// Distinct colour ids present across the whole active source (overrides
+    /// applied), sorted ascending, negatives dropped. Drives the labeller's
+    /// colour-swatch row.
+    std::vector<int> present_color_ids() const;
+
+    /// Write a drop-in copy of the active source CSV into the sibling
+    /// ``tracking/truth`` folder, with the colour column replaced by the manual
+    /// overrides where present. Returns the written path, or empty on failure.
+    std::string save_truth_csv() const;
+
 private:
     std::string folder_;
     std::vector<std::vector<std::string>> frame_paths_;
@@ -105,6 +153,10 @@ private:
     // (frame number, hand slot) → tracking facts. Empty when no tracking file is
     // found for this folder.
     std::map<std::pair<int, int>, TrackInfo> track_ids_;
+    // (frame number, hand slot) → manually assigned colour id, overriding the CSV.
+    std::map<std::pair<int, int>, int> overrides_;
+    // Snapshots of overrides_ taken before each edit, for Ctrl+Z undo (newest last).
+    std::vector<std::map<std::pair<int, int>, int>> undo_stack_;
 };
 
 /// Build the fixed transform that sits the sequence's hands on the grid and

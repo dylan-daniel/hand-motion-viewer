@@ -55,6 +55,7 @@ struct HandGpu {
     std::unique_ptr<GpuMesh> joints;
     std::unique_ptr<GpuMesh> hand;
     bool is_duplicate = false; // shares a track id with another hand this frame
+    int track_id = -1;         // colour id, also selects the per-hand surface material
 };
 
 // A frame's prepared CPU arrays for one hand: GPU-ready mesh and mean depth.
@@ -62,6 +63,7 @@ struct PreparedHand {
     PreparedMesh mesh;
     float depth = 0.0f;
     bool is_duplicate = false; // shares a track id with another hand this frame
+    int track_id = -1;         // colour id, also selects the per-hand surface material
 };
 using PreparedFrame = std::vector<PreparedHand>;
 

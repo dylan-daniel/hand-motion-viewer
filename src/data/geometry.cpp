@@ -40,6 +40,46 @@ glm::vec4 track_color(int track_id) {
     }
 }
 
+glm::vec4 distinct_color(int track_id) {
+    if (track_id < 0) {
+        return DEFAULT_COLOR;
+    }
+    // Hue is advanced by the golden-ratio conjugate, an irrational step, so the
+    // colour wheel position never *exactly* repeats for any two ids. On top of that
+    // the saturation and value are cycled on short, coprime periods (2 and 3): ids
+    // whose hues land close together (which only happens for ids far apart) then
+    // differ in brightness/vividness instead of looking identical. The result has
+    // no hard repeats like a fixed palette and far more separation than hue alone.
+    const float golden_ratio_conjugate = 0.61803398875f;
+    const float hue = std::fmod(static_cast<float>(track_id) * golden_ratio_conjugate, 1.0f);
+
+    static const std::array<float, 2> saturations = {{0.90f, 0.55f}};
+    static const std::array<float, 3> values = {{1.00f, 0.78f, 0.92f}};
+    const float saturation = saturations[static_cast<std::size_t>(track_id % 2)];
+    const float value = values[static_cast<std::size_t>(track_id % 3)];
+
+    const float sector = hue * 6.0f;
+    const int index = static_cast<int>(sector) % 6;
+    const float fractional = sector - std::floor(sector);
+    const float p = value * (1.0f - saturation);
+    const float q = value * (1.0f - saturation * fractional);
+    const float t = value * (1.0f - saturation * (1.0f - fractional));
+    switch (index) {
+        case 0:
+            return {value, t, p, 1.0f};
+        case 1:
+            return {q, value, p, 1.0f};
+        case 2:
+            return {p, value, t, 1.0f};
+        case 3:
+            return {p, q, value, 1.0f};
+        case 4:
+            return {t, p, value, 1.0f};
+        default:
+            return {value, p, q, 1.0f};
+    }
+}
+
 MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha) {
     MeshArrays out;
     const std::size_t face_count = part.faces.size();

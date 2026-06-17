@@ -52,6 +52,13 @@ inline int finger_of(int joint) { return joint == 0 ? 0 : (joint - 1) / 4 + 1; }
 /// (no tracking match) returns the neutral DEFAULT_COLOR.
 glm::vec4 track_color(int track_id);
 
+/// A surface colour for a tracking id drawn from a curated high-contrast palette
+/// (with brightness tiers for ids past the palette), so different ids are far
+/// easier to tell apart by eye than track_color's evenly-spaced hues. A negative
+/// id returns the neutral DEFAULT_COLOR. Used for the hand surfaces and the
+/// manual-tracking swatches so the two always agree.
+glm::vec4 distinct_color(int track_id);
+
 /// A drawable chunk of geometry: shared vertices plus per-face indices/normals.
 struct MeshPart {
     std::vector<glm::vec3> verts;

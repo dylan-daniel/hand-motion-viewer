@@ -11,6 +11,7 @@
 #include <limits>
 #include <map>
 #include <regex>
+#include <set>
 
 namespace {
     namespace fs = std::filesystem;
@@ -373,13 +374,176 @@ Frame MeshSequence::load_frame(int index) const {
         if (std::regex_search(name, match, kFrameRe)) {
             const int frame_number = std::stoi(match[1].str());
             const int slot = std::stoi(match[2].str());
+            hand.slot = slot;
             const auto found = track_ids_.find({frame_number, slot});
             if (found != track_ids_.end()) {
                 hand.track_id = found->second.color_id;
-                hand.is_duplicate = found->second.is_duplicate;
+            }
+            // A manual override wins over the CSV colour id for this hand.
+            const auto overridden = overrides_.find({frame_number, slot});
+            if (overridden != overrides_.end()) {
+                hand.track_id = overridden->second;
             }
         }
         hands.push_back(std::move(hand));
     }
+
+    // Recompute duplicates from the final colour ids (CSV ids with manual overrides
+    // applied) instead of trusting the CSV's own flag, so manual relabeling stays
+    // consistent. As the CSV does, the first hand (in slot order) to use a colour id
+    // is the canonical one and stays non-duplicate; any later hand reusing that id is
+    // the duplicate. Flagging only the extras means one hand survives "hide
+    // duplicates", while assigning a hand an id already used in the frame still marks
+    // it (and relabeling away from a clash clears it).
+    std::set<int> seen_ids;
+    for (HandData& hand : hands) {
+        hand.is_duplicate = hand.track_id >= 0 && !seen_ids.insert(hand.track_id).second;
+    }
     return hands;
+}
+
+int MeshSequence::frame_number(int index) const {
+    if (index < 0 || index >= frame_count_) {
+        return -1;
+    }
+    const std::vector<std::string>& paths = frame_paths_[static_cast<std::size_t>(index)];
+    if (paths.empty()) {
+        return -1;
+    }
+    std::smatch match;
+    const std::string name = fs::path(paths.front()).filename().string();
+    if (!std::regex_search(name, match, kFrameRe)) {
+        return -1;
+    }
+    return std::stoi(match[1].str());
+}
+
+void MeshSequence::set_override(int frame, int slot, int hand_id) { overrides_[{frame, slot}] = hand_id; }
+
+void MeshSequence::clear_override(int frame, int slot) { overrides_.erase({frame, slot}); }
+
+void MeshSequence::push_undo_state() {
+    undo_stack_.push_back(overrides_);
+    // Cap the history so a long session can't grow it without bound.
+    constexpr std::size_t max_undo = 200;
+    if (undo_stack_.size() > max_undo) {
+        undo_stack_.erase(undo_stack_.begin());
+    }
+}
+
+bool MeshSequence::undo() {
+    if (undo_stack_.empty()) {
+        return false;
+    }
+    overrides_ = std::move(undo_stack_.back());
+    undo_stack_.pop_back();
+    return true;
+}
+
+void MeshSequence::propagate_id(int from_frame, int old_id, int new_id) {
+    if (old_id < 0 || old_id == new_id) {
+        return;
+    }
+    // Walk every detection from this frame onward; one whose current colour id
+    // (override if set, else the CSV's) matches the old id joins the relabel. We
+    // read overrides_ but only ever add keys, so iterating track_ids_ stays valid.
+    for (const auto& [key, info] : track_ids_) {
+        if (key.first < from_frame) {
+            continue;
+        }
+        const auto overridden = overrides_.find(key);
+        const int current_id = overridden != overrides_.end() ? overridden->second : info.color_id;
+        if (current_id == old_id) {
+            overrides_[key] = new_id;
+        }
+    }
+}
+
+std::vector<int> MeshSequence::present_color_ids() const {
+    // Union of the source CSV's colour ids and the manual overrides, with each
+    // override masking the CSV id for its (frame, slot). Negatives are dropped.
+    std::set<int> ids;
+    for (const auto& [key, info] : track_ids_) {
+        if (overrides_.find(key) == overrides_.end() && info.color_id >= 0) {
+            ids.insert(info.color_id);
+        }
+    }
+    for (const auto& [key, hand_id] : overrides_) {
+        if (hand_id >= 0) {
+            ids.insert(hand_id);
+        }
+    }
+    return {ids.begin(), ids.end()};
+}
+
+std::string MeshSequence::save_truth_csv() const {
+    // Re-read the active source CSV and rewrite it row-for-row into the sibling
+    // tracking/truth folder, replacing the colour column (track_id, or hand_id for
+    // a linked source) with the manual override for any row that has one. Keeping
+    // the full schema makes the output a drop-in replacement for the source.
+    const fs::path source = tracking_csv_path(folder_, tracking_source_);
+    if (source.empty() || !fs::exists(source)) {
+        return {};
+    }
+    std::ifstream input(source);
+    if (!input) {
+        return {};
+    }
+    std::string header_line;
+    if (!std::getline(input, header_line)) {
+        return {};
+    }
+    const std::vector<std::string> header = split_csv(header_line);
+    const std::string color_column = tracking_source_.linked ? "hand_id" : "track_id";
+    int frame_col = -1;
+    int idx_col = -1;
+    int color_col = -1;
+    for (int column = 0; column < static_cast<int>(header.size()); ++column) {
+        const std::string& name = header[static_cast<std::size_t>(column)];
+        if (name == "frame") {
+            frame_col = column;
+        } else if (name == "idx") {
+            idx_col = column;
+        } else if (name == color_column) {
+            color_col = column;
+        }
+    }
+    if (frame_col < 0 || idx_col < 0 || color_col < 0) {
+        return {};
+    }
+
+    const fs::path out_path = source.parent_path() / "truth" / source.filename();
+    std::error_code error;
+    fs::create_directories(out_path.parent_path(), error);
+    std::ofstream output(out_path);
+    if (!output) {
+        return {};
+    }
+    output << header_line << "\n";
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        std::vector<std::string> fields = split_csv(line);
+        if (static_cast<int>(fields.size()) <= std::max({frame_col, idx_col, color_col})) {
+            output << line << "\n";
+            continue;
+        }
+        try {
+            const int frame_number = std::stoi(fields[static_cast<std::size_t>(frame_col)]);
+            const int slot = std::stoi(fields[static_cast<std::size_t>(idx_col)]);
+            const auto overridden = overrides_.find({frame_number, slot});
+            if (overridden != overrides_.end()) {
+                fields[static_cast<std::size_t>(color_col)] = std::to_string(overridden->second);
+            }
+        } catch (const std::exception&) {
+            // Leave a malformed row untouched.
+        }
+        for (std::size_t column = 0; column < fields.size(); ++column) {
+            output << (column == 0 ? "" : ",") << fields[column];
+        }
+        output << "\n";
+    }
+    return out_path.string();
 }
