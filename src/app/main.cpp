@@ -310,9 +310,9 @@ int main(int, char**) {
     kalman_params.process_noise = settings.kalman_process_noise;
     kalman_params.measurement_noise = settings.kalman_measurement_noise;
 
-    // Locate the data/labels_per_video folder that labels each hmesh as a baby hand
-    // or not. Searched once: walk up from both the working dir and the exe dir so it
-    // resolves whether the app is launched from the repo root or build/.
+    // Locate the data/classification_v2 folder that labels each tracked hand as a
+    // baby hand or not. Searched once: walk up from both the working dir and the exe
+    // dir so it resolves whether the app is launched from the repo root or build/.
     const std::string labels_dir = [] {
         std::vector<std::filesystem::path> starts;
         starts.push_back(std::filesystem::current_path());
@@ -321,7 +321,7 @@ int main(int, char**) {
         }
         for (std::filesystem::path start : starts) {
             for (int up = 0; up < 6; ++up) {
-                const std::filesystem::path candidate = start / "data" / "labels_per_video";
+                const std::filesystem::path candidate = start / "data" / "classification_v2";
                 std::error_code error;
                 if (std::filesystem::is_directory(candidate, error)) {
                     return candidate.string();
@@ -338,8 +338,9 @@ int main(int, char**) {
     auto open_sequence = [&](const std::string& folder, int start_frame) {
         // Load the per-take baby/adult labels CSV. The data layout is
         // data/<subject>/<take> (e.g. data/AE45/T1_BabyView) and the CSV is named
-        // labels_<subject>_<take>.csv (labels_AE45_T1_BabyView.csv). Stored in the
-        // sequence-scoped ``classification`` so frames can be split as they load.
+        // classification_<subject>_<take>.csv (classification_AE45_T1_BabyView.csv).
+        // Stored in the sequence-scoped ``classification`` so frames can be split as
+        // they load.
         classification = HandClassification{};
         if (!labels_dir.empty()) {
             std::filesystem::path folder_path(folder);
@@ -348,7 +349,7 @@ int main(int, char**) {
             }
             const std::string take = folder_path.filename().string();
             const std::string subject = folder_path.parent_path().filename().string();
-            const std::string csv_name = subject.empty() ? "labels_" + take + ".csv" : "labels_" + subject + "_" + take + ".csv";
+            const std::string csv_name = subject.empty() ? "classification_" + take + ".csv" : "classification_" + subject + "_" + take + ".csv";
             const std::filesystem::path csv = std::filesystem::path(labels_dir) / csv_name;
             std::error_code error;
             if (std::filesystem::exists(csv, error)) {
@@ -713,17 +714,26 @@ int main(int, char**) {
                         ++frame_duplicate_count;
                     }
                 }
-                const std::vector<std::string>& paths = sequence->frame_paths(current_frame);
-                // Split the frame's hands into baby and adult by the per-video
-                // labels (hands order matches frame_paths order). Baby hands render
+                // Split the frame's hands into baby and adult by the per-track
+                // labels (keyed by each hand's tracking id). Baby hands render
                 // normally (coloured by track id); adult hands get a yellow surface,
                 // drawn translucent (or dropped, per the toggle). Unlabeled hands
                 // default to baby.
+                //
+                // Drop rarely-seen tracks first: the transformer occasionally emits a
+                // fleeting duplicate hand that lives for only a handful of frames, so a
+                // track classified in fewer than this many frames (n_votes) is treated
+                // as noise and skipped. Tracks with no vote count (-1, absent from the
+                // CSV or unlabeled) are kept so untracked data is never hidden.
+                constexpr int min_track_frames = 15;
                 Frame baby_hands;
                 Frame adult_hands;
-                for (std::size_t hand_index = 0; hand_index < hands.size(); ++hand_index) {
-                    const bool is_baby = hand_index >= paths.size() || classification.is_baby(std::filesystem::path(paths[hand_index]).filename().string());
-                    (is_baby ? baby_hands : adult_hands).push_back(hands[hand_index]);
+                for (const HandData& hand : hands) {
+                    const int votes = classification.track_votes(hand.track_id);
+                    if (votes >= 0 && votes < min_track_frames) {
+                        continue;
+                    }
+                    (classification.is_baby(hand.track_id) ? baby_hands : adult_hands).push_back(hand);
                 }
                 current_gpu = std::make_unique<FrameGpu>(prepare_frame(baby_hands));
                 const glm::vec4 adult_color(0.9f, 0.85f, 0.2f, 1.0f);

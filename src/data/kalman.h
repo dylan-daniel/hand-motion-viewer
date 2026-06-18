@@ -35,8 +35,11 @@ struct KalmanParams {
 /// Forward-backward (Rauch-Tung-Striebel) smoothing of a whole sequence of
 /// frames. ``frames[f]`` holds that frame's hands in slot order; the result has
 /// the identical shape with the surface vertices and joints replaced by their
-/// smoothed positions. Hands are tracked across frames by slot index; a slot's
-/// track is broken (and the filter restarted) wherever the hand disappears, its
-/// handedness flips, or its vertex count changes. Because the backward pass uses
-/// future frames, the smoothed motion has no playback lag.
+/// smoothed positions. Hands are tracked across frames by their ``track_id`` (the
+/// persistent tracking-CSV id), so the same physical hand is smoothed together
+/// even when its slot changes frame to frame; a track is broken (and the filter
+/// restarted) wherever the id disappears, its handedness flips, or its vertex
+/// count changes. Hands without an id (``track_id < 0``) are passed through
+/// unsmoothed. Because the backward pass uses future frames, the smoothed motion
+/// has no playback lag.
 std::vector<Frame> smooth_sequence(const std::vector<Frame>& frames, const KalmanParams& params = {});

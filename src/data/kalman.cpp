@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <set>
 
 namespace {
     // ── Flattening a hand to a flat coordinate vector ──
@@ -173,10 +174,32 @@ namespace {
         }
     }
 
-    /// True when two hands at the same slot in adjacent frames belong to the same
-    /// continuous track (same handedness and vertex/joint counts).
+    /// True when two hands carrying the same track id in adjacent frames are
+    /// shape-compatible (same handedness and vertex/joint counts) and so can be
+    /// smoothed as one continuous series.
     bool same_track(const HandData& left, const HandData& right) {
         return left.is_right == right.is_right && left.verts.size() == right.verts.size() && left.joints.size() == right.joints.size();
+    }
+
+    /// Index of the hand in ``frame`` whose track id is ``track_id``, or -1 if none.
+    /// When a frame holds duplicates of an id, the canonical (non-duplicate) hand is
+    /// preferred so a stray duplicate detection does not pollute the track; the
+    /// duplicate is then left raw.
+    std::size_t kNoHand = static_cast<std::size_t>(-1);
+    std::size_t find_hand_for_track(const Frame& frame, int track_id) {
+        std::size_t fallback = kNoHand;
+        for (std::size_t index = 0; index < frame.size(); ++index) {
+            if (frame[index].track_id != track_id) {
+                continue;
+            }
+            if (!frame[index].is_duplicate) {
+                return index;
+            }
+            if (fallback == kNoHand) {
+                fallback = index;
+            }
+        }
+        return fallback;
     }
 } // namespace
 
@@ -186,35 +209,53 @@ std::vector<Frame> smooth_sequence(const std::vector<Frame>& frames, const Kalma
         return result;
     }
 
-    std::size_t max_slots = 0;
+    // The distinct real track ids across the sequence. Hands without an id
+    // (track_id < 0) are never collected here, so they pass through unsmoothed.
+    std::set<int> track_ids;
     for (const Frame& frame : frames) {
-        max_slots = std::max(max_slots, frame.size());
+        for (const HandData& hand : frame) {
+            if (hand.track_id >= 0) {
+                track_ids.insert(hand.track_id);
+            }
+        }
     }
 
     std::vector<ScalarRecord> scratch;
     std::vector<float> series;
 
-    for (std::size_t slot = 0; slot < max_slots; ++slot) {
-        // Walk this slot across frames, smoothing each maximal run where the same
-        // hand is present (a "track segment").
+    for (const int track_id : track_ids) {
+        // Walk this track id across frames, smoothing each maximal run where a
+        // shape-compatible hand with this id is present (a "track segment"). The
+        // hand for an id may sit in a different slot each frame, so it is located by
+        // id rather than by position.
         std::size_t frame = 0;
         while (frame < result.size()) {
-            if (slot >= result[frame].size()) {
+            const std::size_t start_hand = find_hand_for_track(result[frame], track_id);
+            if (start_hand == kNoHand) {
                 ++frame;
                 continue;
             }
+
+            // Collect the hand index in each consecutive frame for as long as the id
+            // is present and shape-compatible with the segment's first hand.
             const std::size_t segment_start = frame;
+            std::vector<std::size_t> hand_indices{start_hand};
             std::size_t segment_end = frame + 1;
-            while (segment_end < result.size() && slot < result[segment_end].size() && same_track(result[segment_start][slot], result[segment_end][slot])) {
+            while (segment_end < result.size()) {
+                const std::size_t next_hand = find_hand_for_track(result[segment_end], track_id);
+                if (next_hand == kNoHand || !same_track(result[segment_start][start_hand], result[segment_end][next_hand])) {
+                    break;
+                }
+                hand_indices.push_back(next_hand);
                 ++segment_end;
             }
 
             // Flatten each hand in the segment once, smooth every coordinate as an
             // independent series, then write the smoothed coordinates back.
-            const std::size_t segment_length = segment_end - segment_start;
+            const std::size_t segment_length = hand_indices.size();
             std::vector<std::vector<float>> flattened(segment_length);
             for (std::size_t offset = 0; offset < segment_length; ++offset) {
-                flattened[offset] = flatten_hand(result[segment_start + offset][slot]);
+                flattened[offset] = flatten_hand(result[segment_start + offset][hand_indices[offset]]);
             }
 
             const std::size_t scalar_count = flattened.front().size();
@@ -230,7 +271,7 @@ std::vector<Frame> smooth_sequence(const std::vector<Frame>& frames, const Kalma
             }
 
             for (std::size_t offset = 0; offset < segment_length; ++offset) {
-                apply_flat_to_hand(result[segment_start + offset][slot], flattened[offset]);
+                apply_flat_to_hand(result[segment_start + offset][hand_indices[offset]], flattened[offset]);
             }
 
             frame = segment_end;
