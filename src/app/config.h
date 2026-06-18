@@ -16,6 +16,9 @@ struct Config {
     bool show_controls = true;              // whether the viewport controls help panel is open
     bool show_camera_marker = false;        // whether the pink look-at marker ball is drawn
     bool free_camera = true;                // use the first-person free camera instead of the orbit camera
+    bool hide_duplicate_hands = false;      // hide hands flagged as duplicate track ids in the Scene
+    int tracking_version = 1;               // preferred tracking-CSV version, carried across sequences
+    bool tracking_linked = false;           // prefer the linked variant (colour by hand_id) when available
     int active_pane = 0;                    // last focused pane / selected tab: 0 = Scene, 1 = Frame View
 
     std::optional<std::string> data_folder;    // root folder the Explorer pane browses, if chosen

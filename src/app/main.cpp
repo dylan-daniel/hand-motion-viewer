@@ -1,10 +1,16 @@
 #include <algorithm>
+#include <cfloat>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -31,6 +37,93 @@
 namespace {
     // Frames advanced per second while the sequence is playing.
     constexpr double PLAYBACK_FPS = 30.0;
+
+    // The per-hand model matrix the renderer applies, replicated here so picking
+    // tests rays against the same world-space hand positions the scene shows. The
+    // scene fit (scale-then-translate) is applied, then the per-hand depth-snap.
+    glm::mat4 hand_model_matrix(const Transform* transform, float scale) {
+        glm::mat4 model(1.0f);
+        if (transform != nullptr) {
+            model = glm::scale(model, glm::vec3(transform->scale));
+            model = glm::translate(model, transform->translate);
+        }
+        if (scale != 1.0f) {
+            model = glm::scale(model, glm::vec3(scale));
+        }
+        return model;
+    }
+
+    // Möller–Trumbore ray/triangle test. Writes the hit distance to ``out_t`` and
+    // returns true only for a forward (t > 0) intersection.
+    bool ray_triangle(const glm::vec3& origin, const glm::vec3& dir, const glm::vec3& v0, const glm::vec3& v1, const glm::vec3& v2, float& out_t) {
+        constexpr float epsilon = 1e-7f;
+        const glm::vec3 edge1 = v1 - v0;
+        const glm::vec3 edge2 = v2 - v0;
+        const glm::vec3 pvec = glm::cross(dir, edge2);
+        const float det = glm::dot(edge1, pvec);
+        if (std::fabs(det) < epsilon) {
+            return false;
+        }
+        const float inv_det = 1.0f / det;
+        const glm::vec3 tvec = origin - v0;
+        const float u = glm::dot(tvec, pvec) * inv_det;
+        if (u < 0.0f || u > 1.0f) {
+            return false;
+        }
+        const glm::vec3 qvec = glm::cross(tvec, edge1);
+        const float v = glm::dot(dir, qvec) * inv_det;
+        if (v < 0.0f || u + v > 1.0f) {
+            return false;
+        }
+        const float t = glm::dot(edge2, qvec) * inv_det;
+        if (t <= epsilon) {
+            return false;
+        }
+        out_t = t;
+        return true;
+    }
+
+    // Index of the hand whose surface the ray hits nearest the camera, or -1 if it
+    // misses every hand. Mirrors the renderer's depth-snap so the picked hand is the
+    // one actually drawn under the cursor.
+    int pick_hand(const Frame& hands, const Transform* transform, std::optional<float> reference_depth, const glm::vec3& origin, const glm::vec3& dir) {
+        int best = -1;
+        float best_t = FLT_MAX;
+        for (std::size_t index = 0; index < hands.size(); ++index) {
+            const HandData& hand = hands[index];
+            if (hand.verts.empty()) {
+                continue;
+            }
+            double sum = 0.0;
+            for (const glm::vec3& position : hand.verts) {
+                sum += position.z;
+            }
+            const float depth = static_cast<float>(sum / hand.verts.size());
+            const float scale = (reference_depth && depth != 0.0f) ? (*reference_depth / depth) : 1.0f;
+            const glm::mat4 model = hand_model_matrix(transform, scale);
+            std::vector<glm::vec3> world;
+            world.reserve(hand.verts.size());
+            for (const glm::vec3& position : hand.verts) {
+                world.push_back(glm::vec3(model * glm::vec4(position, 1.0f)));
+            }
+            for (const glm::ivec3& face : mano_faces(hand.is_right)) {
+                float t = 0.0f;
+                if (ray_triangle(
+                        origin,
+                        dir,
+                        world[static_cast<std::size_t>(face.x)],
+                        world[static_cast<std::size_t>(face.y)],
+                        world[static_cast<std::size_t>(face.z)],
+                        t
+                    ) &&
+                    t < best_t) {
+                    best_t = t;
+                    best = static_cast<int>(index);
+                }
+            }
+        }
+        return best;
+    }
 } // namespace
 
 int main(int, char**) {
@@ -186,7 +279,17 @@ int main(int, char**) {
     // Baby/adult labels for the loaded sequence (from data/labels_per_video). Lives
     // as long as the sequence so each frame's hands can be split as they load.
     HandClassification classification;
+    // CPU-side hands of the loaded frame, kept so left-click picking can raycast
+    // against the same geometry the GPU is drawing (the GPU buffers can't be read
+    // back cheaply). Rebuilt in lockstep with current_gpu.
+    Frame current_hands;
     int loaded_frame = -1;
+    int frame_duplicate_count = 0; // duplicate hands in the loaded frame (for the Tracking pane)
+    // Manual relabeling: the id the next picked hand is assigned, and the last
+    // save's status message shown in the Manual Tracking pane.
+    int manual_active_id = 0;
+    bool manual_propagate = true; // relabel the rest of a track forward when assigning an id
+    std::string manual_save_status;
     std::optional<Transform> transform;
     std::optional<float> depth_reference;
     int current_frame = 0;
@@ -255,8 +358,14 @@ int main(int, char**) {
 
         // Smooth the sequence on open: the source motion is recovered per 30fps
         // frame and is visibly jittery, so a forward-backward Kalman smoother
-        // removes the noise while keeping the real motion (see kalman.h).
+        // removes the noise while keeping the real motion (see kalman.h). The
+        // smoother groups hands by their tracking-CSV id, so apply the remembered
+        // tracking source before the smoothing reads the ids.
         auto opened = std::make_unique<MeshSequence>(folder, /*smooth=*/true);
+        // Carry the remembered tracking source into the new sequence when it has
+        // that source; otherwise the sequence keeps its own default. Under a smoothed
+        // sequence this re-reads and re-smooths against the chosen source's ids.
+        opened->prefer_tracking_source({settings.tracking_version, settings.tracking_linked});
         const bool has_frames = opened->frame_count() > 0;
         if (!has_frames) {
             std::printf("No frame_*.hmesh files found in %s\n", folder.c_str());
@@ -273,6 +382,8 @@ int main(int, char**) {
         current_gpu.reset();
         raw_overlay_gpu.reset();
         adult_gpu.reset();
+        current_hands.clear();
+        manual_save_status.clear();
         loaded_frame = -1;
         transform.reset();
         depth_reference.reset();
@@ -351,6 +462,12 @@ int main(int, char**) {
                 const SDL_Keycode key = event.key.key;
                 if (key == SDLK_ESCAPE) {
                     running = false;
+                } else if (key == SDLK_Z && (SDL_GetModState() & SDL_KMOD_CTRL) && !imgui_io.WantTextInput) {
+                    // Ctrl+Z undoes the last manual id assignment. Not while a text
+                    // field is focused, where Ctrl+Z is the field's own text undo.
+                    if (sequence && sequence->undo()) {
+                        loaded_frame = -1; // reload so the reverted colours show
+                    }
                 } else if (key == SDLK_R) {
                     camera->reset();
                 } else if (key == SDLK_H) {
@@ -520,6 +637,9 @@ int main(int, char**) {
             ImGui::DockBuilderSplitNode(dock_rest, ImGuiDir_Right, 0.25f / 0.75f, &dock_frame, &dock_scene);
 
             ImGui::DockBuilderDockWindow("Explorer", dock_explorer);
+            // Tracking and Manual Tracking share the left column, tabbed behind Explorer.
+            ImGui::DockBuilderDockWindow("Tracking", dock_explorer);
+            ImGui::DockBuilderDockWindow("Manual Tracking", dock_explorer);
             ImGui::DockBuilderDockWindow("Scene", dock_scene);
             ImGui::DockBuilderDockWindow("Frame View", dock_frame);
             ImGui::DockBuilderFinish(dock_id);
@@ -587,16 +707,23 @@ int main(int, char**) {
             }
             if (current_frame != loaded_frame) {
                 Frame hands = sequence->load_frame(current_frame);
+                frame_duplicate_count = 0;
+                for (const HandData& hand : hands) {
+                    if (hand.is_duplicate) {
+                        ++frame_duplicate_count;
+                    }
+                }
                 const std::vector<std::string>& paths = sequence->frame_paths(current_frame);
                 // Split the frame's hands into baby and adult by the per-video
                 // labels (hands order matches frame_paths order). Baby hands render
-                // normally; adult hands get a yellow surface, drawn translucent (or
-                // dropped, per the toggle). Unlabeled hands default to baby.
+                // normally (coloured by track id); adult hands get a yellow surface,
+                // drawn translucent (or dropped, per the toggle). Unlabeled hands
+                // default to baby.
                 Frame baby_hands;
                 Frame adult_hands;
                 for (std::size_t hand_index = 0; hand_index < hands.size(); ++hand_index) {
                     const bool is_baby = hand_index >= paths.size() || classification.is_baby(std::filesystem::path(paths[hand_index]).filename().string());
-                    (is_baby ? baby_hands : adult_hands).push_back(std::move(hands[hand_index]));
+                    (is_baby ? baby_hands : adult_hands).push_back(hands[hand_index]);
                 }
                 current_gpu = std::make_unique<FrameGpu>(prepare_frame(baby_hands));
                 const glm::vec4 adult_color(0.9f, 0.85f, 0.2f, 1.0f);
@@ -606,6 +733,10 @@ int main(int, char**) {
                 const Frame raw_hands = sequence->load_raw_frame(current_frame);
                 const glm::vec4 raw_color(0.9f, 0.25f, 0.25f, 1.0f);
                 raw_overlay_gpu = std::make_unique<FrameGpu>(prepare_frame(raw_hands, raw_color));
+
+                // Keep the full frame (both baby and adult) for left-click picking,
+                // which raycasts against every hand and keys overrides by hand.slot.
+                current_hands = std::move(hands);
                 loaded_frame = current_frame;
             }
             const std::size_t hand_count = sequence->frame_paths(current_frame).size();
@@ -701,6 +832,128 @@ int main(int, char**) {
             ImGui::End();
         }
 
+        // Tracking pane: pick the tracking-CSV version, toggle hiding of duplicate
+        // hands, and show this frame's duplicate count.
+        const TrackingResult tracking = draw_tracking_window(
+            dock_id,
+            TrackingState{
+                .hide_duplicates = settings.hide_duplicate_hands,
+                .duplicate_count = has_sequence ? frame_duplicate_count : 0,
+                .sources = has_sequence ? sequence->tracking_sources() : std::vector<TrackingSource>{},
+                .selected_source = has_sequence ? sequence->tracking_source() : TrackingSource{},
+            }
+        );
+        settings.hide_duplicate_hands = tracking.state.hide_duplicates;
+
+        // Manual Tracking pane: choose the active colour id (swatches / number keys)
+        // and save the relabeled CSV. Picking a hand in the Scene is handled below.
+        const ManualTrackingResult manual = draw_manual_tracking_window(
+            dock_id,
+            ManualTrackingState{
+                .has_sequence = has_sequence,
+                .present_ids = has_sequence ? sequence->present_color_ids() : std::vector<int>{},
+                .active_id = manual_active_id,
+                .propagate = manual_propagate,
+                .override_count = has_sequence ? sequence->override_count() : 0,
+                .save_status = manual_save_status,
+            }
+        );
+        manual_active_id = manual.active_id;
+        manual_propagate = manual.propagate;
+        if (manual.save_requested && has_sequence) {
+            const std::string written = sequence->save_truth_csv();
+            manual_save_status =
+                written.empty() ? std::string("Save failed.") : "Saved " + std::to_string(sequence->override_count()) + " overrides to " + written;
+        }
+
+        // Hover a hand in the Scene to see its id (tooltip); left-click to assign it
+        // the active id. Both use one ray cast from the cursor through the same
+        // projection the scene is rendered with, hitting the nearest hand.
+        if (has_sequence && viewport.hovered && !orbiting && !panning) {
+            const ImVec2 mouse = ImGui::GetMousePos();
+            const float local_x = mouse.x - viewport.image_pos.x;
+            const float local_y = mouse.y - viewport.image_pos.y;
+            const float view_width = static_cast<float>(viewport.width);
+            const float view_height = static_cast<float>(viewport.height);
+            if (view_width > 0.0f && view_height > 0.0f) {
+                const float ndc_x = 2.0f * local_x / view_width - 1.0f;
+                const float ndc_y = 1.0f - 2.0f * local_y / view_height;
+                const float aspect = view_width / view_height;
+                const glm::mat4 projection = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 500.0f);
+                const glm::mat4 inverse_vp = glm::inverse(projection * camera->view_matrix());
+                glm::vec4 near_point = inverse_vp * glm::vec4(ndc_x, ndc_y, -1.0f, 1.0f);
+                glm::vec4 far_point = inverse_vp * glm::vec4(ndc_x, ndc_y, 1.0f, 1.0f);
+                near_point /= near_point.w;
+                far_point /= far_point.w;
+                const glm::vec3 ray_origin(near_point);
+                const glm::vec3 ray_dir = glm::normalize(glm::vec3(far_point - near_point));
+                const int picked = pick_hand(current_hands, transform ? &*transform : nullptr, depth_reference, ray_origin, ray_dir);
+                if (picked >= 0) {
+                    const HandData& hand = current_hands[static_cast<std::size_t>(picked)];
+                    // Tooltip: the hovered hand's current id (its colour) and which
+                    // hand it is, so the right active id can be chosen before clicking.
+                    if (hand.track_id >= 0) {
+                        ImGui::SetTooltip("id %d  (%s hand)", hand.track_id, hand.is_right ? "right" : "left");
+                    } else {
+                        ImGui::SetTooltip("unlabeled  (%s hand)", hand.is_right ? "right" : "left");
+                    }
+                    // Middle-click eyedrops the hovered hand's id into the active id,
+                    // so an existing colour can be matched without hunting the swatches.
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) && hand.track_id >= 0) {
+                        manual_active_id = hand.track_id;
+                    }
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        // Overrides key by the on-disk frame number (what the CSV uses),
+                        // not the 0-based playback index, so load_frame and the saved CSV
+                        // both find them.
+                        const int frame_number = sequence->frame_number(current_frame);
+                        // Snapshot before the edit so one Ctrl+Z reverts this whole
+                        // assignment (the single hand plus any forward propagation).
+                        sequence->push_undo_state();
+                        sequence->set_override(frame_number, hand.slot, manual_active_id);
+                        // If enabled and the hand already had an id, carry the relabel
+                        // to the rest of that track from here forward.
+                        if (manual_propagate) {
+                            sequence->propagate_id(frame_number, hand.track_id, manual_active_id);
+                        }
+                        loaded_frame = -1; // force a reload so the new colour shows
+                    }
+                }
+            }
+        }
+
+        // Resolve the target tracking source from the pane's combo and, when the
+        // Scene viewport is focused, the Up/Down arrows — Up steps to the next entry
+        // in the source list, Down to the previous, clamped to the ones that exist.
+        TrackingSource target_source = tracking.state.selected_source;
+        if (has_sequence && viewport.focused) {
+            const std::vector<TrackingSource>& sources = sequence->tracking_sources();
+            int step = 0;
+            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
+                step = 1;
+            } else if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
+                step = -1;
+            }
+            if (step != 0) {
+                const auto current = std::find(sources.begin(), sources.end(), sequence->tracking_source());
+                if (current != sources.end()) {
+                    const auto last = static_cast<std::ptrdiff_t>(sources.size()) - 1;
+                    const auto next = std::clamp((current - sources.begin()) + step, static_cast<std::ptrdiff_t>(0), last);
+                    target_source = sources[static_cast<std::size_t>(next)];
+                }
+            }
+        }
+
+        // Switching source re-parses the colour ids; force a reload so the scene
+        // re-renders with the new colours and duplicate flags.
+        if (has_sequence && !(target_source == sequence->tracking_source())) {
+            sequence->set_tracking_source(target_source);
+            // Remember the choice so it carries to the next sequence and next run.
+            settings.tracking_version = target_source.version;
+            settings.tracking_linked = target_source.linked;
+            loaded_frame = -1;
+        }
+
         if (has_sequence) {
             // Only the pane that drew the transport changed the state; read it back.
             const TransportState& echo = transport_pane == 1 ? image_view.transport : viewport.transport;
@@ -741,6 +994,11 @@ int main(int, char**) {
                 .show_camera_marker = settings.show_camera_marker,
                 .raw_overlay = show_raw_overlay ? raw_overlay_gpu.get() : nullptr, // TEMP: raw-position overlay
                 .adult_overlay = hide_adult_hands ? nullptr : adult_gpu.get(),     // adult hands shown yellow/translucent unless hidden
+                // Pulse the duplicate-hand glow so it reads as a soft throb rather
+                // than a flat tint; derived from the wall clock so it animates even
+                // when playback is paused.
+                .duplicate_glow = 0.35f + 0.25f * static_cast<float>(std::sin(static_cast<double>(now_ticks) / 1000.0 * 5.0)),
+                .hide_duplicates = settings.hide_duplicate_hands,
             }
         );
 

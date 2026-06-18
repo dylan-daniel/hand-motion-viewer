@@ -61,7 +61,10 @@ in vec3 vNormalRef;
 in vec4 vColor;
 
 uniform bool uLighting;
-uniform float uAlpha; // multiplies alpha; lets one buffer draw opaque or translucent
+uniform float uAlpha;     // multiplies alpha; lets one buffer draw opaque or translucent
+uniform float uGlow;      // emissive boost added to the surface colour (0 = none)
+uniform float uSpecular;  // specular-highlight strength multiplier (per-hand material)
+uniform float uShininess; // specular exponent: low = soft/matte, high = tight/glossy
 
 out vec4 FragColor;
 
@@ -72,7 +75,6 @@ const vec3 LIGHT0_AMBIENT = vec3(0.15, 0.15, 0.15);
 const vec3 LIGHT1_POS = vec3(-5.0, 6.0, -8.0);
 const vec3 LIGHT1_DIFFUSE = vec3(0.3, 0.35, 0.5);
 const vec3 SPECULAR = vec3(0.4, 0.4, 0.4);
-const float SHININESS = 32.0;
 
 void main() {
     if (!uLighting) {
@@ -96,10 +98,14 @@ void main() {
     vec3 dir0 = normalize(LIGHT0_POS - frag);
     lit += vColor.rgb * LIGHT0_DIFFUSE * max(dot(normal, dir0), 0.0);
     vec3 half0 = normalize(dir0 + eye);
-    lit += SPECULAR * LIGHT0_DIFFUSE * pow(max(dot(normal, half0), 0.0), SHININESS);
+    lit += SPECULAR * uSpecular * LIGHT0_DIFFUSE * pow(max(dot(normal, half0), 0.0), uShininess);
 
     vec3 dir1 = normalize(LIGHT1_POS - frag);
     lit += vColor.rgb * LIGHT1_DIFFUSE * max(dot(normal, dir1), 0.0);
+
+    // Emissive glow: add the surface colour back in so a flagged hand brightens
+    // and reads as glowing without washing out to white.
+    lit += vColor.rgb * uGlow;
 
     FragColor = vec4(lit, vColor.a * uAlpha);
 }
@@ -113,6 +119,9 @@ void main() {
     GLint g_loc_proj = -1;
     GLint g_loc_lighting = -1;
     GLint g_loc_alpha = -1;
+    GLint g_loc_glow = -1;
+    GLint g_loc_specular = -1;
+    GLint g_loc_shininess = -1;
     GLuint g_dynamic_vao = 0; // pos+colour stream for grid / axes / marker
     GLuint g_dynamic_vbo = 0;
 
@@ -155,6 +164,9 @@ void main() {
         g_loc_proj = glx::GetUniformLocation(g_program, "uProj");
         g_loc_lighting = glx::GetUniformLocation(g_program, "uLighting");
         g_loc_alpha = glx::GetUniformLocation(g_program, "uAlpha");
+        g_loc_glow = glx::GetUniformLocation(g_program, "uGlow");
+        g_loc_specular = glx::GetUniformLocation(g_program, "uSpecular");
+        g_loc_shininess = glx::GetUniformLocation(g_program, "uShininess");
 
         // Dynamic stream VAO: interleaved position (3) + colour (4); the normal
         // attribute stays disabled (a constant value) since this stream is unlit.
@@ -177,6 +189,34 @@ void main() {
     void set_lighting(bool enabled) { glx::Uniform1i(g_loc_lighting, enabled ? 1 : 0); }
 
     void set_alpha(float alpha) { glx::Uniform1f(g_loc_alpha, alpha); }
+
+    void set_glow(float glow) { glx::Uniform1f(g_loc_glow, glow); }
+
+    void set_specular(float specular) { glx::Uniform1f(g_loc_specular, specular); }
+
+    void set_shininess(float shininess) { glx::Uniform1f(g_loc_shininess, shininess); }
+
+    // A per-id surface material. Cycling the finish (matte / glossy / metallic /
+    // emissive) gives a second axis of distinction beyond hue, so two hands that
+    // happen to share a similar colour still read apart by how light plays on them.
+    struct Material {
+        float specular;  // highlight strength multiplier
+        float shininess; // highlight tightness (specular exponent)
+        float glow;      // constant emissive boost
+    };
+
+    Material material_for(int track_id) {
+        if (track_id < 0) {
+            return {1.0f, 32.0f, 0.0f};
+        }
+        static const std::array<Material, 4> styles = {{
+            {0.10f, 8.0f, 0.00f},   // matte: broad, dull
+            {0.60f, 64.0f, 0.00f},  // glossy: tight highlight
+            {1.00f, 160.0f, 0.00f}, // metallic: sharp, bright highlight
+            {0.30f, 24.0f, 0.22f},  // emissive: softly self-lit
+        }};
+        return styles[static_cast<std::size_t>(track_id % static_cast<int>(styles.size()))];
+    }
 
     /// Draw an interleaved position(3)+colour(4) vertex stream (unlit) under
     /// ``model``. Used for the grid, axes, and camera marker.
@@ -384,17 +424,20 @@ void GpuMesh::draw() const {
 
 // ── FrameGpu ───────────────────────────────────
 
-PreparedFrame prepare_frame(const Frame& hands, const glm::vec4& surface_color) {
+PreparedFrame prepare_frame(const Frame& hands, std::optional<glm::vec4> surface_color) {
     PreparedFrame prepared;
     prepared.reserve(hands.size());
     for (const HandData& hand : hands) {
-        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), surface_color, hand.joints);
+        // A forced colour paints the whole frame (the adult/raw overlays); without
+        // one, each hand is coloured by its track id.
+        const glm::vec4 color = surface_color ? *surface_color : distinct_color(hand.track_id);
+        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), color, hand.joints);
         double sum = 0.0;
         for (const glm::vec3& position : hand.verts) {
             sum += position.z;
         }
         const float depth = hand.verts.empty() ? 0.0f : static_cast<float>(sum / hand.verts.size());
-        prepared.push_back({std::move(arrays), depth});
+        prepared.push_back({std::move(arrays), depth, hand.is_duplicate, hand.track_id});
     }
     return prepared;
 }
@@ -406,6 +449,8 @@ FrameGpu::FrameGpu(const PreparedFrame& prepared_hands) {
         HandGpu hand;
         hand.joints = std::make_unique<GpuMesh>(prepared.mesh.joints);
         hand.hand = std::make_unique<GpuMesh>(prepared.mesh.hand);
+        hand.is_duplicate = prepared.is_duplicate;
+        hand.track_id = prepared.track_id;
         hands_.push_back(std::move(hand));
         depths_.push_back(prepared.depth);
     }
@@ -423,36 +468,59 @@ glm::mat4 FrameGpu::hand_matrix(const Transform* transform, float scale) const {
     return model;
 }
 
-void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<float> reference_depth) const {
+void FrameGpu::draw(const FrameDraw& options) const {
+    // A hand is drawn unless it is a duplicate and duplicates are hidden.
+    auto visible = [&](std::size_t index) { return !(options.hide_duplicates && hands_[index].is_duplicate); };
+
     // Stabilise depth: snap every hand to the common reference plane.
     std::vector<float> scales;
     scales.reserve(depths_.size());
     for (float depth : depths_) {
-        scales.push_back((reference_depth && depth != 0.0f) ? (*reference_depth / depth) : 1.0f);
+        scales.push_back((options.reference_depth && depth != 0.0f) ? (*options.reference_depth / depth) : 1.0f);
     }
 
     set_lighting(true);
+    set_glow(0.0f);
+    set_specular(1.0f);
+    set_shininess(32.0f);
     // The joint skeleton only shows in translucent mode — it reads through the
     // see-through hand, and an opaque hand would hide it. Drawn first so the
     // translucent hand blends correctly over it.
-    if (translucent) {
+    if (options.translucent) {
         for (std::size_t index = 0; index < hands_.size(); ++index) {
-            set_model(hand_matrix(transform, scales[index]));
+            if (!visible(index)) {
+                continue;
+            }
+            set_model(hand_matrix(options.transform, scales[index]));
             hands_[index].joints->draw();
         }
     }
 
-    if (translucent) {
+    if (options.translucent) {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
         set_alpha(0.30f);
     }
     for (std::size_t index = 0; index < hands_.size(); ++index) {
-        set_model(hand_matrix(transform, scales[index]));
+        if (!visible(index)) {
+            continue;
+        }
+        // Each hand carries a material picked from its id, so similar colours still
+        // differ by finish. A duplicate's pulsing glow is added on top of (and so
+        // overrides toward) the material's own constant glow.
+        const Material material = material_for(hands_[index].track_id);
+        const bool glowing = hands_[index].is_duplicate && options.duplicate_glow > 0.0f;
+        set_specular(material.specular);
+        set_shininess(material.shininess);
+        set_glow(glowing ? options.duplicate_glow : material.glow);
+        set_model(hand_matrix(options.transform, scales[index]));
         hands_[index].hand->draw();
     }
-    if (translucent) {
+    set_glow(0.0f);
+    set_specular(1.0f);
+    set_shininess(32.0f);
+    if (options.translucent) {
         set_alpha(1.0f);
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
@@ -650,25 +718,36 @@ void render_scene(const Framebuffer& framebuffer, const Camera& camera, const Sc
     glx::UseProgram(g_program);
     glx::UniformMatrix4fv(g_loc_proj, 1, GL_FALSE, glm::value_ptr(projection));
     glx::UniformMatrix4fv(g_loc_view, 1, GL_FALSE, glm::value_ptr(camera.view_matrix()));
-    set_alpha(1.0f); // opaque by default; translucent hand draws flip it transiently
+    set_alpha(1.0f);      // opaque by default; translucent hand draws flip it transiently
+    set_glow(0.0f);       // no glow by default; duplicate hands flip it transiently
+    set_specular(1.0f);   // default material; per-hand materials flip it transiently
+    set_shininess(32.0f); // default highlight tightness
 
     // Grid (flat-coloured; draw_grid keeps lighting off).
     draw_grid(10, 1.0f, 0.0f);
 
     if (scene.frame != nullptr) {
-        scene.frame->draw(scene.translucent, scene.transform, scene.reference_depth);
+        scene.frame->draw(
+            FrameDraw{
+                .translucent = scene.translucent,
+                .transform = scene.transform,
+                .reference_depth = scene.reference_depth,
+                .duplicate_glow = scene.duplicate_glow,
+                .hide_duplicates = scene.hide_duplicates,
+            }
+        );
     }
 
     // Overlay the raw, unsmoothed hands translucently for visual comparison.
     // Drawn after the main frame so it blends over it.
     if (scene.raw_overlay != nullptr) {
-        scene.raw_overlay->draw(true, scene.transform, scene.reference_depth);
+        scene.raw_overlay->draw(FrameDraw{.translucent = true, .transform = scene.transform, .reference_depth = scene.reference_depth});
     }
 
     // Adult (non-baby) hands, drawn translucent (their yellow surface colour is
     // baked in at prepare_frame) so they read as secondary to the baby hands.
     if (scene.adult_overlay != nullptr) {
-        scene.adult_overlay->draw(true, scene.transform, scene.reference_depth);
+        scene.adult_overlay->draw(FrameDraw{.translucent = true, .transform = scene.transform, .reference_depth = scene.reference_depth});
     }
 
     // Marker for the orbit camera's look-at point; drawn last so its

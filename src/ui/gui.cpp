@@ -12,6 +12,8 @@
 #include <imgui_freetype.h>
 #include <stb_image.h>
 
+#include "data/geometry.h"
+
 namespace {
     namespace fs = std::filesystem;
 
@@ -410,7 +412,7 @@ ViewportResult draw_viewport_window(
 
     ImGui::End();
     ImGui::PopStyleVar();
-    return {width, height, hovered, focused, show_controls, echo};
+    return {width, height, image_pos, hovered, focused, show_controls, echo};
 }
 
 ImageViewResult draw_image_window(const char* title, unsigned int texture, int texture_width, int texture_height, ImGuiID dock_id, const Transport& transport) {
@@ -466,4 +468,147 @@ ImageViewResult draw_image_window(const char* title, unsigned int texture, int t
     ImGui::End();
     ImGui::PopStyleVar();
     return {hovered, focused, echo};
+}
+
+TrackingResult draw_tracking_window(ImGuiID dock_id, const TrackingState& state) {
+    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Tracking");
+    const bool focused = ImGui::IsWindowFocused();
+    const bool hovered = ImGui::IsWindowHovered();
+
+    TrackingState echo = state;
+
+    // Tracking-source selector. Picking a source re-parses the sequence's colour
+    // ids from that CSV; the caller applies the change and re-renders. The linked
+    // variant colours hands by hand_id instead of track_id.
+    auto source_label = [](const TrackingSource& source) { return "Version " + std::to_string(source.version) + (source.linked ? " (linked)" : ""); };
+    if (state.sources.empty()) {
+        ImGui::TextDisabled("No tracking files for this sequence.");
+    } else {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        if (ImGui::BeginCombo("##tracking_source", source_label(state.selected_source).c_str())) {
+            for (const TrackingSource& source : state.sources) {
+                const bool is_selected = source == state.selected_source;
+                if (ImGui::Selectable(source_label(source).c_str(), is_selected)) {
+                    echo.selected_source = source;
+                }
+                if (is_selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::TextDisabled("Up/Down arrows switch versions in the Scene.");
+    }
+    ImGui::Spacing();
+
+    ImGui::Checkbox("Hide duplicate hands", &echo.hide_duplicates);
+    ImGui::Spacing();
+    if (state.duplicate_count > 0) {
+        ImGui::Text("%d duplicate hand%s in this frame.", state.duplicate_count, state.duplicate_count == 1 ? "" : "s");
+        ImGui::TextDisabled("Duplicate hands glow in the Scene view.");
+    } else {
+        ImGui::TextDisabled("No duplicate hands in this frame.");
+    }
+
+    ImGui::End();
+    return {hovered, focused, echo};
+}
+
+ManualTrackingResult draw_manual_tracking_window(ImGuiID dock_id, const ManualTrackingState& state) {
+    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Manual Tracking");
+    const bool focused = ImGui::IsWindowFocused();
+    const bool hovered = ImGui::IsWindowHovered();
+
+    ManualTrackingResult result;
+    result.hovered = hovered;
+    result.focused = focused;
+    result.active_id = state.active_id;
+    result.propagate = state.propagate;
+
+    if (!state.has_sequence) {
+        ImGui::TextDisabled("Load a mesh sequence to relabel hands.");
+        ImGui::End();
+        return result;
+    }
+
+    ImGui::TextWrapped("Pick an id below (or press its number key), then left-click a hand in the Scene to assign it.");
+    ImGui::Spacing();
+
+    // Colour swatch per id present, labeled 1..N. Pressing number key 1..9 (when
+    // this pane is focused) selects the matching swatch, so colours can be switched
+    // without leaving the mouse over the scene.
+    const float swatch = ImGui::GetFrameHeight();
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    for (std::size_t index = 0; index < state.present_ids.size(); ++index) {
+        const int id = state.present_ids[index];
+        const glm::vec4 rgba = distinct_color(id);
+        const ImVec4 color(rgba.r, rgba.g, rgba.b, 1.0f);
+        const bool selected = id == result.active_id;
+        ImGui::PushID(static_cast<int>(index));
+        ImGuiColorEditFlags flags = ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop;
+        if (ImGui::ColorButton("##swatch", color, flags, ImVec2(swatch, swatch))) {
+            result.active_id = id;
+        }
+        // A bright frame around the active swatch so the current colour is obvious.
+        if (selected) {
+            const ImVec2 lo = ImGui::GetItemRectMin();
+            const ImVec2 hi = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddRect(lo, hi, IM_COL32(255, 255, 255, 255), 0.0f, 0, 3.0f);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("key %zu -> id %d", index + 1, id);
+        }
+        ImGui::PopID();
+        // Wrap the swatch row to the pane width instead of overflowing to the right.
+        const float next_x = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + spacing + swatch;
+        if (index + 1 < state.present_ids.size() && next_x < avail) {
+            ImGui::SameLine();
+        }
+    }
+    // Number keys 1..9 select the matching swatch while the pane is focused.
+    if (focused) {
+        for (std::size_t index = 0; index < state.present_ids.size() && index < 9; ++index) {
+            const ImGuiKey key = static_cast<ImGuiKey>(ImGuiKey_1 + index);
+            if (ImGui::IsKeyPressed(key, false)) {
+                result.active_id = state.present_ids[index];
+            }
+        }
+    }
+
+    ImGui::Spacing();
+    // Direct entry for an id beyond those already present (e.g. introducing a new
+    // track), so the user is not limited to the existing colour set.
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("active id", &result.active_id);
+    if (result.active_id < 0) {
+        result.active_id = 0;
+    }
+    ImGui::SameLine();
+    const glm::vec4 active_rgba = distinct_color(result.active_id);
+    ImGui::ColorButton("##active", ImVec4(active_rgba.r, active_rgba.g, active_rgba.b, 1.0f), ImGuiColorEditFlags_NoTooltip, ImVec2(swatch, swatch));
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Checkbox("Relabel rest of track forward", &result.propagate);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "When on, assigning a hand that already has an id also recolours every later\nframe's hand with that same id. When off, only the clicked hand "
+            "changes."
+        );
+    }
+    ImGui::Spacing();
+    ImGui::Text("Manual overrides: %d", state.override_count);
+    ImGui::Spacing();
+    if (ImGui::Button("Save to truth CSV")) {
+        result.save_requested = true;
+    }
+    if (!state.save_status.empty()) {
+        ImGui::TextWrapped("%s", state.save_status.c_str());
+    }
+
+    ImGui::End();
+    return result;
 }

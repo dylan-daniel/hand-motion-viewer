@@ -8,7 +8,9 @@
 // are streamed in per frame. Each frame is parsed synchronously on demand when
 // playback reaches it (no background preloading).
 
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -20,6 +22,25 @@ struct HandData {
     std::vector<glm::vec3> verts;  // MANO surface vertices (778)
     std::vector<glm::vec3> joints; // joint positions (21)
     bool is_right = true;          // handedness, picks the shared face winding
+    int track_id = -1;             // persistent hand id from the tracking CSV, -1 if unknown
+    bool is_duplicate = false;     // another hand in the same frame shares this track id
+    int slot = -1;                 // hand slot within the frame (the ``_<slot>`` in the file name)
+};
+
+/// Per-detection facts read from a hand's row in the sibling tracking CSV.
+struct TrackInfo {
+    int color_id = -1;         // id the hand is coloured by (track_id, or hand_id when linked)
+    bool is_duplicate = false; // the tracker flagged this detection as a duplicate
+};
+
+/// Identifies one tracking CSV beside a sequence: a numbered version, optionally
+/// the ``_linked`` variant that colours hands by the linked ``hand_id`` instead of
+/// the raw ``track_id``.
+struct TrackingSource {
+    int version = 1;
+    bool linked = false;
+
+    bool operator==(const TrackingSource& other) const { return version == other.version && linked == other.linked; }
 };
 
 /// A fixed translate-then-scale that frames the whole sequence on the grid.
@@ -59,6 +80,12 @@ public:
 
     const std::vector<std::string>& frame_paths(int index) const { return frame_paths_[static_cast<std::size_t>(index)]; }
 
+    /// The on-disk frame number (the ``frame_NNNN`` in the file names, as used by
+    /// the tracking CSV) for the sequence position ``index``. This differs from the
+    /// 0-based ``index`` whenever the numbering does not start at 0, so override and
+    /// CSV lookups must key by this, not by ``index``. Returns -1 if unavailable.
+    int frame_number(int index) const;
+
     /// Return the hands for frame ``index``: the cached smoothed hands when
     /// smoothing is enabled, otherwise read and decoded from disk on the spot.
     /// Returns an empty frame for an out-of-range index.
@@ -74,9 +101,72 @@ public:
     /// Kalman tuning UI once the params are dialled in.
     void resmooth(const KalmanParams& params);
 
+    /// Tracking CSVs found beside this sequence (numbered versions plus any
+    /// ``_linked`` variants), sorted by version then linked-last. Empty when no
+    /// tracking files exist for the folder.
+    const std::vector<TrackingSource>& tracking_sources() const { return tracking_sources_; }
+
+    /// The tracking source currently applied to ``load_frame``'s colour ids.
+    TrackingSource tracking_source() const { return tracking_source_; }
+
+    /// Re-parse the colour ids from ``source``'s tracking CSV. A no-op if it is
+    /// already the active source; otherwise the next ``load_frame`` reflects it.
+    void set_tracking_source(TrackingSource source);
+
+    /// Apply ``source`` only if it exists for this sequence; otherwise keep the
+    /// current one. Lets a remembered preference carry across sequences while still
+    /// falling back gracefully when a sequence lacks that source.
+    void prefer_tracking_source(TrackingSource source);
+
+    // ── Manual id overrides ────────────────────
+    // A manual labeling pass over the active source: the user picks a hand in the
+    // scene and assigns it a colour id, overriding whatever the CSV said. Overrides
+    // are keyed by (frame number, hand slot) so they survive switching the source,
+    // and they feed ``load_frame``'s colour id and the saved truth CSV.
+
+    /// Override the colour id of the hand at (``frame``, ``slot``). Takes effect on
+    /// the next ``load_frame`` for that frame.
+    void set_override(int frame, int slot, int hand_id);
+
+    /// Drop a manual override, falling back to the source CSV's colour id.
+    void clear_override(int frame, int slot);
+
+    /// Snapshot the current overrides onto the undo stack. Call once before an edit
+    /// (a pick, which may set one override and propagate many) so a single ``undo``
+    /// reverts that whole edit.
+    void push_undo_state();
+
+    /// Restore the most recent snapshot pushed by ``push_undo_state``. Returns true
+    /// if an edit was undone, false if there was nothing to undo.
+    bool undo();
+
+    /// Re-label a whole track forward: every hand from ``from_frame`` onward whose
+    /// current colour id equals ``old_id`` is overridden to ``new_id``. This is how
+    /// relabeling one detection carries to the rest of that track. A negative
+    /// ``old_id`` is a no-op (an unlabeled hand has no track to follow).
+    void propagate_id(int from_frame, int old_id, int new_id);
+
+    /// Number of manual overrides recorded so far (for a UI readout).
+    int override_count() const { return static_cast<int>(overrides_.size()); }
+
+    /// Distinct colour ids present across the whole active source (overrides
+    /// applied), sorted ascending, negatives dropped. Drives the labeller's
+    /// colour-swatch row.
+    std::vector<int> present_color_ids() const;
+
+    /// Write a drop-in copy of the active source CSV into the sibling
+    /// ``tracking/truth`` folder, with the colour column replaced by the manual
+    /// overrides where present. Returns the written path, or empty on failure.
+    std::string save_truth_csv() const;
+
 private:
     /// Read and decode the hands for frame ``index`` straight from disk.
     Frame load_frame_from_disk(int index) const;
+
+    /// Read every frame from disk into ``raw_frames_`` (id-stamped) and smooth them
+    /// into ``smoothed_frames_``, marking the sequence smoothed. Used on construction
+    /// and whenever the active tracking source changes under a smoothed sequence.
+    void smooth_from_disk();
 
     std::string folder_;
     std::vector<std::vector<std::string>> frame_paths_;
@@ -88,6 +178,15 @@ private:
     bool smoothed_ = false;
     std::vector<Frame> raw_frames_;
     std::vector<Frame> smoothed_frames_;
+    std::vector<TrackingSource> tracking_sources_; // available CSVs for this folder, sorted
+    TrackingSource tracking_source_;               // source currently parsed into track_ids_
+    // (frame number, hand slot) → tracking facts. Empty when no tracking file is
+    // found for this folder.
+    std::map<std::pair<int, int>, TrackInfo> track_ids_;
+    // (frame number, hand slot) → manually assigned colour id, overriding the CSV.
+    std::map<std::pair<int, int>, int> overrides_;
+    // Snapshots of overrides_ taken before each edit, for Ctrl+Z undo (newest last).
+    std::vector<std::map<std::pair<int, int>, int>> undo_stack_;
 };
 
 /// Build the fixed transform that sits the sequence's hands on the grid and
