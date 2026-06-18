@@ -38,11 +38,6 @@ std::vector<std::vector<std::string>> discover_frames(const std::string& folder)
 /// path does not match the expected ``frame_NNNN_<slot>`` shape.
 std::string frame_image_path(const std::string& mesh_path);
 
-/// Build the fixed transform that sits a frame's hands on the grid and scales
-/// them to a comfortable size (mirrors center_model but kept as a transform so
-/// every frame shares it and motion shows).
-Transform compute_transform(const Frame& hands);
-
 /// Mean camera-space depth (z) of a frame's hands — the common plane depth
 /// stabilisation snaps every other frame's hands onto.
 float reference_depth(const Frame& hands);
@@ -69,3 +64,9 @@ private:
     std::vector<std::vector<std::string>> frame_paths_;
     int frame_count_;
 };
+
+/// Build the fixed transform that sits the sequence's hands on the grid and
+/// scales them to a comfortable size. Centering X/Z and the fit scale come from
+/// frame 0 so they stay put across playback, but the floor (Y) is the lowest
+/// point across *every* frame so no frame ever dips below the grid plane.
+Transform compute_transform(const MeshSequence& sequence);

@@ -75,30 +75,71 @@ std::string frame_image_path(const std::string& mesh_path) {
     return jpg.string();
 }
 
-Transform compute_transform(const Frame& hands) {
-    // Whole-scene bounds: used only to centre the scene on the grid.
+// Per-hand depth-stabilization factor used by the renderer: each hand is scaled
+// about the origin by reference_depth / its-own-mean-depth. The scene transform
+// must measure the *stabilized* geometry, so it applies the same factor here.
+static float stabilization_scale(const HandData& hand, float reference) {
+    double sum = 0.0;
+    for (const glm::vec3& position : hand.verts) {
+        sum += position.z;
+    }
+    const float depth = hand.verts.empty() ? 0.0f : static_cast<float>(sum / hand.verts.size());
+    return depth != 0.0f ? reference / depth : 1.0f;
+}
+
+Transform compute_transform(const MeshSequence& sequence) {
+    // Centering X/Z and the fit scale come from frame 0 so they stay fixed across
+    // playback. The renderer scales each hand about the origin by reference_depth /
+    // depth before this transform's offset is applied, so everything here is
+    // measured on those stabilized positions, not the raw verts. The reference
+    // depth is frame 0's, matching the value the renderer caches and reuses.
+    const Frame frame_zero = sequence.load_frame(0);
+    const float reference = reference_depth(frame_zero);
+
+    // Whole-scene X/Z bounds of frame 0's stabilized hands: used only to centre.
     glm::vec3 low(std::numeric_limits<float>::max());
     glm::vec3 high(std::numeric_limits<float>::lowest());
-    for (const HandData& hand : hands) {
+    for (const HandData& hand : frame_zero) {
+        const float scale = stabilization_scale(hand, reference);
         for (const glm::vec3& position : hand.verts) {
-            low = glm::min(low, position);
-            high = glm::max(high, position);
+            const glm::vec3 stabilized = position * scale;
+            low = glm::min(low, stabilized);
+            high = glm::max(high, stabilized);
         }
     }
     const float center_x = (high.x + low.x) / 2.0f;
-    const float floor_y = low.y; // sit on the grid
     const float center_z = (high.z + low.z) / 2.0f;
+
+    // Floor (Y): the lowest stabilized point across *every* frame, so no frame
+    // ever sinks below the grid plane (only frame 0 would sit on the grid if we
+    // used its bounds alone, and a later frame could reach lower).
+    float floor_y = std::numeric_limits<float>::max();
+    for (int index = 0; index < sequence.frame_count(); ++index) {
+        const Frame hands = sequence.load_frame(index);
+        for (const HandData& hand : hands) {
+            const float scale = stabilization_scale(hand, reference);
+            for (const glm::vec3& position : hand.verts) {
+                floor_y = std::min(floor_y, position.y * scale);
+            }
+        }
+    }
+    if (floor_y == std::numeric_limits<float>::max()) {
+        floor_y = 0.0f; // no verts in any frame
+    }
 
     // Scale from a single reference hand's size, not the whole-scene extent. The
     // meshes are metric, so one hand is a stable size cue, whereas the full-scene
     // bounding box balloons when hands sit far apart, which would shrink every
     // hand to nothing. This keeps a hand a consistent on-screen size across takes.
+    // Measure the stabilized reference hand so the fit matches what's drawn.
     glm::vec3 hand_low(std::numeric_limits<float>::max());
     glm::vec3 hand_high(std::numeric_limits<float>::lowest());
-    if (!hands.empty()) {
-        for (const glm::vec3& position : hands.front().verts) {
-            hand_low = glm::min(hand_low, position);
-            hand_high = glm::max(hand_high, position);
+    if (!frame_zero.empty()) {
+        const float scale = stabilization_scale(frame_zero.front(), reference);
+        for (const glm::vec3& position : frame_zero.front().verts) {
+            const glm::vec3 stabilized = position * scale;
+            hand_low = glm::min(hand_low, stabilized);
+            hand_high = glm::max(hand_high, stabilized);
         }
     }
     const glm::vec3 hand_extent = hand_high - hand_low;

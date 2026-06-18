@@ -505,9 +505,8 @@ int main(int, char**) {
             // The scene transform is derived from frame 0 so it stays fixed across
             // the whole sequence regardless of which frame playback starts on.
             if (!transform) {
-                const Frame frame_zero = sequence->load_frame(0);
-                transform = compute_transform(frame_zero);
-                depth_reference = reference_depth(frame_zero);
+                transform = compute_transform(*sequence);
+                depth_reference = reference_depth(sequence->load_frame(0));
             }
             if (current_frame != loaded_frame) {
                 Frame hands = sequence->load_frame(current_frame);
