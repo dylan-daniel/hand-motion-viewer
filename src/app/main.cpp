@@ -310,30 +310,10 @@ int main(int, char**) {
     kalman_params.process_noise = settings.kalman_process_noise;
     kalman_params.measurement_noise = settings.kalman_measurement_noise;
 
-    // Locate the data/classification_v2 folder that labels each tracked hand as a
-    // baby hand or not. Searched once: walk up from both the working dir and the exe
-    // dir so it resolves whether the app is launched from the repo root or build/.
-    const std::string labels_dir = [] {
-        std::vector<std::filesystem::path> starts;
-        starts.push_back(std::filesystem::current_path());
-        if (const char* base = SDL_GetBasePath()) {
-            starts.emplace_back(base);
-        }
-        for (std::filesystem::path start : starts) {
-            for (int up = 0; up < 6; ++up) {
-                const std::filesystem::path candidate = start / "data" / "classification_v2";
-                std::error_code error;
-                if (std::filesystem::is_directory(candidate, error)) {
-                    return candidate.string();
-                }
-                if (!start.has_parent_path()) {
-                    break;
-                }
-                start = start.parent_path();
-            }
-        }
-        return std::string();
-    }();
+    // Folder that labels each tracked hand as a baby hand or not. TEMP: hardcoded to
+    // the moved data location; restore the working-dir/exe-dir search once the data
+    // folder is settled.
+    const std::string labels_dir = "E:/archive/hamer_data/classification_v2";
 
     auto open_sequence = [&](const std::string& folder, int start_frame) {
         // Load the per-take baby/adult labels CSV. The data layout is
