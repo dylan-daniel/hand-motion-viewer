@@ -26,9 +26,9 @@ inline constexpr glm::vec4 DEFAULT_COLOR = {0.6f, 0.75f, 0.9f, 1.0f};
 inline constexpr float MODEL_FIT_SPAN = 1.0f;
 
 // ── MANO joint skeleton ────────────────────────
-// The .hmesh format stores only the 21 joint positions, not the colored sphere/
-// bone geometry the OBJ baked in, so we regenerate that visualization here. The
-// definitions below mirror the authoritative ones in HaMeR's demo.py.
+// The reconstructed hand carries only the 21 joint positions, not the colored
+// sphere/bone geometry, so we regenerate that visualization here. The definitions
+// below mirror the authoritative ones in HaMeR's demo.py.
 
 /// 20 (parent, child) bone pairs in standard MANO/OpenPose joint order.
 inline constexpr std::array<glm::ivec2, 20> HAND_BONES = {{{0, 1},   {1, 2},   {2, 3},  {3, 4},   {0, 5},   {5, 6},   {6, 7},  {7, 8},   {0, 9},   {9, 10},
@@ -88,19 +88,7 @@ MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha = std::
 /// expanded form for a closed mesh like the MANO hand.
 MeshArrays build_indexed_surface(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& color);
 
-// ── Binary .hmesh format ───────────────────────
-
-/// One hand decoded from a ``.hmesh`` file: the 778 MANO surface vertices and 21
-/// joint positions, both rotated 180° about X into the on-screen pose the OBJ
-/// export used (so they line up with the rest of the viewer).
-struct HMesh {
-    bool is_right = true;
-    std::vector<glm::vec3> verts;  // MANO surface vertices (778 for MANO)
-    std::vector<glm::vec3> joints; // joint positions (21 for MANO)
-};
-
-/// Read a ``.hmesh`` binary file. Throws std::runtime_error on a bad header.
-HMesh load_hmesh(const std::string& path);
+// ── Shared MANO face topology ──────────────────
 
 /// Load the shared MANO face topology from ``mano_faces.bin`` once at startup.
 /// Builds both the right-hand winding and the left-hand (flipped) winding so a

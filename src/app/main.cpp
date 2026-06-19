@@ -19,6 +19,7 @@
 
 #include "app/config.h"
 #include "app/window.h"
+#include "data/mano_model.h"
 #include "data/mesh_sequence.h"
 #include "graphics/gl_loader.h"
 #include "graphics/image.h"
@@ -40,16 +41,15 @@ int main(int, char**) {
     const std::string config_path = default_config_path();
     Config settings = load_config(config_path);
 
-    // Load the shared MANO face topology the .hmesh sequences render against. The
-    // binary stores only vertices/joints, so faces come from this one file.
+    // Load the MANO model and shared face topology that the CSV sequences are
+    // reconstructed and rendered with. The CSV stores only generative parameters,
+    // so the model weights regenerate the vertices and the faces complete them.
     {
-        std::string faces_path = "mano/mano_faces.bin";
         const char* base = SDL_GetBasePath();
-        if (base != nullptr) {
-            faces_path = std::string(base) + "mano/mano_faces.bin";
-        }
+        const std::string prefix = base != nullptr ? std::string(base) : std::string();
         try {
-            init_mano_topology(faces_path);
+            init_mano_model(prefix + "assets/mano/mano_model.bin");
+            init_mano_topology(prefix + "assets/mano/mano_faces.bin");
         } catch (const std::exception& error) {
             std::printf("Warning: %s — hand sequences will not render.\n", error.what());
         }
@@ -185,15 +185,20 @@ int main(int, char**) {
     float playback_speed = settings.playback_speed;
     double playback_accumulator = 0.0;
 
-    auto open_sequence = [&](const std::string& folder, int start_frame) {
-        auto opened = std::make_unique<MeshSequence>(folder);
-        const bool has_frames = opened->frame_count() > 0;
-        if (!has_frames) {
-            std::printf("No frame_*.hmesh files found in %s\n", folder.c_str());
+    auto open_sequence = [&](const std::string& csv_path, int start_frame) {
+        std::unique_ptr<MeshSequence> opened;
+        try {
+            opened = std::make_unique<MeshSequence>(csv_path);
+        } catch (const std::exception& error) {
+            std::printf("%s\n", error.what());
         }
-        // Reset the viewer to the requested folder either way: a folder with no
-        // frames clears the scene rather than leaving the previous sequence on
-        // screen (so opening from the Explorer always resets, like the menu does).
+        const bool has_frames = opened && opened->frame_count() > 0;
+        if (!has_frames) {
+            std::printf("No hands reconstructed from %s\n", csv_path.c_str());
+        }
+        // Reset the viewer to the requested CSV either way: a CSV with no frames
+        // clears the scene rather than leaving the previous sequence on screen (so
+        // opening from the Explorer always resets, like the menu does).
         sequence = has_frames ? std::move(opened) : nullptr;
         current_gpu.reset();
         loaded_frame = -1;
@@ -202,9 +207,9 @@ int main(int, char**) {
         current_frame = has_frames ? std::clamp(start_frame, 0, sequence->frame_count() - 1) : 0;
     };
 
-    // Reopen the last mesh sequence folder if present.
+    // Reopen the last trial CSV if present.
     namespace fs = std::filesystem;
-    if (settings.last_folder && fs::is_directory(*settings.last_folder)) {
+    if (settings.last_folder && fs::is_regular_file(*settings.last_folder)) {
         open_sequence(*settings.last_folder, settings.last_frame);
     }
 
@@ -227,14 +232,15 @@ int main(int, char**) {
         explorer.set_root(*settings.data_folder);
     }
 
-    // Two independent native folder pickers: one for opening a mesh sequence (menu
-    // / Explorer click), one for choosing the Explorer's data-folder root.
-    std::unique_ptr<pfd::select_folder> folder_dialog;
+    // Native pickers: a file picker for opening a trial CSV (menu), a folder picker
+    // for the Explorer's data-folder root, and a folder picker for the images root.
+    std::unique_ptr<pfd::open_file> csv_dialog;
     std::unique_ptr<pfd::select_folder> data_folder_dialog;
-    // A folder the Explorer asked to open, applied at the top of the next frame
-    // rather than mid-frame: open_sequence frees current_gpu, and the render below
-    // still holds a pointer to it, so opening inline would use freed memory.
-    std::optional<std::string> pending_open_folder;
+    std::unique_ptr<pfd::select_folder> images_folder_dialog;
+    // A CSV the Explorer asked to open, applied at the top of the next frame rather
+    // than mid-frame: open_sequence frees current_gpu, and the render below still
+    // holds a pointer to it, so opening inline would use freed memory.
+    std::optional<std::string> pending_open_csv;
 
     // Both cameras kept alive; ``camera`` points at the active one.
     OrbitCamera orbit_cam;
@@ -385,12 +391,12 @@ int main(int, char**) {
 
         const bool was_free_camera = settings.free_camera;
 
-        // Label for the menu bar: the absolute path of the open sequence folder.
-        std::string open_folder_label;
+        // Label for the menu bar: the absolute path of the open trial CSV.
+        std::string open_path_label;
         if (sequence) {
             std::error_code abs_error;
-            const fs::path absolute_folder = fs::absolute(sequence->folder(), abs_error);
-            open_folder_label = abs_error ? sequence->folder() : absolute_folder.string();
+            const fs::path absolute_path = fs::absolute(sequence->csv_path(), abs_error);
+            open_path_label = abs_error ? sequence->csv_path() : absolute_path.string();
         }
 
         const MenuResult menu = draw_menu_bar(
@@ -398,7 +404,7 @@ int main(int, char**) {
                 .hand_translucent = settings.hand_translucent,
                 .show_camera_marker = settings.show_camera_marker,
                 .free_camera = settings.free_camera,
-                .open_folder = open_folder_label,
+                .open_path = open_path_label,
             }
         );
         settings.hand_translucent = menu.state.hand_translucent;
@@ -448,21 +454,23 @@ int main(int, char**) {
             ImGui::DockBuilderFinish(dock_id);
         }
 
-        // Apply the open-folder request before choosing what to draw, since it
-        // frees GPU buffers the drawable below must reflect.
-        if (menu.folder_requested && !folder_dialog) {
-            folder_dialog = std::make_unique<pfd::select_folder>("Select mesh sequence folder");
+        // Open the file/folder pickers when their menu items are chosen.
+        if (menu.csv_requested && !csv_dialog) {
+            csv_dialog = std::make_unique<pfd::open_file>("Select trial CSV", "", std::vector<std::string>{"CSV files", "*.csv", "All files", "*"});
+        }
+        if (menu.images_requested && !images_folder_dialog) {
+            images_folder_dialog = std::make_unique<pfd::select_folder>("Select images folder");
         }
 
         // Poll with a zero timeout: pfd's ready() defaults to a 20ms wait that
         // blocks this thread every frame the dialog is open. A zero timeout
         // returns immediately and keeps idle frames.
-        if (folder_dialog && folder_dialog->ready(0)) {
-            const std::string folder = folder_dialog->result();
-            if (!folder.empty()) {
-                open_sequence(folder, 0);
+        if (csv_dialog && csv_dialog->ready(0)) {
+            const std::vector<std::string> chosen = csv_dialog->result();
+            if (!chosen.empty() && !chosen.front().empty()) {
+                open_sequence(chosen.front(), 0);
             }
-            folder_dialog.reset();
+            csv_dialog.reset();
         }
 
         // A chosen data folder becomes the Explorer root (one scan here) and is
@@ -476,11 +484,21 @@ int main(int, char**) {
             data_folder_dialog.reset();
         }
 
+        // The chosen images folder is the root the Frame View resolves per-trial
+        // images under; persisted so it reopens next launch.
+        if (images_folder_dialog && images_folder_dialog->ready(0)) {
+            const std::string folder = images_folder_dialog->result();
+            if (!folder.empty()) {
+                settings.images_folder = folder;
+            }
+            images_folder_dialog.reset();
+        }
+
         // Apply a deferred Explorer open here, before the current frame's GPU
         // buffers are read below, so opening never frees a buffer still in use.
-        if (pending_open_folder) {
-            open_sequence(*pending_open_folder, 0);
-            pending_open_folder.reset();
+        if (pending_open_csv) {
+            open_sequence(*pending_open_csv, 0);
+            pending_open_csv.reset();
         }
 
         // Advance playback at a fixed rate independent of the render frame rate.
@@ -506,14 +524,14 @@ int main(int, char**) {
             // the whole sequence regardless of which frame playback starts on.
             if (!transform) {
                 transform = compute_transform(*sequence);
-                depth_reference = reference_depth(sequence->load_frame(0));
+                depth_reference = sequence->reference_depth();
             }
             if (current_frame != loaded_frame) {
                 Frame hands = sequence->load_frame(current_frame);
                 current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands));
                 loaded_frame = current_frame;
             }
-            const std::size_t hand_count = sequence->frame_paths(current_frame).size();
+            const std::size_t hand_count = static_cast<std::size_t>(sequence->hand_count(current_frame));
             char buffer[128];
             std::snprintf(
                 buffer, sizeof(buffer), "frame %d / %d - %zu hand%s", current_frame + 1, sequence->frame_count(), hand_count, hand_count == 1 ? "" : "s"
@@ -528,8 +546,7 @@ int main(int, char**) {
         // Decode the current frame's modeled keypoint image (cached by path, so
         // this is a no-op unless the frame changed).
         if (has_sequence) {
-            const std::vector<std::string>& hands = sequence->frame_paths(current_frame);
-            const std::string image_path = hands.empty() ? std::string() : frame_image_path(hands.front());
+            const std::string image_path = sequence->frame_image_path(current_frame, settings.images_folder.value_or(std::string()));
             if (!image_path.empty()) {
                 frame_image.load(image_path);
             } else {
@@ -572,8 +589,8 @@ int main(int, char**) {
         if (explorer_result.choose_root_requested && !data_folder_dialog) {
             data_folder_dialog = std::make_unique<pfd::select_folder>("Select data folder");
         }
-        if (explorer_result.open_folder) {
-            pending_open_folder = explorer_result.open_folder;
+        if (explorer_result.open_csv) {
+            pending_open_csv = explorer_result.open_csv;
         }
 
         if (has_sequence) {
@@ -635,7 +652,7 @@ int main(int, char**) {
 
     // ── Persist settings ───────────────────────
     if (sequence) {
-        settings.last_folder = sequence->folder();
+        settings.last_folder = sequence->csv_path();
         settings.last_frame = current_frame;
     } else {
         settings.last_folder.reset();

@@ -117,17 +117,22 @@ namespace {
         return (left.size() - left_index) < (right.size() - right_index);
     }
 
-    /// Sort a node's kept children by natural (human) folder-name order.
+    /// Sort a node's kept children: folders first, then ``.csv`` files, each group
+    /// in natural (human) name order. Grouping keeps a trial's subfolders above its
+    /// loose CSVs rather than interleaving them by name.
     void sort_children(FileExplorer::Node& node) {
         std::sort(node.children.begin(), node.children.end(), [](const FileExplorer::Node& left, const FileExplorer::Node& right) {
+            if (left.is_csv != right.is_csv) {
+                return !left.is_csv; // folders (is_csv == false) before files
+            }
             return natural_less(left.name, right.name);
         });
     }
 
-    /// True once a kept child should stay in the pruned tree: it either directly
-    /// holds ``.hmesh`` files or has a descendant that does. A child with neither is
-    /// a dead branch and is dropped.
-    bool keep_child(const FileExplorer::Node& child) { return child.has_meshes || !child.children.empty(); }
+    /// True once a kept folder child should stay in the pruned tree: it has a
+    /// ``.csv`` somewhere below (i.e. kept children of its own). A folder with none
+    /// is a dead branch and is dropped. (CSV file nodes are always kept.)
+    bool keep_child(const FileExplorer::Node& child) { return !child.children.empty(); }
 
 #ifdef _WIN32
     /// Convert a UTF-8 path to UTF-16 for the wide Win32 directory APIs.
@@ -152,12 +157,12 @@ namespace {
         return result;
     }
 
-    /// True if ``name`` ends with a case-insensitive ``.hmesh`` extension. Tests the
+    /// True if ``name`` ends with a case-insensitive ``.csv`` extension. Tests the
     /// suffix in place — no path/extension allocation, which matters across the
-    /// hundreds of thousands of files a sequence folder can hold.
-    bool wname_is_hmesh(const wchar_t* name) {
-        static const wchar_t ext[] = L".hmesh";
-        const std::size_t ext_length = 6; // wcslen(L".hmesh")
+    /// hundreds of thousands of files a data folder can hold.
+    bool wname_is_csv(const wchar_t* name) {
+        static const wchar_t ext[] = L".csv";
+        const std::size_t ext_length = 4; // wcslen(L".csv")
         const std::size_t name_length = std::wcslen(name);
         if (name_length < ext_length) {
             return false;
@@ -171,7 +176,7 @@ namespace {
     }
 
     /// Recursively fill ``node`` (whose ``path``/``name`` are already set) with its
-    /// pruned subtree, setting ``has_meshes`` and the kept ``children`` (sorted).
+    /// pruned subtree: kept subfolders and ``.csv`` file leaves, sorted.
     ///
     /// Uses FindFirstFileExW with FIND_FIRST_EX_LARGE_FETCH rather than
     /// std::filesystem: the directory entry's type and name come straight from the
@@ -180,8 +185,6 @@ namespace {
     /// std::filesystem walk, which issues a stat per entry (see bench/). Runs on the
     /// worker thread; touches no shared state.
     void scan_children(FileExplorer::Node& node) {
-        node.has_meshes = false;
-
         const std::wstring pattern = widen(node.path) + L"\\*";
         WIN32_FIND_DATAW find_data;
         HANDLE handle = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &find_data, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
@@ -199,8 +202,13 @@ namespace {
                     if (keep_child(child)) {
                         node.children.push_back(std::move(child));
                     }
-                } else if (!node.has_meshes && wname_is_hmesh(name)) {
-                    node.has_meshes = true;
+                } else if (wname_is_csv(name)) {
+                    FileExplorer::Node child;
+                    const std::string file_name = narrow(name, static_cast<int>(std::wcslen(name)));
+                    child.path = node.path + "\\" + file_name;
+                    child.name = file_name; // full file name, with the ".csv" extension
+                    child.is_csv = true;
+                    node.children.push_back(std::move(child));
                 }
             } while (FindNextFileW(handle, &find_data) != 0);
             FindClose(handle);
@@ -208,10 +216,10 @@ namespace {
         sort_children(node);
     }
 #else
-    /// True if ``name`` ends with a case-insensitive ``.hmesh`` extension, tested in
+    /// True if ``name`` ends with a case-insensitive ``.csv`` extension, tested in
     /// place without building a path/extension string.
-    bool name_is_hmesh(const std::string& name) {
-        static const std::string ext = ".hmesh";
+    bool name_is_csv(const std::string& name) {
+        static const std::string ext = ".csv";
         if (name.size() < ext.size()) {
             return false;
         }
@@ -226,11 +234,9 @@ namespace {
 
     /// Portable std::filesystem fallback for non-Windows builds. Same contract as the
     /// Win32 ``scan_children`` above: a single pass classifies each entry as a
-    /// subdirectory (recursed and kept if it leads to a sequence) or an ``.hmesh``
-    /// file (which marks this folder openable).
+    /// subdirectory (recursed and kept if it leads to a CSV) or a ``.csv`` file
+    /// (kept as an openable leaf node).
     void scan_children(FileExplorer::Node& node) {
-        node.has_meshes = false;
-
         std::error_code error;
         fs::directory_iterator iterator(node.path, fs::directory_options::skip_permission_denied, error);
         if (!error) {
@@ -244,8 +250,12 @@ namespace {
                     if (keep_child(child)) {
                         node.children.push_back(std::move(child));
                     }
-                } else if (!node.has_meshes && entry.is_regular_file(type_error) && name_is_hmesh(entry.path().filename().string())) {
-                    node.has_meshes = true;
+                } else if (entry.is_regular_file(type_error) && name_is_csv(entry.path().filename().string())) {
+                    FileExplorer::Node child;
+                    child.path = entry.path().string();
+                    child.name = entry.path().filename().string(); // full file name, with the ".csv" extension
+                    child.is_csv = true;
+                    node.children.push_back(std::move(child));
                 }
             }
         }
@@ -263,7 +273,7 @@ namespace {
     /// was drawn. It is passed in rather than read from GetItemRectMin because
     /// SpanFullWidth stretches the item rect to the full row width, which would put
     /// the icon over the arrow and ignore nesting indent.
-    void draw_node_label(const ExplorerIcons& icons, const std::string& name, bool expanded, float node_left) {
+    void draw_node_label(unsigned int texture, const std::string& name, float node_left) {
         const float icon_size = ImGui::GetFontSize(); // square icon, matched to text height
         const ImVec2 item_min = ImGui::GetItemRectMin();
         const ImVec2 item_max = ImGui::GetItemRectMax();
@@ -272,7 +282,6 @@ namespace {
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
         float text_x = label_x;
-        const unsigned int texture = expanded ? icons.folder_open : icons.folder_closed;
         if (texture != 0) {
             const ImVec2 icon_min(label_x, center_y - icon_size * 0.5f);
             const ImVec2 icon_max(label_x + icon_size, center_y + icon_size * 0.5f);
@@ -310,10 +319,10 @@ namespace {
         ++draw.row_index;
     }
 
-    /// Recursively draw one folder node and record any click on a sequence folder
-    /// into ``draw.result``. The tree is already fully scanned, so this only walks
-    /// memory. Only folders that directly hold ``.hmesh`` files (``has_meshes``) are
-    /// openable; pure container folders just expand/collapse via their arrow.
+    /// Recursively draw one node and record any click on a CSV file leaf into
+    /// ``draw.result``. The tree is already fully scanned, so this only walks
+    /// memory. Only ``.csv`` file leaves (``is_csv``) are openable; folder nodes are
+    /// pure containers that just expand/collapse via their arrow.
     void draw_node(TreeDraw& draw, FileExplorer::Node& node) {
         const bool leaf = node.children.empty();
 
@@ -328,11 +337,11 @@ namespace {
             // unique even when two folders share a name.
             const float node_left = ImGui::GetCursorScreenPos().x;
             ImGui::TreeNodeEx(node.path.c_str(), flags, "%s", "");
-            draw_node_label(draw.explorer.icons(), node.name, false, node_left);
-            // A leaf with no meshes shouldn't happen (it would have been pruned), but
-            // guard anyway: only sequence folders open on click.
-            if (node.has_meshes && ImGui::IsItemClicked()) {
-                draw.result.open_folder = node.path;
+            // A leaf is a CSV file (the only kept leaves); draw the file icon and open
+            // it on click. A non-CSV leaf shouldn't happen (it would have been pruned).
+            draw_node_label(draw.explorer.icons().file_csv, node.name, node_left);
+            if (node.is_csv && ImGui::IsItemClicked()) {
+                draw.result.open_csv = node.path;
             }
             return;
         }
@@ -348,13 +357,10 @@ namespace {
         stripe_row(draw);
         const float node_left = ImGui::GetCursorScreenPos().x;
         const bool open = ImGui::TreeNodeEx(node.path.c_str(), flags, "%s", "");
-        draw_node_label(draw.explorer.icons(), node.name, open, node_left);
-        // Only a sequence folder is clickable; pure containers ignore label clicks
-        // (the arrow still toggles them). The toggle check keeps a click on the arrow
-        // from also opening the sequence.
-        if (node.has_meshes && ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-            draw.result.open_folder = node.path;
-        }
+        const ExplorerIcons& icons = draw.explorer.icons();
+        draw_node_label(open ? icons.folder_open : icons.folder_closed, node.name, node_left);
+        // A folder with children is a pure container: it only expands/collapses via
+        // its arrow. Only CSV file leaves (handled above) are openable.
         if (open) {
             draw.explorer.mark_expanded(node.path); // record for persisting the open state
             for (FileExplorer::Node& child : node.children) {
@@ -372,6 +378,9 @@ ExplorerIcons::~ExplorerIcons() {
     if (folder_open != 0) {
         glDeleteTextures(1, &folder_open);
     }
+    if (file_csv != 0) {
+        glDeleteTextures(1, &file_csv);
+    }
     if (change_root != 0) {
         glDeleteTextures(1, &change_root);
     }
@@ -384,6 +393,7 @@ void ExplorerIcons::load(const std::string& assets_dir) {
     const std::string prefix = assets_dir.empty() || assets_dir.back() == '/' || assets_dir.back() == '\\' ? assets_dir : assets_dir + "/";
     folder_closed = load_texture(prefix + "folder-blue.png");
     folder_open = load_texture(prefix + "folder-blue-open.png");
+    file_csv = load_texture(prefix + "file-csv.png");
     change_root = load_texture(prefix + "folder-lucide.png");
     refresh = load_texture(prefix + "folder-sync.png");
 }
@@ -392,9 +402,9 @@ FileExplorer::Node FileExplorer::scan_root(const std::string& root) {
     Node node;
     node.path = root;
     node.name = folder_name(fs::path(root));
-    node.default_open = true; // root opens so its kept subfolders are visible
-    // Fill has_meshes and the pruned, sorted children. Unlike a subtree the root is
-    // always kept (even with no sequences below) so the pane has something to show.
+    node.default_open = true; // root opens so its kept children are visible
+    // Fill the pruned, sorted children. Unlike a subtree the root is always kept
+    // (even with no CSVs below) so the pane has something to show.
     scan_children(node);
     return node;
 }
@@ -472,7 +482,7 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id) {
         const ExplorerIcons& icons = explorer.icons();
 
         const char* heading = "No data folder selected";
-        const char* hint = "Choose a folder to scan for mesh sequences.";
+        const char* hint = "Choose a folder to scan for trial CSVs.";
         const char* button_label = "Choose Data Folder";
         const float icon_size = 48.0f;
         const bool has_icon = icons.change_root != 0;
@@ -583,7 +593,7 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id) {
         } else if (scanning) {
             ImGui::TextDisabled("Scanning...");
         } else {
-            ImGui::TextDisabled("No folders with .hmesh files found.");
+            ImGui::TextDisabled("No .csv files found.");
         }
     }
 

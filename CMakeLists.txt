@@ -15,7 +15,7 @@ endif ()
 # at configure time: cmake -B build -DRELEASE_STATIC=ON
 option(RELEASE_STATIC "Statically link the release exe (except opengl32.dll)" OFF)
 
-# When ON, gather only the files that need shipping (exe + assets/ + mano/, plus
+# When ON, gather only the files that need shipping (exe + assets/, plus
 # SDL3.dll for a non-static build) into <build>/dist/hand_motion_viewer after each
 # build and zip it into <build>/hand_motion_viewer.zip. Set at configure time:
 # cmake -B build -DPACKAGE_RELEASE=ON
@@ -230,24 +230,16 @@ if (WIN32 AND NOT RELEASE_STATIC)
 endif ()
 
 # Make the runtime assets available next to the executable: the explorer's icon
-# PNGs and the bundled font (assets/fonts/), both resolved relative to the binary.
+# PNGs, the bundled font (assets/fonts/), and the MANO model/topology
+# (assets/mano/), all resolved relative to the binary.
 add_custom_command(TARGET hand_motion_viewer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_CURRENT_SOURCE_DIR}/assets
     $<TARGET_FILE_DIR:hand_motion_viewer>/assets
 )
 
-# Copy the shared MANO face topology next to the executable so the .hmesh loader
-# finds it (main.cpp resolves mano/mano_faces.bin relative to the binary). This
-# keeps mano/ a single source of truth and avoids a stale hand-copied build copy.
-add_custom_command(TARGET hand_motion_viewer POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/mano
-    $<TARGET_FILE_DIR:hand_motion_viewer>/mano
-)
-
 # Assemble a clean, distributable folder containing only what ships: the exe and
-# the assets/ and mano/ runtime assets (plus SDL3.dll when not statically linked).
+# the assets/ runtime assets (plus SDL3.dll when not statically linked).
 # Built fresh each time (the dir is removed first) so it never holds stale files.
 if (PACKAGE_RELEASE)
     set(dist_dir ${CMAKE_BINARY_DIR}/dist)
@@ -257,7 +249,6 @@ if (PACKAGE_RELEASE)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${package_dir}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:hand_motion_viewer> ${package_dir}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/assets ${package_dir}/assets
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/mano ${package_dir}/mano
         COMMENT "Packaging shippable files into ${package_dir}"
     )
     if (WIN32 AND NOT RELEASE_STATIC)

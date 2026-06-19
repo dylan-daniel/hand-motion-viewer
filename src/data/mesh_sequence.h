@@ -1,21 +1,26 @@
 #pragma once
 
-// Loading and holding a folder of per-frame hand meshes for motion playback. A
-// mesh sequence folder holds files named ``frame_NNNN_<slot>.hmesh`` — one compact
-// binary mesh per detected hand per video frame, storing just the MANO surface
-// vertices and 21 joint positions. The face topology is identical for every hand
-// and shared globally (see geometry's mano_faces), so only the moving vertices
-// are streamed in per frame. Each frame is parsed synchronously on demand when
-// playback reaches it (no background preloading).
+// Loading and holding one trial's hand motion for playback. A trial is a single
+// ``<trial>.csv`` (one row per detected hand per frame; see data/SAVE_ALL.md)
+// holding the ``subject``/``trial`` keys and the generative MANO parameters, not
+// baked geometry, so each hand's 778 surface vertices and 21 joints are
+// regenerated on demand through the MANO layer (see data/mano_model.h). The
+// per-frame images live in a separate images tree, located at
+// ``<images_root>/<subject>/<trial>/frame_NNNN.jpg`` (see frame_image_path). The
+// whole CSV is parsed once in the constructor; ``load_frame`` then runs the MANO
+// forward pass for a frame.
 
 #include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
 
-/// One hand in one frame, decoded from a ``.hmesh``: the moving MANO surface
-/// vertices and joint positions. The face topology is shared globally (see
-/// mano_faces) so it is not stored here; only the handedness needed to pick it.
+#include "data/mano_model.h"
+
+/// One hand in one frame: the regenerated MANO surface vertices and joint
+/// positions, in the viewer's on-screen space. The face topology is shared
+/// globally (see mano_faces) so it is not stored here; only the handedness needed
+/// to pick the right winding.
 struct HandData {
     std::vector<glm::vec3> verts;  // MANO surface vertices (778)
     std::vector<glm::vec3> joints; // joint positions (21)
@@ -30,39 +35,68 @@ struct Transform {
 
 using Frame = std::vector<HandData>;
 
-/// Group a folder's ``frame_NNNN_<slot>.hmesh`` files into ordered frames.
-std::vector<std::vector<std::string>> discover_frames(const std::string& folder);
+/// Per-hand placed-space stats precomputed in the CSV: the axis-aligned bounding
+/// box and mean depth of the hand's placed vertices (post the place() transform,
+/// pre depth-stabilisation). These let the scene fit (compute_transform) and the
+/// stabilisation reference be derived without running the MANO forward pass on
+/// every frame. See data/SAVE_ALL.md for the ``placed_bbox_*`` / ``placed_mean_z``
+/// columns.
+struct HandBounds {
+    glm::vec3 placed_min{0.0f};
+    glm::vec3 placed_max{0.0f};
+    float placed_mean_z = 0.0f;
+};
 
-/// Map a frame hand's mesh path (``frame_NNNN_<slot>.hmesh``) to the modeled image
-/// that sits beside it (``frame_NNNN_all_keypoints.jpg``). Returns empty if the
-/// path does not match the expected ``frame_NNNN_<slot>`` shape.
-std::string frame_image_path(const std::string& mesh_path);
-
-/// Mean camera-space depth (z) of a frame's hands — the common plane depth
-/// stabilisation snaps every other frame's hands onto.
-float reference_depth(const Frame& hands);
-
-/// A folder of per-frame hand meshes, parsed synchronously on demand. Holds only
-/// the discovered file paths; ``load_frame`` reads and decodes a frame's hands
-/// from disk each time it is called (no caching, no background threads).
+/// One trial's hand motion, parsed from its CSV once at construction. Holds the
+/// per-frame MANO parameters; ``load_frame`` regenerates a frame's hand geometry
+/// from them each time it is called (no caching, no background threads).
 class MeshSequence {
 public:
-    explicit MeshSequence(const std::string& folder);
+    /// ``csv_path`` is a trial's ``*.csv`` file. Throws if it cannot be opened;
+    /// leaves an empty sequence (frame_count 0) if the CSV has no hands.
+    explicit MeshSequence(const std::string& csv_path);
 
-    int frame_count() const { return frame_count_; }
+    int frame_count() const { return static_cast<int>(frames_.size()); }
 
-    const std::string& folder() const { return folder_; }
+    const std::string& csv_path() const { return csv_path_; }
 
-    const std::vector<std::string>& frame_paths(int index) const { return frame_paths_[static_cast<std::size_t>(index)]; }
+    /// The ``subject`` / ``trial`` keys read from the CSV, used to locate the
+    /// matching per-frame images under the images root.
+    const std::string& subject() const { return subject_; }
+    const std::string& trial() const { return trial_; }
 
-    /// Read and decode the hands for frame ``index`` from disk. Returns an empty
-    /// frame for an out-of-range index.
+    /// Number of detected hands in frame ``index`` (0 for out-of-range).
+    int hand_count(int index) const;
+
+    /// Path to frame ``index``'s image under ``images_root``, i.e.
+    /// ``<images_root>/<subject>/<trial>/frame_NNNN.{jpg,png}``. Prefers ``.jpg``
+    /// then ``.png``; returns empty for an out-of-range index or an empty root.
+    std::string frame_image_path(int index, const std::string& images_root) const;
+
+    /// Regenerate the hands for frame ``index`` through the MANO layer. Returns an
+    /// empty frame for an out-of-range index.
     Frame load_frame(int index) const;
 
+    /// The precomputed placed bounds of frame ``index``'s hands (empty for an
+    /// out-of-range index). Read straight from the CSV, no MANO forward pass.
+    const std::vector<HandBounds>& frame_bounds(int index) const;
+
+    /// Mean placed depth (z) of frame 0's hands — the common plane every other
+    /// frame's hands are depth-snapped onto. Derived from the CSV at construction.
+    float reference_depth() const { return reference_depth_; }
+
 private:
-    std::string folder_;
-    std::vector<std::vector<std::string>> frame_paths_;
-    int frame_count_;
+    std::string csv_path_;
+    std::string subject_; // ``subject`` key from the CSV (for locating images)
+    std::string trial_;   // ``trial`` key from the CSV (for locating images)
+    // One entry per frame, each a list of the frame's hands' MANO parameters.
+    std::vector<std::vector<ManoParams>> frames_;
+    // Parallel to frames_: the precomputed placed bounds for each frame's hands.
+    std::vector<std::vector<HandBounds>> bounds_;
+    // Mean placed depth of frame 0, cached for the stabilisation reference.
+    float reference_depth_ = 0.0f;
+    // The original frame number per frame index, used to locate the image on disk.
+    std::vector<int> frame_numbers_;
 };
 
 /// Build the fixed transform that sits the sequence's hands on the grid and

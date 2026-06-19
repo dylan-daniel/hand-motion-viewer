@@ -308,7 +308,8 @@ void TransportIcons::load(const std::string& icons_dir) {
 }
 
 MenuResult draw_menu_bar(MenuState state) {
-    bool folder_requested = false;
+    bool csv_requested = false;
+    bool images_requested = false;
 
     // Extra padding makes the bar taller; pop it right after begin so dropdown
     // contents don't grow too.
@@ -317,8 +318,11 @@ MenuResult draw_menu_bar(MenuState state) {
     ImGui::PopStyleVar();
     if (opened) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open Mesh Sequence Folder")) {
-                folder_requested = true;
+            if (ImGui::MenuItem("Open Trial CSV")) {
+                csv_requested = true;
+            }
+            if (ImGui::MenuItem("Set Images Folder")) {
+                images_requested = true;
             }
             ImGui::EndMenu();
         }
@@ -333,12 +337,12 @@ MenuResult draw_menu_bar(MenuState state) {
             ImGui::EndMenu();
         }
 
-        // Right-aligned path of the open sequence folder, always visible (even
-        // fullscreen) without crowding any pane. Drawn via the draw list and clipped
-        // to the space after the menus so a long path can't overlap File/Settings —
-        // when it doesn't fit, the left of the path is clipped, keeping the tail
-        // (the actual folder) at the right edge.
-        if (!state.open_folder.empty()) {
+        // Right-aligned path of the open trial CSV, always visible (even fullscreen)
+        // without crowding any pane. Drawn via the draw list and clipped to the space
+        // after the menus so a long path can't overlap File/Settings — when it
+        // doesn't fit, the left of the path is clipped, keeping the tail (the actual
+        // file) at the right edge.
+        if (!state.open_path.empty()) {
             const ImVec2 window_pos = ImGui::GetWindowPos();
             const float window_width = ImGui::GetWindowWidth();
             const float window_height = ImGui::GetWindowHeight();
@@ -346,7 +350,7 @@ MenuResult draw_menu_bar(MenuState state) {
             const float region_left = window_pos.x + ImGui::GetCursorPosX();
             const float region_right = window_pos.x + window_width - right_pad;
             if (region_right > region_left) {
-                const char* path = state.open_folder.c_str();
+                const char* path = state.open_path.c_str();
                 const float text_width = ImGui::CalcTextSize(path).x;
                 const float text_x = region_right - text_width; // right-aligned (may sit left of region, then clips)
                 const float text_y = window_pos.y + (window_height - ImGui::GetTextLineHeight()) * 0.5f;
@@ -359,7 +363,7 @@ MenuResult draw_menu_bar(MenuState state) {
 
         ImGui::EndMainMenuBar();
     }
-    return {state, folder_requested};
+    return {state, csv_requested, images_requested};
 }
 
 ViewportResult draw_viewport_window(

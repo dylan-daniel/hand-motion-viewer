@@ -23,12 +23,13 @@ struct MenuState {
     bool hand_translucent = false;
     bool show_camera_marker = false;
     bool free_camera = false;
-    std::string open_folder; // currently-loaded sequence folder, shown right-aligned in the bar (empty = none)
+    std::string open_path; // currently-loaded trial CSV path, shown right-aligned in the bar (empty = none)
 };
 
 struct MenuResult {
     MenuState state;               // the (possibly toggled) menu state
-    bool folder_requested = false; // user picked "Open Mesh Sequence Folder"
+    bool csv_requested = false;    // user picked "Open Trial CSV"
+    bool images_requested = false; // user picked "Set Images Folder"
 };
 
 /// Playback-transport state every pane that can host the player shares: passed in

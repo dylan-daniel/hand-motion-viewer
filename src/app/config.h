@@ -9,14 +9,15 @@
 #include <vector>
 
 struct Config {
-    std::optional<std::string> last_folder; // path of the most recently loaded mesh sequence folder
-    int last_frame = 0;                     // frame index to reopen the sequence on
-    float playback_speed = 1.0f;            // playback rate multiplier (0.5x .. 4x)
-    bool hand_translucent = true;           // whether the hand is drawn see-through
-    bool show_controls = true;              // whether the viewport controls help panel is open
-    bool show_camera_marker = false;        // whether the pink look-at marker ball is drawn
-    bool free_camera = true;                // use the first-person free camera instead of the orbit camera
-    int active_pane = 0;                    // last focused pane / selected tab: 0 = Scene, 1 = Frame View
+    std::optional<std::string> last_folder;   // path of the most recently loaded trial CSV
+    std::optional<std::string> images_folder; // root folder holding the per-trial frame images
+    int last_frame = 0;                       // frame index to reopen the sequence on
+    float playback_speed = 1.0f;              // playback rate multiplier (0.5x .. 4x)
+    bool hand_translucent = true;             // whether the hand is drawn see-through
+    bool show_controls = true;                // whether the viewport controls help panel is open
+    bool show_camera_marker = false;          // whether the pink look-at marker ball is drawn
+    bool free_camera = true;                  // use the first-person free camera instead of the orbit camera
+    int active_pane = 0;                      // last focused pane / selected tab: 0 = Scene, 1 = Frame View
 
     std::optional<std::string> data_folder;    // root folder the Explorer pane browses, if chosen
     std::vector<std::string> expanded_folders; // Explorer tree folders left expanded, restored on launch

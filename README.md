@@ -10,7 +10,7 @@ an interactive 3D viewport.
   hand meshes (one compact binary mesh per detected hand per video frame) and
   plays them back at 30 FPS. Each `.hmesh` stores only the 778 MANO surface
   vertices and 21 joint positions; the face topology is shared globally (loaded
-  once from `mano/mano_faces.bin`) and the colored joint skeleton is regenerated
+  once from `assets/mano/mano_faces.bin`) and the colored joint skeleton is regenerated
   procedurally, so only the moving vertices are streamed per frame. Each frame's
   meshes are read and decoded from disk on demand as playback reaches them.
 - **3D viewport** — core OpenGL 3.3 renderer with an orbit camera and grid.
@@ -32,9 +32,9 @@ All third-party libraries — SDL3, glm, nlohmann/json, Dear ImGui,
 portable-file-dialogs, and stb — are downloaded and built
 automatically by CMake via `FetchContent`. There is nothing to install by hand.
 On Windows the SDL3 runtime DLL is copied next to the executable automatically.
-The bundled font (`fonts/`) and the shared MANO face topology (`mano/`) are
-copied next to the executable on every build as well, so the viewer finds them
-relative to the binary.
+The `assets/` folder — the bundled font (`assets/fonts/`) and the MANO model and
+shared face topology (`assets/mano/`) — is copied next to the executable on every
+build as well, so the viewer finds them relative to the binary.
 
 ## Building
 
@@ -61,7 +61,7 @@ command is unchanged.
   present on every Windows machine. Works under both GCC/MinGW (via `-static`)
   and MSVC (via the static CRT, `/MT`).
 - **`PACKAGE_RELEASE`** — after each build, assembles only the shippable files
-  (the executable plus the `fonts/` and `mano/` folders, and `SDL3.dll` for a
+  (the executable plus the `assets/` folder, and `SDL3.dll` for a
   non-static build) into `<build>/dist/`, then zips its contents into
   `<build>/dist.zip` for one-file distribution.
 
@@ -97,7 +97,7 @@ A mesh sequence folder holds per-frame files:
 - `frame_NNNN_all_keypoints.jpg` (or `.png`) — the keypoint overlay image for
   that frame
 
-The MANO face topology shared by every hand lives in `mano/mano_faces.bin`
+The MANO face topology shared by every hand lives in `assets/mano/mano_faces.bin`
 (`uint16` triangle indices, right-hand winding) and is loaded once at startup.
 
 ## Project layout
@@ -123,6 +123,8 @@ src/
 │   └── geometry.*       Mesh/grid geometry + .hmesh decoding
 └── util/                Shared utilities
     └── worker_queue.h   Background job queue (async keypoint image decode)
-fonts/                   Bundled UI font (copied next to the exe)
-mano/                    Shared MANO face topology (copied next to the exe)
+assets/                  Runtime assets (copied next to the exe)
+├── fonts/               Bundled UI font
+├── icons/               Explorer/transport icon PNGs
+└── mano/                MANO model + shared face topology
 ```

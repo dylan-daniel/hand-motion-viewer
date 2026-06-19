@@ -1,15 +1,15 @@
 #pragma once
 
-// Explorer pane: a folder tree rooted at a chosen data folder, pruned to the
-// folders that lead to mesh sequences.
+// Explorer pane: a tree rooted at a chosen data folder, pruned to the branches
+// that lead to trial ``.csv`` files.
 //
 // On set_root (and on an explicit refresh) the whole subtree is walked once on a
-// background thread, keeping only folders that directly contain ``.hmesh`` files
-// or that have a descendant which does — so dead branches (no sequences anywhere
-// below) are dropped while the path to every sequence folder is preserved. The
+// background thread. Every ``.csv`` file becomes an openable leaf node; folders
+// are kept only when they have a ``.csv`` somewhere below — so dead branches (no
+// CSVs anywhere below) are dropped while the path to every CSV is preserved. The
 // finished tree is swapped in on the UI thread; drawing each frame only walks the
-// in-memory tree. Only folders that directly hold ``.hmesh`` files are openable;
-// the rest are pure containers that can merely expand/collapse.
+// in-memory tree. Only the ``.csv`` file nodes are openable; folders are pure
+// containers that can merely expand/collapse.
 
 #include <atomic>
 #include <mutex>
@@ -43,6 +43,7 @@ struct ExplorerIcons {
 
     unsigned int folder_closed = 0; // shown for a collapsed folder
     unsigned int folder_open = 0;   // shown for an expanded folder
+    unsigned int file_csv = 0;      // shown for a ``.csv`` file leaf (0 => name only)
     unsigned int change_root = 0;   // the "change data folder" toolbar button (white, tinted at draw time)
     unsigned int refresh = 0;       // the "rescan current folder" toolbar button (white, tinted at draw time)
 };
@@ -51,14 +52,14 @@ struct ExplorerIcons {
 /// background scan rather than lazily, so drawing never touches the disk.
 class FileExplorer {
 public:
-    /// One folder in the pruned tree. ``children`` is the kept subfolders (those
-    /// with ``.hmesh`` files somewhere below). ``has_meshes`` means this folder
-    /// directly contains ``.hmesh`` files, which is what makes it openable.
+    /// One node in the pruned tree: either a folder (``children`` are its kept
+    /// subfolders and ``.csv`` files) or a ``.csv`` file leaf (``is_csv``, which is
+    /// what makes it openable).
     struct Node {
         std::string path;
         std::string name;
         std::vector<Node> children;
-        bool has_meshes = false;   // directly contains .hmesh files (=> openable)
+        bool is_csv = false;       // this node is a .csv file (=> openable)
         bool default_open = false; // seed imgui's initial open state once (the root)
     };
 
@@ -138,8 +139,8 @@ private:
 struct ExplorerResult {
     bool hovered = false;
     bool focused = false;
-    std::optional<std::string> open_folder; // a sequence folder was clicked: load it
-    bool choose_root_requested = false;     // the "Choose Data Folder" / change button was pressed
+    std::optional<std::string> open_csv; // a trial CSV was clicked: load it
+    bool choose_root_requested = false;  // the "Choose Data Folder" / change button was pressed
 };
 
 /// Draw the dockable "Explorer" window. Polls for a finished scan and may start a

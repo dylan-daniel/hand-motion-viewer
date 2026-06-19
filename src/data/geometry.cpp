@@ -134,55 +134,6 @@ prepare_hand(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>&
     return prepared;
 }
 
-// ── Binary .hmesh format ───────────────────────
-
-namespace {
-    /// Read ``count`` little-endian float32 vec3s from ``data`` at ``offset``,
-    /// rotating each 180° about X (negate y and z) into the OBJ-export pose.
-    std::vector<glm::vec3> read_posed_vec3(const std::string& data, std::size_t offset, std::size_t count) {
-        std::vector<glm::vec3> points;
-        points.reserve(count);
-        for (std::size_t index = 0; index < count; ++index) {
-            float xyz[3];
-            std::memcpy(xyz, data.data() + offset + index * 3 * sizeof(float), 3 * sizeof(float));
-            points.emplace_back(xyz[0], -xyz[1], -xyz[2]);
-        }
-        return points;
-    }
-} // namespace
-
-HMesh load_hmesh(const std::string& path) {
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file) {
-        throw std::runtime_error("Could not open hmesh " + path);
-    }
-    const std::streamsize size = file.tellg();
-    if (size < 8) {
-        throw std::runtime_error("Truncated hmesh " + path);
-    }
-    std::string data(static_cast<std::size_t>(size), '\0');
-    file.seekg(0);
-    file.read(data.data(), size);
-
-    if (std::memcmp(data.data(), "HMH", 3) != 0) {
-        throw std::runtime_error("Not an hmesh file: " + path);
-    }
-    HMesh mesh;
-    mesh.is_right = static_cast<std::uint8_t>(data[3]) != 0;
-    std::uint16_t n_verts = 0;
-    std::uint16_t n_joints = 0;
-    std::memcpy(&n_verts, data.data() + 4, sizeof(n_verts));
-    std::memcpy(&n_joints, data.data() + 6, sizeof(n_joints));
-
-    const std::size_t expected = 8 + (static_cast<std::size_t>(n_verts) + n_joints) * 3 * sizeof(float);
-    if (static_cast<std::size_t>(size) < expected) {
-        throw std::runtime_error("Truncated hmesh body: " + path);
-    }
-    mesh.verts = read_posed_vec3(data, 8, n_verts);
-    mesh.joints = read_posed_vec3(data, 8 + static_cast<std::size_t>(n_verts) * 3 * sizeof(float), n_joints);
-    return mesh;
-}
-
 // ── Shared MANO face topology ──────────────────
 
 namespace {
