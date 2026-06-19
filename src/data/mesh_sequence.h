@@ -25,7 +25,33 @@ struct HandData {
     std::vector<glm::vec3> verts;  // MANO surface vertices (778)
     std::vector<glm::vec3> joints; // joint positions (21)
     bool is_right = true;          // handedness, picks the shared face winding
+    int track_id = -1;             // tracking id, drives the per-hand surface colour
 };
+
+/// Per-hand tracking/classification flags read from the CSV, used to filter which
+/// hands are drawn and to colour them by track.
+struct HandMeta {
+    int track_id = -1;
+    bool is_duplicate = false; // a redundant detection of an already-tracked hand
+    bool is_baby = false;      // the infant's hand (vs. an adult's)
+};
+
+/// Which hands to hide. A hand is shown unless an enabled filter excludes it.
+struct HandFilter {
+    bool hide_duplicates = true;
+    bool hide_adults = true;
+};
+
+/// Whether ``meta`` passes ``filter`` (i.e. the hand should be drawn).
+inline bool hand_visible(const HandMeta& meta, const HandFilter& filter) {
+    if (filter.hide_duplicates && meta.is_duplicate) {
+        return false;
+    }
+    if (filter.hide_adults && !meta.is_baby) {
+        return false;
+    }
+    return true;
+}
 
 /// A fixed translate-then-scale that frames the whole sequence on the grid.
 struct Transform {
@@ -65,21 +91,27 @@ public:
     const std::string& subject() const { return subject_; }
     const std::string& trial() const { return trial_; }
 
-    /// Number of detected hands in frame ``index`` (0 for out-of-range).
-    int hand_count(int index) const;
+    /// Number of detected hands in frame ``index`` (0 for out-of-range), counting
+    /// only those that pass ``filter``.
+    int hand_count(int index, const HandFilter& filter = {}) const;
 
     /// Path to frame ``index``'s image under ``images_root``, i.e.
     /// ``<images_root>/<subject>/<trial>/frame_NNNN.{jpg,png}``. Prefers ``.jpg``
     /// then ``.png``; returns empty for an out-of-range index or an empty root.
     std::string frame_image_path(int index, const std::string& images_root) const;
 
-    /// Regenerate the hands for frame ``index`` through the MANO layer. Returns an
-    /// empty frame for an out-of-range index.
-    Frame load_frame(int index) const;
+    /// Regenerate the hands for frame ``index`` through the MANO layer, keeping
+    /// only those that pass ``filter``. Returns an empty frame for an out-of-range
+    /// index.
+    Frame load_frame(int index, const HandFilter& filter = {}) const;
 
     /// The precomputed placed bounds of frame ``index``'s hands (empty for an
     /// out-of-range index). Read straight from the CSV, no MANO forward pass.
     const std::vector<HandBounds>& frame_bounds(int index) const;
+
+    /// The tracking/classification metadata of frame ``index``'s hands, parallel to
+    /// frame_bounds (empty for an out-of-range index).
+    const std::vector<HandMeta>& frame_meta(int index) const;
 
     /// Mean placed depth (z) of frame 0's hands — the common plane every other
     /// frame's hands are depth-snapped onto. Derived from the CSV at construction.
@@ -93,6 +125,8 @@ private:
     std::vector<std::vector<ManoParams>> frames_;
     // Parallel to frames_: the precomputed placed bounds for each frame's hands.
     std::vector<std::vector<HandBounds>> bounds_;
+    // Parallel to frames_: each hand's tracking/classification metadata.
+    std::vector<std::vector<HandMeta>> meta_;
     // Mean placed depth of frame 0, cached for the stabilisation reference.
     float reference_depth_ = 0.0f;
     // The original frame number per frame index, used to locate the image on disk.

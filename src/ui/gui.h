@@ -94,6 +94,14 @@ struct ImageViewResult {
     TransportState transport; // echoed transport state when this pane drew it
 };
 
+/// The "Hands" pane's filter toggles, passed in and echoed back with the user's
+/// edits. Hands are also coloured by track id in the scene (always on); this pane
+/// only controls which hands are hidden.
+struct HandPaneState {
+    bool hide_duplicates = true;
+    bool hide_adults = true;
+};
+
 /// Bake the bundled font for the UI and the FPS overlay. Returns (ui, fps),
 /// both the imgui default font if no .ttf is bundled in fonts/.
 std::pair<ImFont*, ImFont*> load_fonts(ImGuiIO& io);
@@ -116,3 +124,7 @@ ViewportResult draw_viewport_window(
 /// are set the transport bar is drawn here too, so the player follows whichever
 /// pane the mouse is on; the result's ``transport`` carries any user changes back.
 ImageViewResult draw_image_window(const char* title, unsigned int texture, int texture_width, int texture_height, ImGuiID dock_id, const Transport& transport);
+
+/// Draw the dockable "Hands" pane with the hide-duplicates / hide-adults filter
+/// checkboxes. Returns the (possibly toggled) state.
+HandPaneState draw_hand_pane(HandPaneState state, ImGuiID dock_id);

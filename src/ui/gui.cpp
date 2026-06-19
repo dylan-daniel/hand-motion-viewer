@@ -471,3 +471,12 @@ ImageViewResult draw_image_window(const char* title, unsigned int texture, int t
     ImGui::PopStyleVar();
     return {hovered, focused, echo};
 }
+
+HandPaneState draw_hand_pane(HandPaneState state, ImGuiID dock_id) {
+    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Hands");
+    ImGui::Checkbox("Hide duplicates", &state.hide_duplicates);
+    ImGui::Checkbox("Hide adult hands", &state.hide_adults);
+    ImGui::End();
+    return state;
+}

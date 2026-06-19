@@ -36,6 +36,11 @@ namespace {
     }
 
     float to_float(const std::string& text) { return text.empty() ? 0.0f : std::stof(text); }
+
+    // Parse an integer field, falling back to ``fallback`` when the cell is empty.
+    // The track/classification columns are blank in trials whose classification
+    // pass hasn't run yet, so parsing them must not throw.
+    int to_int(const std::string& text, int fallback) { return text.empty() ? fallback : std::stoi(text); }
 } // namespace
 
 MeshSequence::MeshSequence(const std::string& csv_path) : csv_path_(csv_path) {
@@ -68,6 +73,9 @@ MeshSequence::MeshSequence(const std::string& csv_path) : csv_path_(csv_path) {
     const int trial_column = column_index("trial");
     const int frame_column = column_index("frame");
     const int hand_column = column_index("hand_idx");
+    const int track_column = column_index("track_id");
+    const int duplicate_column = column_index("is_duplicate");
+    const int baby_column = column_index("is_baby");
     const int right_column = column_index("is_right");
     const int beta_base = column_index("beta_0");
     const int gorient_base = column_index("gorient_0");
@@ -94,6 +102,7 @@ MeshSequence::MeshSequence(const std::string& csv_path) : csv_path_(csv_path) {
     struct FrameHand {
         ManoParams params;
         HandBounds bounds;
+        HandMeta meta;
     };
     std::map<int, std::vector<FrameHand>> by_frame;
     while (std::getline(file, line)) {
@@ -132,24 +141,38 @@ MeshSequence::MeshSequence(const std::string& csv_path) : csv_path_(csv_path) {
         bounds.placed_max = glm::vec3(to_float(fields[bbox_max_x]), to_float(fields[bbox_max_y]), to_float(fields[bbox_max_z]));
         bounds.placed_mean_z = to_float(fields[mean_z]);
 
-        by_frame[std::stoi(fields[frame_column])].push_back(FrameHand{std::move(params), bounds});
+        // When the classification columns are blank (not generated yet), default to
+        // an untracked, non-duplicate, shown hand so the trial still displays: id -1
+        // takes the default colour, and is_baby defaults true so "hide adults" keeps
+        // it visible rather than hiding every unclassified hand.
+        HandMeta meta;
+        meta.track_id = to_int(fields[track_column], -1);
+        meta.is_duplicate = to_int(fields[duplicate_column], 0) != 0;
+        meta.is_baby = to_int(fields[baby_column], 1) != 0;
+
+        by_frame[std::stoi(fields[frame_column])].push_back(FrameHand{std::move(params), bounds, meta});
     }
 
     frames_.reserve(by_frame.size());
     bounds_.reserve(by_frame.size());
+    meta_.reserve(by_frame.size());
     frame_numbers_.reserve(by_frame.size());
     for (auto& [frame_number, hands] : by_frame) {
         frame_numbers_.push_back(frame_number);
         std::vector<ManoParams> frame_params;
         std::vector<HandBounds> frame_bounds;
+        std::vector<HandMeta> frame_meta;
         frame_params.reserve(hands.size());
         frame_bounds.reserve(hands.size());
+        frame_meta.reserve(hands.size());
         for (FrameHand& hand : hands) {
             frame_params.push_back(std::move(hand.params));
             frame_bounds.push_back(hand.bounds);
+            frame_meta.push_back(hand.meta);
         }
         frames_.push_back(std::move(frame_params));
         bounds_.push_back(std::move(frame_bounds));
+        meta_.push_back(std::move(frame_meta));
     }
 
     // Stabilisation reference: frame 0's mean placed depth. Each hand contributes
@@ -164,11 +187,14 @@ MeshSequence::MeshSequence(const std::string& csv_path) : csv_path_(csv_path) {
     }
 }
 
-int MeshSequence::hand_count(int index) const {
-    if (index < 0 || index >= frame_count()) {
-        return 0;
+int MeshSequence::hand_count(int index, const HandFilter& filter) const {
+    int count = 0;
+    for (const HandMeta& meta : frame_meta(index)) {
+        if (hand_visible(meta, filter)) {
+            ++count;
+        }
     }
-    return static_cast<int>(frames_[static_cast<std::size_t>(index)].size());
+    return count;
 }
 
 const std::vector<HandBounds>& MeshSequence::frame_bounds(int index) const {
@@ -177,6 +203,14 @@ const std::vector<HandBounds>& MeshSequence::frame_bounds(int index) const {
         return empty;
     }
     return bounds_[static_cast<std::size_t>(index)];
+}
+
+const std::vector<HandMeta>& MeshSequence::frame_meta(int index) const {
+    static const std::vector<HandMeta> empty;
+    if (index < 0 || index >= frame_count()) {
+        return empty;
+    }
+    return meta_[static_cast<std::size_t>(index)];
 }
 
 std::string MeshSequence::frame_image_path(int index, const std::string& images_root) const {
@@ -197,19 +231,26 @@ std::string MeshSequence::frame_image_path(int index, const std::string& images_
     return jpg.string(); // caller treats a missing file as no image
 }
 
-Frame MeshSequence::load_frame(int index) const {
+Frame MeshSequence::load_frame(int index, const HandFilter& filter) const {
     Frame hands;
     if (index < 0 || index >= frame_count()) {
         return hands;
     }
     const std::vector<ManoParams>& params = frames_[static_cast<std::size_t>(index)];
+    const std::vector<HandMeta>& metas = meta_[static_cast<std::size_t>(index)];
     hands.reserve(params.size());
-    for (const ManoParams& hand_params : params) {
+    for (std::size_t hand_index = 0; hand_index < params.size(); ++hand_index) {
+        const HandMeta& meta = metas[hand_index];
+        if (!hand_visible(meta, filter)) {
+            continue;
+        }
+        const ManoParams& hand_params = params[hand_index];
         ManoHand mesh = mano_forward(hand_params);
         HandData hand;
         hand.verts = std::move(mesh.verts);
         hand.joints = std::move(mesh.joints);
         hand.is_right = hand_params.is_right;
+        hand.track_id = meta.track_id;
         hands.push_back(std::move(hand));
     }
     return hands;
@@ -228,6 +269,10 @@ Transform compute_transform(const MeshSequence& sequence) {
     // measured on those stabilized positions. The bounds are the placed AABBs read
     // from the CSV, so this needs no MANO forward pass (scale > 0, so a stabilized
     // AABB is just the placed AABB scaled — its min/max stay the min/max).
+    //
+    // Every hand contributes, regardless of the hide-duplicates/adults filter, so
+    // the framing is fixed: toggling a filter only hides hands, it never moves the
+    // ones that remain (and frame 0 always has hands, so centering can't collapse).
     const float reference = sequence.reference_depth();
 
     // Whole-scene X/Z bounds of frame 0's stabilized hands: used only to centre.

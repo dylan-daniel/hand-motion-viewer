@@ -449,6 +449,7 @@ int main(int, char**) {
             ImGui::DockBuilderSplitNode(dock_rest, ImGuiDir_Right, 0.25f / 0.75f, &dock_frame, &dock_scene);
 
             ImGui::DockBuilderDockWindow("Explorer", dock_explorer);
+            ImGui::DockBuilderDockWindow("Hands", dock_explorer);
             ImGui::DockBuilderDockWindow("Scene", dock_scene);
             ImGui::DockBuilderDockWindow("Frame View", dock_frame);
             ImGui::DockBuilderFinish(dock_id);
@@ -518,6 +519,10 @@ int main(int, char**) {
         // read from disk and uploaded synchronously here, but only when the frame
         // changes (loaded_frame tracks what current_gpu holds) so a paused frame
         // is not re-read every render tick.
+        // Which hands to hide, from the Hands pane (persisted). A change invalidates
+        // the cached transform and loaded frame below so they rebuild filtered.
+        const HandFilter filter{settings.hide_duplicates, settings.hide_adults};
+
         std::string status;
         if (sequence) {
             // The scene transform is derived from frame 0 so it stays fixed across
@@ -527,11 +532,11 @@ int main(int, char**) {
                 depth_reference = sequence->reference_depth();
             }
             if (current_frame != loaded_frame) {
-                Frame hands = sequence->load_frame(current_frame);
+                Frame hands = sequence->load_frame(current_frame, filter);
                 current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands));
                 loaded_frame = current_frame;
             }
-            const std::size_t hand_count = static_cast<std::size_t>(sequence->hand_count(current_frame));
+            const std::size_t hand_count = static_cast<std::size_t>(sequence->hand_count(current_frame, filter));
             char buffer[128];
             std::snprintf(
                 buffer, sizeof(buffer), "frame %d / %d - %zu hand%s", current_frame + 1, sequence->frame_count(), hand_count, hand_count == 1 ? "" : "s"
@@ -591,6 +596,17 @@ int main(int, char**) {
         }
         if (explorer_result.open_csv) {
             pending_open_csv = explorer_result.open_csv;
+        }
+
+        // Hands pane: filter toggles (hide duplicates / adults). A change reloads the
+        // current frame so the filter applies. The scene transform is deliberately
+        // left untouched (it measures all hands), so hiding a hand never moves the
+        // ones that remain.
+        const HandPaneState hands = draw_hand_pane(HandPaneState{settings.hide_duplicates, settings.hide_adults}, dock_id);
+        if (hands.hide_duplicates != settings.hide_duplicates || hands.hide_adults != settings.hide_adults) {
+            settings.hide_duplicates = hands.hide_duplicates;
+            settings.hide_adults = hands.hide_adults;
+            loaded_frame = -1;
         }
 
         if (has_sequence) {

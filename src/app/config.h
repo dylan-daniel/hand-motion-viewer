@@ -18,6 +18,8 @@ struct Config {
     bool show_camera_marker = false;          // whether the pink look-at marker ball is drawn
     bool free_camera = true;                  // use the first-person free camera instead of the orbit camera
     int active_pane = 0;                      // last focused pane / selected tab: 0 = Scene, 1 = Frame View
+    bool hide_duplicates = true;              // hide hands flagged as duplicate detections
+    bool hide_adults = true;                  // hide non-baby (adult) hands
 
     std::optional<std::string> data_folder;    // root folder the Explorer pane browses, if chosen
     std::vector<std::string> expanded_folders; // Explorer tree folders left expanded, restored on launch

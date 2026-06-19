@@ -388,7 +388,7 @@ PreparedFrame prepare_frame(const Frame& hands) {
     PreparedFrame prepared;
     prepared.reserve(hands.size());
     for (const HandData& hand : hands) {
-        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), DEFAULT_COLOR, hand.joints);
+        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), track_color(hand.track_id), hand.joints);
         double sum = 0.0;
         for (const glm::vec3& position : hand.verts) {
             sum += position.z;

@@ -74,6 +74,8 @@ Config load_config(const std::string& path) {
     read_field(data, "show_camera_marker", config.show_camera_marker);
     read_field(data, "free_camera", config.free_camera);
     read_field(data, "active_pane", config.active_pane);
+    read_field(data, "hide_duplicates", config.hide_duplicates);
+    read_field(data, "hide_adults", config.hide_adults);
 
     read_optional_string(data, "data_folder", config.data_folder);
     read_field(data, "expanded_folders", config.expanded_folders);
@@ -103,6 +105,8 @@ void save_config(const std::string& path, const Config& config) {
     data["show_camera_marker"] = config.show_camera_marker;
     data["free_camera"] = config.free_camera;
     data["active_pane"] = config.active_pane;
+    data["hide_duplicates"] = config.hide_duplicates;
+    data["hide_adults"] = config.hide_adults;
 
     data["data_folder"] = config.data_folder ? json(*config.data_folder) : json(nullptr);
     data["expanded_folders"] = config.expanded_folders;

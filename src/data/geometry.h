@@ -19,6 +19,12 @@ inline constexpr glm::ivec3 HAND_COLOR_8BIT = {166, 189, 219};
 // Tint applied to a part that carries no per-vertex colours of its own.
 inline constexpr glm::vec4 DEFAULT_COLOR = {0.6f, 0.75f, 0.9f, 1.0f};
 
+/// A distinct, stable surface colour for a hand's track id. ids spread around the
+/// hue wheel by the golden-ratio conjugate so consecutive tracks land far apart
+/// and stay distinguishable for any number of tracks. A negative id (untracked)
+/// returns DEFAULT_COLOR.
+glm::vec4 track_color(int track_id);
+
 // Target world-unit span a reference hand's largest extent is scaled to fit.
 // The grid spans +/-10 units, so a hand of this size sits comfortably on it.
 // Used by the sequence fit (compute_transform) as the one knob for the overall
