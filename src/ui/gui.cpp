@@ -310,6 +310,7 @@ void TransportIcons::load(const std::string& icons_dir) {
 MenuResult draw_menu_bar(MenuState state) {
     bool csv_requested = false;
     bool images_requested = false;
+    bool objects_requested = false;
 
     // Extra padding makes the bar taller; pop it right after begin so dropdown
     // contents don't grow too.
@@ -323,6 +324,9 @@ MenuResult draw_menu_bar(MenuState state) {
             }
             if (ImGui::MenuItem("Set Images Folder")) {
                 images_requested = true;
+            }
+            if (ImGui::MenuItem("Set Objects Folder")) {
+                objects_requested = true;
             }
             ImGui::EndMenu();
         }
@@ -363,7 +367,7 @@ MenuResult draw_menu_bar(MenuState state) {
 
         ImGui::EndMainMenuBar();
     }
-    return {state, csv_requested, images_requested};
+    return {state, csv_requested, images_requested, objects_requested};
 }
 
 ViewportResult draw_viewport_window(

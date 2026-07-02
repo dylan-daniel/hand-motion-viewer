@@ -84,6 +84,17 @@ public:
 
     int frame_count() const { return static_cast<int>(frames_.size()); }
 
+    /// The original 1-indexed CSV frame number for dense frame ``index`` (frame
+    /// numbers may have gaps; this maps a playback index back to it). Returns -1 for
+    /// an out-of-range index. Used to look up sidecar data keyed by frame number,
+    /// such as the tracked-cube poses.
+    int frame_number(int index) const {
+        if (index < 0 || index >= frame_count()) {
+            return -1;
+        }
+        return frame_numbers_[static_cast<std::size_t>(index)];
+    }
+
     const std::string& csv_path() const { return csv_path_; }
 
     /// The ``subject`` / ``trial`` keys read from the CSV, used to locate the

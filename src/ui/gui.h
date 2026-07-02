@@ -27,9 +27,10 @@ struct MenuState {
 };
 
 struct MenuResult {
-    MenuState state;               // the (possibly toggled) menu state
-    bool csv_requested = false;    // user picked "Open Trial CSV"
-    bool images_requested = false; // user picked "Set Images Folder"
+    MenuState state;                // the (possibly toggled) menu state
+    bool csv_requested = false;     // user picked "Open Trial CSV"
+    bool images_requested = false;  // user picked "Set Images Folder"
+    bool objects_requested = false; // user picked "Set Objects Folder"
 };
 
 /// Playback-transport state every pane that can host the player shares: passed in

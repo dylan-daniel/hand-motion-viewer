@@ -659,6 +659,15 @@ void render_scene(const Framebuffer& framebuffer, const Camera& camera, const Sc
         scene.frame->draw(scene.translucent, scene.transform, scene.reference_depth);
     }
 
+    // Tracked object (cube): one shared unit-cube mesh, placed by this frame's
+    // model matrix. Lit and opaque like the hand surface.
+    if (scene.cube != nullptr) {
+        set_lighting(true);
+        set_alpha(1.0f);
+        set_model(scene.cube_model);
+        scene.cube->draw();
+    }
+
     // Marker for the orbit camera's look-at point; drawn last so its
     // translucency blends over the scene.
     if (scene.show_camera_marker && camera.draws_marker()) {

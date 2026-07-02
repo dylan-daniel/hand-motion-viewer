@@ -94,6 +94,12 @@ MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha = std::
 /// expanded form for a closed mesh like the MANO hand.
 MeshArrays build_indexed_surface(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& color);
 
+/// Build an indexed unit cube spanning [-1, 1] on every axis, painted a uniform
+/// ``color``. The renderer scales and orients it per frame to draw a tracked OBB
+/// (see data/object_sequence.h); the fragment shader's flat per-facet normals give
+/// it crisp faces despite the shared corner vertices.
+MeshArrays build_unit_cube(const glm::vec4& color);
+
 // ── Shared MANO face topology ──────────────────
 
 /// Load the shared MANO face topology from ``mano_faces.bin`` once at startup.

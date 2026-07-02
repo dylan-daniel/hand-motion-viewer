@@ -198,6 +198,8 @@ struct SceneRender {
     const Transform* transform = nullptr; // fixed scene fit applied to every hand
     std::optional<float> reference_depth; // common plane every hand is depth-snapped to
     bool show_camera_marker = false;      // draw the orbit camera's look-at marker
+    const GpuMesh* cube = nullptr;        // tracked-object cube to draw; null draws none
+    glm::mat4 cube_model{1.0f};           // model matrix placing the cube this frame (see cube_model_matrix)
 };
 
 /// Render the grid and the active frame into the offscreen framebuffer. The

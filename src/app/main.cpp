@@ -21,6 +21,7 @@
 #include "app/window.h"
 #include "data/mano_model.h"
 #include "data/mesh_sequence.h"
+#include "data/object_sequence.h"
 #include "graphics/gl_loader.h"
 #include "graphics/image.h"
 #include "graphics/rendering.h"
@@ -148,6 +149,11 @@ int main(int, char**) {
     Framebuffer framebuffer;
     framebuffer.resize(win_width, win_height);
 
+    // Shared unit-cube mesh for the tracked object, built once. The per-frame pose
+    // is applied as a model matrix at draw time, so this geometry never changes.
+    // Held by pointer so its GL buffers can be freed before the context is torn down.
+    auto cube_mesh = std::make_unique<GpuMesh>(build_unit_cube(glm::vec4(0.95f, 0.55f, 0.15f, 1.0f)));
+
     // Decoded keypoint image for the current frame, shown in the "Frame View" pane.
     ImageTexture frame_image;
     // Which pane the playback transport rides on: 0 = Viewport, 1 = Frame View.
@@ -166,6 +172,9 @@ int main(int, char**) {
 
     // ── Sequence state ─────────────────────────
     std::unique_ptr<MeshSequence> sequence;
+    // The trial's tracked-object (cube) poses, loaded alongside the sequence from
+    // the objects folder when a sidecar ``cube_3d_<subject>_<trial>.csv`` exists.
+    std::unique_ptr<CubeSequence> cube_sequence;
     // GPU buffers for the frame currently on screen, rebuilt from disk whenever
     // the frame changes. loaded_frame tracks which frame current_gpu holds (-1 =
     // none) so we only re-read and re-upload when the frame actually advances.
@@ -184,6 +193,26 @@ int main(int, char**) {
     bool scrubbing = false;
     float playback_speed = settings.playback_speed;
     double playback_accumulator = 0.0;
+
+    // (Re)load the tracked-cube sidecar for the open sequence from the objects
+    // folder. A missing folder, missing sidecar, or parse error just leaves no cube
+    // (the hands still render). The sidecar is named cube_3d_<subject>_<trial>.csv.
+    auto reload_cube = [&]() {
+        cube_sequence.reset();
+        if (!sequence || !settings.objects_folder) {
+            return;
+        }
+        const std::filesystem::path path =
+            std::filesystem::path(*settings.objects_folder) / ("cube_3d_" + sequence->subject() + "_" + sequence->trial() + ".csv");
+        if (!std::filesystem::is_regular_file(path)) {
+            return;
+        }
+        try {
+            cube_sequence = std::make_unique<CubeSequence>(path.string());
+        } catch (const std::exception& error) {
+            std::printf("%s\n", error.what());
+        }
+    };
 
     auto open_sequence = [&](const std::string& csv_path, int start_frame) {
         std::unique_ptr<MeshSequence> opened;
@@ -205,6 +234,7 @@ int main(int, char**) {
         transform.reset();
         depth_reference.reset();
         current_frame = has_frames ? std::clamp(start_frame, 0, sequence->frame_count() - 1) : 0;
+        reload_cube();
     };
 
     // Reopen the last trial CSV if present.
@@ -237,6 +267,7 @@ int main(int, char**) {
     std::unique_ptr<pfd::open_file> csv_dialog;
     std::unique_ptr<pfd::select_folder> data_folder_dialog;
     std::unique_ptr<pfd::select_folder> images_folder_dialog;
+    std::unique_ptr<pfd::select_folder> objects_folder_dialog;
     // A CSV the Explorer asked to open, applied at the top of the next frame rather
     // than mid-frame: open_sequence frees current_gpu, and the render below still
     // holds a pointer to it, so opening inline would use freed memory.
@@ -462,6 +493,9 @@ int main(int, char**) {
         if (menu.images_requested && !images_folder_dialog) {
             images_folder_dialog = std::make_unique<pfd::select_folder>("Select images folder");
         }
+        if (menu.objects_requested && !objects_folder_dialog) {
+            objects_folder_dialog = std::make_unique<pfd::select_folder>("Select objects folder");
+        }
 
         // Poll with a zero timeout: pfd's ready() defaults to a 20ms wait that
         // blocks this thread every frame the dialog is open. A zero timeout
@@ -493,6 +527,17 @@ int main(int, char**) {
                 settings.images_folder = folder;
             }
             images_folder_dialog.reset();
+        }
+
+        // The chosen objects folder is where per-trial tracked-object CSVs live;
+        // persisted, and the open trial's cube is reloaded from it immediately.
+        if (objects_folder_dialog && objects_folder_dialog->ready(0)) {
+            const std::string folder = objects_folder_dialog->result();
+            if (!folder.empty()) {
+                settings.objects_folder = folder;
+                reload_cube();
+            }
+            objects_folder_dialog.reset();
         }
 
         // Apply a deferred Explorer open here, before the current frame's GPU
@@ -636,6 +681,19 @@ int main(int, char**) {
 
         ImGui::Render();
 
+        // Place this frame's tracked cube, if the trial has one and it was visible
+        // in this frame. The cube shares the hands' scene fit and depth snap so it
+        // sits correctly in the hand (see cube_model_matrix).
+        const GpuMesh* cube_ptr = nullptr;
+        glm::mat4 cube_model(1.0f);
+        if (cube_sequence && has_sequence) {
+            const std::optional<CubePose> pose = cube_sequence->pose_for_frame(sequence->frame_number(current_frame));
+            if (pose) {
+                cube_model = cube_model_matrix(*pose, transform ? &*transform : nullptr, depth_reference);
+                cube_ptr = cube_mesh.get();
+            }
+        }
+
         // ── Render scene into the offscreen texture, then the UI ──
         framebuffer.resize(viewport.width, viewport.height);
         render_scene(
@@ -647,6 +705,8 @@ int main(int, char**) {
                 .transform = transform ? &*transform : nullptr,
                 .reference_depth = depth_reference,
                 .show_camera_marker = settings.show_camera_marker,
+                .cube = cube_ptr,
+                .cube_model = cube_model,
             }
         );
 
@@ -687,6 +747,7 @@ int main(int, char**) {
     save_config(config_path, settings);
 
     // Release GPU resources before tearing down the GL context.
+    cube_mesh.reset();
     current_gpu.reset();
     sequence.reset();
     frame_image.clear();

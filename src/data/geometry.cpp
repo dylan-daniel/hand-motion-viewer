@@ -166,6 +166,35 @@ prepare_hand(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>&
     return prepared;
 }
 
+MeshArrays build_unit_cube(const glm::vec4& color) {
+    const std::vector<glm::vec3> verts = {
+        {-1, -1, -1},
+        {1, -1, -1},
+        {1, 1, -1},
+        {-1, 1, -1}, // back face (z = -1)
+        {-1, -1, 1},
+        {1, -1, 1},
+        {1, 1, 1},
+        {-1, 1, 1}, // front face (z = +1)
+    };
+    // Two triangles per face, wound CCW when viewed from outside.
+    const std::vector<glm::ivec3> faces = {
+        {0, 2, 1},
+        {0, 3, 2}, // back   (-z)
+        {4, 5, 6},
+        {4, 6, 7}, // front  (+z)
+        {0, 4, 7},
+        {0, 7, 3}, // left   (-x)
+        {1, 2, 6},
+        {1, 6, 5}, // right  (+x)
+        {0, 1, 5},
+        {0, 5, 4}, // bottom (-y)
+        {3, 7, 6},
+        {3, 6, 2}, // top    (+y)
+    };
+    return build_indexed_surface(verts, faces, color);
+}
+
 // ── Shared MANO face topology ──────────────────
 
 namespace {
