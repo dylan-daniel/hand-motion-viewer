@@ -231,6 +231,13 @@ std::string MeshSequence::frame_image_path(int index, const std::string& images_
     return jpg.string(); // caller treats a missing file as no image
 }
 
+int MeshSequence::frame_number(int index) const {
+    if (index < 0 || index >= frame_count()) {
+        return -1;
+    }
+    return frame_numbers_[static_cast<std::size_t>(index)];
+}
+
 Frame MeshSequence::load_frame(int index, const HandFilter& filter) const {
     Frame hands;
     if (index < 0 || index >= frame_count()) {

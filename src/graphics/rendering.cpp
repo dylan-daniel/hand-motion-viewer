@@ -659,6 +659,27 @@ void render_scene(const Framebuffer& framebuffer, const Camera& camera, const Sc
         scene.frame->draw(scene.translucent, scene.transform, scene.reference_depth);
     }
 
+    // SAM3+DA3 overlay: already stabilised per-hand, so only the scene fit
+    // Transform (scale + translate) is applied here, matching FrameGpu's model
+    // matrix at scale 1. Drawn as unlit points, colour-coded to stand out
+    // against the hand mesh.
+    if (scene.overlay_points != nullptr && !scene.overlay_points->empty()) {
+        glm::mat4 model(1.0f);
+        if (scene.transform != nullptr) {
+            model = glm::scale(model, glm::vec3(scene.transform->scale));
+            model = glm::translate(model, scene.transform->translate);
+        }
+        std::vector<float> points;
+        points.reserve(scene.overlay_points->size() * 7);
+        const glm::vec4 overlay_color(1.0f, 0.1f, 0.6f, 1.0f);
+        for (const glm::vec3& point : *scene.overlay_points) {
+            push_vertex(points, point, overlay_color);
+        }
+        glPointSize(2.5f);
+        draw_colored(GL_POINTS, points, model);
+        glPointSize(1.0f);
+    }
+
     // Marker for the orbit camera's look-at point; drawn last so its
     // translucency blends over the scene.
     if (scene.show_camera_marker && camera.draws_marker()) {

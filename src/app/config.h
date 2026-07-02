@@ -24,6 +24,11 @@ struct Config {
     std::optional<std::string> data_folder;    // root folder the Explorer pane browses, if chosen
     std::vector<std::string> expanded_folders; // Explorer tree folders left expanded, restored on launch
 
+    // Root folder holding sam3_cache/ and da3_cache/ (see data/hand_overlay.h),
+    // used to overlay an independent depth-based point cloud on the hands.
+    std::optional<std::string> hand_cache_root;
+    bool show_point_cloud = false; // whether the SAM3+DA3 overlay is drawn
+
     // Window placement. Position is stored relative to ``window_display``'s
     // top-left corner so the window returns to the right monitor next launch.
     std::optional<int> window_x;

@@ -100,6 +100,13 @@ public:
     /// then ``.png``; returns empty for an out-of-range index or an empty root.
     std::string frame_image_path(int index, const std::string& images_root) const;
 
+    /// The original frame number (the CSV's ``frame`` column value, which may
+    /// have gaps) for frame index ``index`` — the same numbering
+    /// frame_image_path uses to build ``frame_NNNN``, and what the
+    /// sam3_cache/da3_cache trees are keyed by. Returns -1 for an out-of-range
+    /// index.
+    int frame_number(int index) const;
+
     /// Regenerate the hands for frame ``index`` through the MANO layer, keeping
     /// only those that pass ``filter``. Returns an empty frame for an out-of-range
     /// index.

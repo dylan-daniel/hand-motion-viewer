@@ -310,6 +310,7 @@ void TransportIcons::load(const std::string& icons_dir) {
 MenuResult draw_menu_bar(MenuState state) {
     bool csv_requested = false;
     bool images_requested = false;
+    bool hand_cache_requested = false;
 
     // Extra padding makes the bar taller; pop it right after begin so dropdown
     // contents don't grow too.
@@ -324,6 +325,9 @@ MenuResult draw_menu_bar(MenuState state) {
             if (ImGui::MenuItem("Set Images Folder")) {
                 images_requested = true;
             }
+            if (ImGui::MenuItem("Set Hand Cache Folder")) {
+                hand_cache_requested = true;
+            }
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
@@ -333,6 +337,14 @@ MenuResult draw_menu_bar(MenuState state) {
             // camera lacks, so grey it out while free camera is on.
             ImGui::BeginDisabled(state.free_camera);
             ImGui::Checkbox("Camera Marker", &state.show_camera_marker);
+            ImGui::EndDisabled();
+            // Disabled (with a tooltip) when no sam3_cache/da3_cache data exists
+            // for the currently-loaded trial.
+            ImGui::BeginDisabled(!state.point_cloud_available);
+            ImGui::Checkbox("SAM3+DA3 Point Cloud", &state.show_point_cloud);
+            if (!state.point_cloud_available && ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("No matching sam3_cache/da3_cache data found for this trial");
+            }
             ImGui::EndDisabled();
             ImGui::EndMenu();
         }
@@ -363,7 +375,7 @@ MenuResult draw_menu_bar(MenuState state) {
 
         ImGui::EndMainMenuBar();
     }
-    return {state, csv_requested, images_requested};
+    return {state, csv_requested, images_requested, hand_cache_requested};
 }
 
 ViewportResult draw_viewport_window(

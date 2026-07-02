@@ -80,6 +80,9 @@ Config load_config(const std::string& path) {
     read_optional_string(data, "data_folder", config.data_folder);
     read_field(data, "expanded_folders", config.expanded_folders);
 
+    read_optional_string(data, "hand_cache_root", config.hand_cache_root);
+    read_field(data, "show_point_cloud", config.show_point_cloud);
+
     read_optional_int(data, "window_x", config.window_x);
     read_optional_int(data, "window_y", config.window_y);
     read_field(data, "window_width", config.window_width);
@@ -110,6 +113,9 @@ void save_config(const std::string& path, const Config& config) {
 
     data["data_folder"] = config.data_folder ? json(*config.data_folder) : json(nullptr);
     data["expanded_folders"] = config.expanded_folders;
+
+    data["hand_cache_root"] = config.hand_cache_root ? json(*config.hand_cache_root) : json(nullptr);
+    data["show_point_cloud"] = config.show_point_cloud;
 
     data["window_x"] = config.window_x ? json(*config.window_x) : json(nullptr);
     data["window_y"] = config.window_y ? json(*config.window_y) : json(nullptr);

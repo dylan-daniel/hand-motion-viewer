@@ -19,6 +19,7 @@
 
 #include "app/config.h"
 #include "app/window.h"
+#include "data/hand_overlay.h"
 #include "data/mano_model.h"
 #include "data/mesh_sequence.h"
 #include "graphics/gl_loader.h"
@@ -26,6 +27,8 @@
 #include "graphics/rendering.h"
 #include "ui/explorer.h"
 #include "ui/gui.h"
+
+#include <stb_image.h>
 
 namespace {
     // Frames advanced per second while the sequence is playing.
@@ -173,6 +176,14 @@ int main(int, char**) {
     int loaded_frame = -1;
     std::optional<Transform> transform;
     std::optional<float> depth_reference;
+    // SAM3+DA3 overlay: the point cloud for the currently-loaded frame's
+    // visible hands, and whether cache data exists at all for the open trial
+    // (drives the menu checkbox's enabled state). Rebuilt whenever the frame
+    // changes while the overlay is shown, or the overlay is freshly toggled on.
+    std::vector<glm::vec3> overlay_points;
+    int overlay_frame_loaded = -1;
+    bool overlay_cache_available = false;
+    CacheRoots cache_roots = resolve_cache_roots(settings.hand_cache_root.value_or(std::string()));
     int current_frame = 0;
     bool playing = false;
     // Countdown until the held left/right arrow steps again. Negative means no
@@ -205,6 +216,10 @@ int main(int, char**) {
         transform.reset();
         depth_reference.reset();
         current_frame = has_frames ? std::clamp(start_frame, 0, sequence->frame_count() - 1) : 0;
+
+        overlay_points.clear();
+        overlay_frame_loaded = -1;
+        overlay_cache_available = has_frames && cache_available_for(cache_roots, sequence->subject(), sequence->trial());
     };
 
     // Reopen the last trial CSV if present.
@@ -237,6 +252,7 @@ int main(int, char**) {
     std::unique_ptr<pfd::open_file> csv_dialog;
     std::unique_ptr<pfd::select_folder> data_folder_dialog;
     std::unique_ptr<pfd::select_folder> images_folder_dialog;
+    std::unique_ptr<pfd::select_folder> hand_cache_dialog;
     // A CSV the Explorer asked to open, applied at the top of the next frame rather
     // than mid-frame: open_sequence frees current_gpu, and the render below still
     // holds a pointer to it, so opening inline would use freed memory.
@@ -404,12 +420,15 @@ int main(int, char**) {
                 .hand_translucent = settings.hand_translucent,
                 .show_camera_marker = settings.show_camera_marker,
                 .free_camera = settings.free_camera,
+                .show_point_cloud = settings.show_point_cloud,
+                .point_cloud_available = overlay_cache_available,
                 .open_path = open_path_label,
             }
         );
         settings.hand_translucent = menu.state.hand_translucent;
         settings.show_camera_marker = menu.state.show_camera_marker;
         settings.free_camera = menu.state.free_camera;
+        settings.show_point_cloud = menu.state.show_point_cloud;
         if (settings.free_camera != was_free_camera) {
             if (settings.free_camera) {
                 free_cam.set_from_orbit(orbit_cam);
@@ -462,6 +481,9 @@ int main(int, char**) {
         if (menu.images_requested && !images_folder_dialog) {
             images_folder_dialog = std::make_unique<pfd::select_folder>("Select images folder");
         }
+        if (menu.hand_cache_requested && !hand_cache_dialog) {
+            hand_cache_dialog = std::make_unique<pfd::select_folder>("Select hand cache folder (containing sam3_cache/da3_cache)");
+        }
 
         // Poll with a zero timeout: pfd's ready() defaults to a 20ms wait that
         // blocks this thread every frame the dialog is open. A zero timeout
@@ -493,6 +515,19 @@ int main(int, char**) {
                 settings.images_folder = folder;
             }
             images_folder_dialog.reset();
+        }
+
+        // The chosen hand cache root is where sam3_cache/da3_cache live; re-resolve
+        // the overlay's cache roots and re-check availability for the open trial.
+        if (hand_cache_dialog && hand_cache_dialog->ready(0)) {
+            const std::string folder = hand_cache_dialog->result();
+            if (!folder.empty()) {
+                settings.hand_cache_root = folder;
+                cache_roots = resolve_cache_roots(folder);
+                overlay_cache_available = sequence && cache_available_for(cache_roots, sequence->subject(), sequence->trial());
+                overlay_frame_loaded = -1;
+            }
+            hand_cache_dialog.reset();
         }
 
         // Apply a deferred Explorer open here, before the current frame's GPU
@@ -531,10 +566,50 @@ int main(int, char**) {
                 transform = compute_transform(*sequence);
                 depth_reference = sequence->reference_depth();
             }
-            if (current_frame != loaded_frame) {
+            const bool need_mesh = current_frame != loaded_frame;
+            const bool need_overlay = settings.show_point_cloud && overlay_cache_available && current_frame != overlay_frame_loaded;
+            if (need_mesh || need_overlay) {
                 Frame hands = sequence->load_frame(current_frame, filter);
-                current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands));
-                loaded_frame = current_frame;
+                if (need_mesh) {
+                    current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands));
+                    loaded_frame = current_frame;
+                }
+                if (need_overlay) {
+                    overlay_points.clear();
+                    int img_width = 0;
+                    int img_height = 0;
+                    int channels = 0;
+                    const std::string image_path = sequence->frame_image_path(current_frame, settings.images_folder.value_or(std::string()));
+                    if (!image_path.empty() && stbi_info(image_path.c_str(), &img_width, &img_height, &channels)) {
+                        const int frame_number = sequence->frame_number(current_frame);
+                        // A frame's SAM3 cache holds one mask per side (left/right), not per
+                        // detected hand, so every visible hand on the same side would
+                        // otherwise reuse the identical mask anchored to its own (possibly
+                        // duplicate-detection) depth — replicating the same point cluster at
+                        // several different distances along the camera ray. Build it once per
+                        // side, from the first visible hand on that side.
+                        bool built_left = false;
+                        bool built_right = false;
+                        for (const HandData& hand : hands) {
+                            bool& built = hand.is_right ? built_right : built_left;
+                            if (built) {
+                                continue;
+                            }
+                            built = true;
+                            const std::vector<glm::vec3> hand_points = build_hand_overlay_points(
+                                cache_roots, sequence->subject(), sequence->trial(), frame_number, hand, img_width, img_height, depth_reference
+                            );
+                            overlay_points.insert(overlay_points.end(), hand_points.begin(), hand_points.end());
+                        }
+                    }
+                    overlay_frame_loaded = current_frame;
+                }
+            }
+            if (!settings.show_point_cloud && !overlay_points.empty()) {
+                // Toggled off: drop the built points and force a rebuild on re-enable
+                // (cheap; only happens on the user's own toggle, not every frame).
+                overlay_points.clear();
+                overlay_frame_loaded = -1;
             }
             const std::size_t hand_count = static_cast<std::size_t>(sequence->hand_count(current_frame, filter));
             char buffer[128];
@@ -647,6 +722,7 @@ int main(int, char**) {
                 .transform = transform ? &*transform : nullptr,
                 .reference_depth = depth_reference,
                 .show_camera_marker = settings.show_camera_marker,
+                .overlay_points = &overlay_points,
             }
         );
 

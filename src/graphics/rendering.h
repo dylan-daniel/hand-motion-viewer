@@ -198,6 +198,10 @@ struct SceneRender {
     const Transform* transform = nullptr; // fixed scene fit applied to every hand
     std::optional<float> reference_depth; // common plane every hand is depth-snapped to
     bool show_camera_marker = false;      // draw the orbit camera's look-at marker
+    // SAM3+DA3 overlay points, already rescaled into the visible hands' raw
+    // vertex space and depth-stabilised (see build_hand_overlay_points); only
+    // the scene fit Transform is applied at draw time, same as the mesh.
+    const std::vector<glm::vec3>* overlay_points = nullptr;
 };
 
 /// Render the grid and the active frame into the offscreen framebuffer. The

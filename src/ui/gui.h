@@ -23,13 +23,16 @@ struct MenuState {
     bool hand_translucent = false;
     bool show_camera_marker = false;
     bool free_camera = false;
-    std::string open_path; // currently-loaded trial CSV path, shown right-aligned in the bar (empty = none)
+    bool show_point_cloud = false;     // draw the SAM3+DA3 overlay points, when cache data is available
+    bool point_cloud_available = true; // whether the toggle should be enabled (cache found for this trial)
+    std::string open_path;             // currently-loaded trial CSV path, shown right-aligned in the bar (empty = none)
 };
 
 struct MenuResult {
-    MenuState state;               // the (possibly toggled) menu state
-    bool csv_requested = false;    // user picked "Open Trial CSV"
-    bool images_requested = false; // user picked "Set Images Folder"
+    MenuState state;                   // the (possibly toggled) menu state
+    bool csv_requested = false;        // user picked "Open Trial CSV"
+    bool images_requested = false;     // user picked "Set Images Folder"
+    bool hand_cache_requested = false; // user picked "Set Hand Cache Folder"
 };
 
 /// Playback-transport state every pane that can host the player shares: passed in
