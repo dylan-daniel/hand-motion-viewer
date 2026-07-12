@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -19,8 +20,10 @@
 
 #include "app/config.h"
 #include "app/window.h"
+#include "data/k_metric_table.h"
 #include "data/mano_model.h"
 #include "data/mesh_sequence.h"
+#include "data/production_log.h"
 #include "data/object_sequence.h"
 #include "graphics/gl_loader.h"
 #include "graphics/image.h"
@@ -149,10 +152,13 @@ int main(int, char**) {
     Framebuffer framebuffer;
     framebuffer.resize(win_width, win_height);
 
-    // Shared unit-cube mesh for the tracked object, built once. The per-frame pose
-    // is applied as a model matrix at draw time, so this geometry never changes.
-    // Held by pointer so its GL buffers can be freed before the context is torn down.
+    // Shared unit-cube/unit-sphere meshes for the tracked object, built once;
+    // which one is drawn is picked per frame by object_sequence's shape() (see
+    // data/object_sequence.h). The per-frame pose is applied as a model matrix
+    // at draw time, so this geometry never changes. Held by pointer so their GL
+    // buffers can be freed before the context is torn down.
     auto cube_mesh = std::make_unique<GpuMesh>(build_unit_cube(glm::vec4(0.95f, 0.55f, 0.15f, 1.0f)));
+    auto sphere_mesh = std::make_unique<GpuMesh>(build_unit_sphere(glm::vec4(0.95f, 0.55f, 0.15f, 1.0f)));
 
     // Decoded keypoint image for the current frame, shown in the "Frame View" pane.
     ImageTexture frame_image;
@@ -172,17 +178,30 @@ int main(int, char**) {
 
     // ── Sequence state ─────────────────────────
     std::unique_ptr<MeshSequence> sequence;
-    // The trial's tracked-object (cube) poses, loaded alongside the sequence from
-    // the objects folder when a sidecar ``cube_3d_<subject>_<trial>.csv`` exists.
-    std::unique_ptr<CubeSequence> cube_sequence;
+    // The trial's tracked-object (cube/sphere) pose sequence, fit from the SAM3
+    // + DA3 caches under the SAM3/DA3 folders (see data/object_sequence.h).
+    std::unique_ptr<TrackedObjectSequence> object_sequence;
+    // Whole-trial smoothed per-hand wrist depth (see
+    // MeshSequence::precompute_smoothed_wrist_depths), or null when smoothing
+    // is off / not yet computed — load_frame then resolves depth live,
+    // per-frame, as it always did before smoothing existed.
+    std::unique_ptr<std::vector<std::vector<float>>> smoothed_hand_depths;
     // GPU buffers for the frame currently on screen, rebuilt from disk whenever
     // the frame changes. loaded_frame tracks which frame current_gpu holds (-1 =
     // none) so we only re-read and re-upload when the frame actually advances.
     std::unique_ptr<FrameGpu> current_gpu;
     int loaded_frame = -1;
-    std::optional<Transform> transform;
-    std::optional<float> depth_reference;
     int current_frame = 0;
+    // Whether the currently-open trial's auto-detected focal length (see
+    // open_sequence) matches a focal length we actually have a calibrated
+    // k_metric for. Purely a display hint for the Camera pane — true (no
+    // warning) when a trial hasn't set it, e.g. before any CSV is opened.
+    bool intrinsics_calibrated = true;
+    // Whether the currently-open trial's object_shape/object_label/
+    // object_size_m came from an auto-detected production-log match (see
+    // open_sequence) rather than a manual/stale Object-pane setting. Purely
+    // a display hint, like intrinsics_calibrated above.
+    bool object_auto_detected = true;
     bool playing = false;
     // Countdown until the held left/right arrow steps again. Negative means no
     // arrow is currently held, so the next press steps immediately.
@@ -194,30 +213,74 @@ int main(int, char**) {
     float playback_speed = settings.playback_speed;
     double playback_accumulator = 0.0;
 
-    // (Re)load the tracked-cube sidecar for the open sequence from the objects
-    // folder. A missing folder, missing sidecar, or parse error just leaves no cube
-    // (the hands still render). The sidecar is named cube_3d_<subject>_<trial>.csv.
-    auto reload_cube = [&]() {
-        cube_sequence.reset();
-        if (!sequence || !settings.objects_folder) {
+    // The open trial's per-trial SAM3/DA3 ``arrays`` directory under a
+    // configured root folder, e.g. ``<sam3_folder>/<subject>/<trial>/arrays``
+    // — shared by reload_object (the tracked object) and the hand-depth
+    // config built before every load_frame call. Empty when no sequence is
+    // open, no root folder is configured, or the per-trial directory doesn't
+    // exist on disk.
+    auto trial_arrays_dir = [&](const std::optional<std::string>& folder) -> std::string {
+        if (!sequence || !folder) {
+            return {};
+        }
+        const std::filesystem::path dir = std::filesystem::path(*folder) / sequence->subject() / sequence->trial() / "arrays";
+        return std::filesystem::is_directory(dir) ? dir.string() : std::string();
+    };
+
+    // (Re)fit the tracked object for the open sequence from the SAM3/DA3
+    // folders. Missing folders, a missing per-trial ``arrays`` directory, or an
+    // object_shape of None just leaves no object (the hands still render).
+    // This backprojects+fits the WHOLE trial up front (see
+    // data/object_sequence.h for why it can't be done frame-by-frame), so it
+    // can take noticeably longer than opening the hand CSV for a long trial.
+    auto reload_object = [&]() {
+        object_sequence.reset();
+        const std::string sam3_dir = trial_arrays_dir(settings.sam3_folder);
+        const std::string da3_dir = trial_arrays_dir(settings.da3_folder);
+        if (!sequence || sam3_dir.empty() || da3_dir.empty() || settings.object_shape == 0) {
             return;
         }
-        const std::filesystem::path path =
-            std::filesystem::path(*settings.objects_folder) / ("cube_3d_" + sequence->subject() + "_" + sequence->trial() + ".csv");
-        if (!std::filesystem::is_regular_file(path)) {
+        std::vector<int> frame_numbers;
+        frame_numbers.reserve(static_cast<std::size_t>(sequence->frame_count()));
+        for (int index = 0; index < sequence->frame_count(); ++index) {
+            frame_numbers.push_back(sequence->frame_number(index));
+        }
+        const CameraIntrinsics intrinsics{
+            settings.intrinsics_fx, settings.intrinsics_fy, settings.intrinsics_cx, settings.intrinsics_cy, settings.intrinsics_k_metric
+        };
+        const ObjectShape shape = settings.object_shape == 1 ? ObjectShape::Cube : ObjectShape::Sphere;
+        const float smooth_sigma_frames = settings.smoothing_enabled ? 3.0f : 0.0f;
+        object_sequence = std::make_unique<TrackedObjectSequence>(
+            sam3_dir, da3_dir, settings.object_label, shape, settings.object_size_m, intrinsics, frame_numbers, smooth_sigma_frames
+        );
+    };
+
+    // (Re)compute the whole-trial smoothed hand wrist depths (see
+    // MeshSequence::precompute_smoothed_wrist_depths). Off when smoothing is
+    // disabled — load_frame then falls back to its original live per-frame
+    // resolution. Same up-front cost profile as reload_object: worth calling
+    // together whenever either might be stale.
+    auto reload_hand_smoothing = [&]() {
+        smoothed_hand_depths.reset();
+        if (!sequence || !settings.smoothing_enabled) {
             return;
         }
-        try {
-            cube_sequence = std::make_unique<CubeSequence>(path.string());
-        } catch (const std::exception& error) {
-            std::printf("%s\n", error.what());
-        }
+        const CameraIntrinsics intrinsics{
+            settings.intrinsics_fx, settings.intrinsics_fy, settings.intrinsics_cx, settings.intrinsics_cy, settings.intrinsics_k_metric
+        };
+        const HandDepthConfig depth_config{
+            settings.hand_depth_source == 1 ? HandDepthSource::Hamer : HandDepthSource::Da3, trial_arrays_dir(settings.sam3_folder),
+            trial_arrays_dir(settings.da3_folder)
+        };
+        smoothed_hand_depths =
+            std::make_unique<std::vector<std::vector<float>>>(sequence->precompute_smoothed_wrist_depths(intrinsics, depth_config, 3.0f));
     };
 
     auto open_sequence = [&](const std::string& csv_path, int start_frame) {
         std::unique_ptr<MeshSequence> opened;
+        const HandClassificationConfig classification_config{settings.tracking_folder.value_or(std::string()), settings.baby_hand_idx_folder.value_or(std::string())};
         try {
-            opened = std::make_unique<MeshSequence>(csv_path);
+            opened = std::make_unique<MeshSequence>(csv_path, classification_config);
         } catch (const std::exception& error) {
             std::printf("%s\n", error.what());
         }
@@ -231,10 +294,62 @@ int main(int, char**) {
         sequence = has_frames ? std::move(opened) : nullptr;
         current_gpu.reset();
         loaded_frame = -1;
-        transform.reset();
-        depth_reference.reset();
         current_frame = has_frames ? std::clamp(start_frame, 0, sequence->frame_count() - 1) : 0;
-        reload_cube();
+
+        // Auto-detect this trial's own camera calibration (focal length, and
+        // image size for the principal point) straight from the CSV, rather
+        // than leaving whatever the Camera pane had from a previously-open
+        // trial — different trials/exports can use different focal length
+        // overrides (see hamer_vggt_focal_cache). k_metric is only auto-filled
+        // when this focal length is one we actually have a calibrated value
+        // for (known_k_metric_for_focal_length); otherwise it's left as-is
+        // and flagged unverified in the Camera pane, since k_metric is not
+        // portable across focal lengths.
+        if (has_frames && sequence->focal_length_px() > 0.0f) {
+            settings.intrinsics_fx = sequence->focal_length_px();
+            settings.intrinsics_fy = sequence->focal_length_px();
+            settings.intrinsics_cx = sequence->image_width() * 0.5f;
+            settings.intrinsics_cy = sequence->image_height() * 0.5f;
+            // Prefer the per-(subject, trial) calibrated k_metric table (keyed
+            // by the actual trial, so two trials that happen to share a
+            // VGGT-estimated focal length still get their own value) over the
+            // hardcoded fx-based table.
+            const KMetricTable k_metric_table(settings.k_metric_csv.value_or(std::string()));
+            if (const std::optional<float> by_trial = k_metric_table.lookup(sequence->subject(), sequence->trial())) {
+                settings.intrinsics_k_metric = *by_trial;
+                intrinsics_calibrated = true;
+            } else if (const std::optional<float> by_fx = known_k_metric_for_focal_length(settings.intrinsics_fx)) {
+                settings.intrinsics_k_metric = *by_fx;
+                intrinsics_calibrated = true;
+            } else {
+                intrinsics_calibrated = false;
+            }
+        } else {
+            intrinsics_calibrated = true; // no CSV calibration info to check against
+        }
+
+        // Auto-detect the tracked object's shape/label/size from the study's
+        // production log (data/production_log.h), keyed by this trial's own
+        // subject/trial rather than left over from whatever trial was open
+        // before. A trial not in the log (or no production log configured)
+        // just keeps the Object pane's last manual setting, flagged
+        // unverified rather than guessed.
+        if (has_frames) {
+            const ProductionLog production_log(settings.production_csv.value_or(std::string()));
+            if (const std::optional<ObjectSizeInfo> info = production_log.lookup(sequence->subject(), sequence->trial())) {
+                settings.object_shape = info->shape;
+                settings.object_label = info->object_label;
+                settings.object_size_m = info->size_m;
+                object_auto_detected = true;
+            } else {
+                object_auto_detected = false;
+            }
+        } else {
+            object_auto_detected = true; // no CSV to check against
+        }
+
+        reload_object();
+        reload_hand_smoothing();
     };
 
     // Reopen the last trial CSV if present.
@@ -263,11 +378,17 @@ int main(int, char**) {
     }
 
     // Native pickers: a file picker for opening a trial CSV (menu), a folder picker
-    // for the Explorer's data-folder root, and a folder picker for the images root.
+    // for the Explorer's data-folder root, and folder pickers for the images/
+    // SAM3/DA3 roots.
     std::unique_ptr<pfd::open_file> csv_dialog;
     std::unique_ptr<pfd::select_folder> data_folder_dialog;
     std::unique_ptr<pfd::select_folder> images_folder_dialog;
-    std::unique_ptr<pfd::select_folder> objects_folder_dialog;
+    std::unique_ptr<pfd::select_folder> sam3_folder_dialog;
+    std::unique_ptr<pfd::select_folder> da3_folder_dialog;
+    std::unique_ptr<pfd::select_folder> tracking_folder_dialog;
+    std::unique_ptr<pfd::select_folder> baby_hand_idx_folder_dialog;
+    std::unique_ptr<pfd::open_file> k_metric_csv_dialog;
+    std::unique_ptr<pfd::open_file> production_csv_dialog;
     // A CSV the Explorer asked to open, applied at the top of the next frame rather
     // than mid-frame: open_sequence frees current_gpu, and the render below still
     // holds a pointer to it, so opening inline would use freed memory.
@@ -493,8 +614,25 @@ int main(int, char**) {
         if (menu.images_requested && !images_folder_dialog) {
             images_folder_dialog = std::make_unique<pfd::select_folder>("Select images folder");
         }
-        if (menu.objects_requested && !objects_folder_dialog) {
-            objects_folder_dialog = std::make_unique<pfd::select_folder>("Select objects folder");
+        if (menu.sam3_requested && !sam3_folder_dialog) {
+            sam3_folder_dialog = std::make_unique<pfd::select_folder>("Select SAM3 cache folder");
+        }
+        if (menu.da3_requested && !da3_folder_dialog) {
+            da3_folder_dialog = std::make_unique<pfd::select_folder>("Select DA3 cache folder");
+        }
+        if (menu.tracking_requested && !tracking_folder_dialog) {
+            tracking_folder_dialog = std::make_unique<pfd::select_folder>("Select tracking folder (tracks3_*.csv)");
+        }
+        if (menu.baby_hand_idx_requested && !baby_hand_idx_folder_dialog) {
+            baby_hand_idx_folder_dialog = std::make_unique<pfd::select_folder>("Select baby-hand-idx folder (*_hand_idx.csv)");
+        }
+        if (menu.k_metric_csv_requested && !k_metric_csv_dialog) {
+            k_metric_csv_dialog =
+                std::make_unique<pfd::open_file>("Select k_metric CSV", "", std::vector<std::string>{"CSV files", "*.csv", "All files", "*"});
+        }
+        if (menu.production_csv_requested && !production_csv_dialog) {
+            production_csv_dialog =
+                std::make_unique<pfd::open_file>("Select production log CSV", "", std::vector<std::string>{"CSV files", "*.csv", "All files", "*"});
         }
 
         // Poll with a zero timeout: pfd's ready() defaults to a 20ms wait that
@@ -529,15 +667,79 @@ int main(int, char**) {
             images_folder_dialog.reset();
         }
 
-        // The chosen objects folder is where per-trial tracked-object CSVs live;
-        // persisted, and the open trial's cube is reloaded from it immediately.
-        if (objects_folder_dialog && objects_folder_dialog->ready(0)) {
-            const std::string folder = objects_folder_dialog->result();
+        // The chosen SAM3/DA3 folders are where per-trial ``arrays`` caches live;
+        // persisted, and the open trial's tracked object + smoothed hand depths
+        // are refit from them immediately (see reload_object/reload_hand_smoothing).
+        if (sam3_folder_dialog && sam3_folder_dialog->ready(0)) {
+            const std::string folder = sam3_folder_dialog->result();
             if (!folder.empty()) {
-                settings.objects_folder = folder;
-                reload_cube();
+                settings.sam3_folder = folder;
+                reload_object();
+                reload_hand_smoothing();
+                loaded_frame = -1;
             }
-            objects_folder_dialog.reset();
+            sam3_folder_dialog.reset();
+        }
+        if (da3_folder_dialog && da3_folder_dialog->ready(0)) {
+            const std::string folder = da3_folder_dialog->result();
+            if (!folder.empty()) {
+                settings.da3_folder = folder;
+                reload_object();
+                reload_hand_smoothing();
+                loaded_frame = -1;
+            }
+            da3_folder_dialog.reset();
+        }
+
+        // The tracking/baby-hand-idx folders feed MeshSequence's constructor
+        // (see data/hand_classification.h), so a change reopens the current
+        // trial from scratch rather than just invalidating the loaded frame.
+        if (tracking_folder_dialog && tracking_folder_dialog->ready(0)) {
+            const std::string folder = tracking_folder_dialog->result();
+            if (!folder.empty()) {
+                settings.tracking_folder = folder;
+                if (sequence) {
+                    open_sequence(sequence->csv_path(), current_frame);
+                }
+            }
+            tracking_folder_dialog.reset();
+        }
+        if (baby_hand_idx_folder_dialog && baby_hand_idx_folder_dialog->ready(0)) {
+            const std::string folder = baby_hand_idx_folder_dialog->result();
+            if (!folder.empty()) {
+                settings.baby_hand_idx_folder = folder;
+                if (sequence) {
+                    open_sequence(sequence->csv_path(), current_frame);
+                }
+            }
+            baby_hand_idx_folder_dialog.reset();
+        }
+
+        // The k_metric CSV feeds open_sequence's intrinsics auto-detect (see
+        // above), so a change reopens the current trial to re-run that lookup
+        // against the newly-set table.
+        if (k_metric_csv_dialog && k_metric_csv_dialog->ready(0)) {
+            const std::vector<std::string> chosen = k_metric_csv_dialog->result();
+            if (!chosen.empty() && !chosen.front().empty()) {
+                settings.k_metric_csv = chosen.front();
+                if (sequence) {
+                    open_sequence(sequence->csv_path(), current_frame);
+                }
+            }
+            k_metric_csv_dialog.reset();
+        }
+
+        // The production log feeds open_sequence's object auto-detect (see
+        // above), so a change reopens the current trial to re-run that lookup.
+        if (production_csv_dialog && production_csv_dialog->ready(0)) {
+            const std::vector<std::string> chosen = production_csv_dialog->result();
+            if (!chosen.empty() && !chosen.front().empty()) {
+                settings.production_csv = chosen.front();
+                if (sequence) {
+                    open_sequence(sequence->csv_path(), current_frame);
+                }
+            }
+            production_csv_dialog.reset();
         }
 
         // Apply a deferred Explorer open here, before the current frame's GPU
@@ -565,19 +767,20 @@ int main(int, char**) {
         // changes (loaded_frame tracks what current_gpu holds) so a paused frame
         // is not re-read every render tick.
         // Which hands to hide, from the Hands pane (persisted). A change invalidates
-        // the cached transform and loaded frame below so they rebuild filtered.
+        // the loaded frame below so it rebuilds filtered.
         const HandFilter filter{settings.hide_duplicates, settings.hide_adults};
+        const CameraIntrinsics intrinsics{
+            settings.intrinsics_fx, settings.intrinsics_fy, settings.intrinsics_cx, settings.intrinsics_cy, settings.intrinsics_k_metric
+        };
+        const HandDepthConfig depth_config{
+            settings.hand_depth_source == 1 ? HandDepthSource::Hamer : HandDepthSource::Da3, trial_arrays_dir(settings.sam3_folder),
+            trial_arrays_dir(settings.da3_folder)
+        };
 
         std::string status;
         if (sequence) {
-            // The scene transform is derived from frame 0 so it stays fixed across
-            // the whole sequence regardless of which frame playback starts on.
-            if (!transform) {
-                transform = compute_transform(*sequence);
-                depth_reference = sequence->reference_depth();
-            }
             if (current_frame != loaded_frame) {
-                Frame hands = sequence->load_frame(current_frame, filter);
+                Frame hands = sequence->load_frame(current_frame, filter, intrinsics, depth_config, smoothed_hand_depths.get());
                 current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands));
                 loaded_frame = current_frame;
             }
@@ -644,14 +847,72 @@ int main(int, char**) {
         }
 
         // Hands pane: filter toggles (hide duplicates / adults). A change reloads the
-        // current frame so the filter applies. The scene transform is deliberately
-        // left untouched (it measures all hands), so hiding a hand never moves the
-        // ones that remain.
+        // current frame so the filter applies; each hand is placed independently
+        // (place_hand_metric), so hiding a hand never moves the ones that remain.
         const HandPaneState hands = draw_hand_pane(HandPaneState{settings.hide_duplicates, settings.hide_adults}, dock_id);
         if (hands.hide_duplicates != settings.hide_duplicates || hands.hide_adults != settings.hide_adults) {
             settings.hide_duplicates = hands.hide_duplicates;
             settings.hide_adults = hands.hide_adults;
             loaded_frame = -1;
+        }
+
+        // Camera pane: recording-camera intrinsics. A change reloads the current
+        // frame, since hand placement (place_hand_metric) depends on them.
+        const CameraPaneState camera_pane = draw_camera_pane(
+            CameraPaneState{
+                settings.intrinsics_fx, settings.intrinsics_fy, settings.intrinsics_cx, settings.intrinsics_cy, settings.intrinsics_k_metric,
+                intrinsics_calibrated, settings.hand_depth_source == 0, settings.smoothing_enabled
+            },
+            dock_id
+        );
+        if (camera_pane.fx != settings.intrinsics_fx || camera_pane.fy != settings.intrinsics_fy || camera_pane.cx != settings.intrinsics_cx ||
+            camera_pane.cy != settings.intrinsics_cy || camera_pane.k_metric != settings.intrinsics_k_metric) {
+            settings.intrinsics_fx = camera_pane.fx;
+            settings.intrinsics_fy = camera_pane.fy;
+            settings.intrinsics_cx = camera_pane.cx;
+            settings.intrinsics_cy = camera_pane.cy;
+            settings.intrinsics_k_metric = camera_pane.k_metric;
+            // Re-check the warning against a manual edit too: known only when
+            // this fx has a calibrated k_metric AND the pane's k_metric matches
+            // it (a hand-typed k_metric for an unrecognized fx isn't trusted).
+            const std::optional<float> known = known_k_metric_for_focal_length(settings.intrinsics_fx);
+            intrinsics_calibrated = known.has_value() && std::abs(*known - settings.intrinsics_k_metric) < 1e-4f;
+            // The hands themselves reload cheaply every frame (load_frame just
+            // takes the live intrinsics, no disk I/O), so this can happen on
+            // every drag tick. Refitting the tracked object / hand-depth
+            // smoothing, though, re-reads the whole trial's SAM3/DA3 caches
+            // and re-runs pose fitting for every frame -- deferred to
+            // intrinsics_committed (drag released) so a single drag gesture
+            // doesn't trigger that dozens of times and freeze the UI.
+            loaded_frame = -1;
+            if (camera_pane.intrinsics_committed) {
+                reload_object();
+                reload_hand_smoothing();
+            }
+        }
+        const int hand_depth_source = camera_pane.prefer_da3_hand_depth ? 0 : 1;
+        if (hand_depth_source != settings.hand_depth_source) {
+            settings.hand_depth_source = hand_depth_source;
+            loaded_frame = -1;
+            reload_hand_smoothing();
+        }
+        if (camera_pane.smoothing_enabled != settings.smoothing_enabled) {
+            settings.smoothing_enabled = camera_pane.smoothing_enabled;
+            loaded_frame = -1;
+            reload_object();
+            reload_hand_smoothing();
+        }
+
+        // Object pane: tracked-object shape/label/size. A change refits the
+        // whole trial's object pose sequence (see reload_object).
+        const ObjectPaneState object_pane =
+            draw_object_pane(ObjectPaneState{settings.object_label, settings.object_shape, settings.object_size_m, object_auto_detected}, dock_id);
+        if (object_pane.object_label != settings.object_label || object_pane.shape != settings.object_shape || object_pane.size_m != settings.object_size_m) {
+            settings.object_label = object_pane.object_label;
+            settings.object_shape = object_pane.shape;
+            settings.object_size_m = object_pane.size_m;
+            object_auto_detected = false; // a manual edit overrides the production-log match
+            reload_object();
         }
 
         if (has_sequence) {
@@ -681,18 +942,28 @@ int main(int, char**) {
 
         ImGui::Render();
 
-        // Place this frame's tracked cube, if the trial has one and it was visible
-        // in this frame. The cube shares the hands' scene fit and depth snap so it
-        // sits correctly in the hand (see cube_model_matrix).
-        const GpuMesh* cube_ptr = nullptr;
-        glm::mat4 cube_model(1.0f);
-        if (cube_sequence && has_sequence) {
-            const std::optional<CubePose> pose = cube_sequence->pose_for_frame(sequence->frame_number(current_frame));
+        // Place this frame's tracked object (cube or sphere, per object_sequence's
+        // shape), if the trial has one and it was fit for this frame. Placed in
+        // the same real-metric on-screen space the hands are (see
+        // data/object_sequence.h), so it sits correctly relative to them.
+        const GpuMesh* object_ptr = nullptr;
+        glm::mat4 object_model(1.0f);
+        if (object_sequence && has_sequence) {
+            const std::optional<CubePose> pose = object_sequence->pose_for_frame(sequence->frame_number(current_frame));
             if (pose) {
-                cube_model = cube_model_matrix(*pose, transform ? &*transform : nullptr, depth_reference);
-                cube_ptr = cube_mesh.get();
+                object_model = cube_model_matrix(*pose);
+                object_ptr = object_sequence->shape() == ObjectShape::Sphere ? sphere_mesh.get() : cube_mesh.get();
             }
         }
+
+        // NOTE: the interactive camera intentionally does NOT use the recording
+        // camera's own FOV (2*atan(height/(2*fy)), ~9 degrees at this study's
+        // fx=6900) — that's an extreme telephoto lens, correct for a fixed-
+        // position comparison render but unusable for free-fly navigation (it
+        // reads as near-orthographic and disorienting). SceneRender.fov_y_degrees
+        // defaults to a normal 45 degrees for interactive use; only pass the
+        // intrinsics-derived FOV when driving a fixed side-by-side comparison
+        // against a render_scene_video.py still.
 
         // ── Render scene into the offscreen texture, then the UI ──
         framebuffer.resize(viewport.width, viewport.height);
@@ -702,11 +973,9 @@ int main(int, char**) {
             SceneRender{
                 .frame = frame_ptr,
                 .translucent = settings.hand_translucent,
-                .transform = transform ? &*transform : nullptr,
-                .reference_depth = depth_reference,
                 .show_camera_marker = settings.show_camera_marker,
-                .cube = cube_ptr,
-                .cube_model = cube_model,
+                .cube = object_ptr,
+                .cube_model = object_model,
             }
         );
 
@@ -748,6 +1017,7 @@ int main(int, char**) {
 
     // Release GPU resources before tearing down the GL context.
     cube_mesh.reset();
+    sphere_mesh.reset();
     current_gpu.reset();
     sequence.reset();
     frame_image.clear();

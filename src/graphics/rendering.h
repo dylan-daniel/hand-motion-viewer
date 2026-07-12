@@ -56,26 +56,24 @@ struct HandGpu {
     std::unique_ptr<GpuMesh> hand;
 };
 
-// A frame's prepared CPU arrays for one hand: GPU-ready mesh and mean depth.
+// A frame's prepared CPU arrays for one hand: GPU-ready mesh.
 struct PreparedHand {
     PreparedMesh mesh;
-    float depth = 0.0f;
 };
 using PreparedFrame = std::vector<PreparedHand>;
 
-/// GPU buffers for every hand of one sequence frame, drawn as a unit.
+/// GPU buffers for every hand of one sequence frame, drawn as a unit. Each hand
+/// is already placed in real metric scene space (see data/mano_model.h's
+/// place_hand_metric), so drawing applies no further scene-wide transform.
 class FrameGpu {
 public:
     explicit FrameGpu(const PreparedFrame& prepared_hands);
 
     /// Draw the frame's hands as a unit.
-    void draw(bool translucent, const Transform* transform, std::optional<float> reference_depth) const;
+    void draw(bool translucent) const;
 
 private:
-    glm::mat4 hand_matrix(const Transform* transform, float scale) const;
-
     std::vector<HandGpu> hands_;
-    std::vector<float> depths_;
 };
 
 /// Expand a frame's hands into GPU-ready arrays plus each hand's mean depth.
@@ -176,7 +174,11 @@ public:
     float pitch() const { return pitch_; }
 
 private:
-    std::array<float, 3> position_ = {0.0f, 2.0f, 6.0f};
+    // Defaults to the recording camera's own origin, looking down -Z (yaw=0,
+    // pitch=0 -> forward (0,0,-1)) — see render_scene_video.py's default
+    // ``--position 0 0 0 --target 0 0 -1``, so the viewer's initial view lines
+    // up with the real recording camera.
+    std::array<float, 3> position_ = {0.0f, 0.0f, 0.0f};
     float yaw_ = 0.0f;
     float pitch_ = 0.0f;
 };
@@ -193,13 +195,16 @@ void shutdown_renderer();
 /// are added here (not as another render_scene argument) and unused ones can be
 /// left out at the call site via designated initializers.
 struct SceneRender {
-    const FrameGpu* frame = nullptr;      // the hands to draw; null draws just the grid
-    bool translucent = false;             // draw the hand surface see-through
-    const Transform* transform = nullptr; // fixed scene fit applied to every hand
-    std::optional<float> reference_depth; // common plane every hand is depth-snapped to
-    bool show_camera_marker = false;      // draw the orbit camera's look-at marker
-    const GpuMesh* cube = nullptr;        // tracked-object cube to draw; null draws none
-    glm::mat4 cube_model{1.0f};           // model matrix placing the cube this frame (see cube_model_matrix)
+    const FrameGpu* frame = nullptr; // the hands to draw; null draws just the grid
+    bool translucent = false;        // draw the hand surface see-through
+    bool show_camera_marker = false; // draw the orbit camera's look-at marker
+    const GpuMesh* cube = nullptr;   // tracked-object cube to draw; null draws none
+    glm::mat4 cube_model{1.0f};      // model matrix placing the cube this frame (see cube_model_matrix)
+    // Vertical FOV in degrees. Default (45) is an arbitrary viewer default; pass
+    // the recording camera's own FOV (2*atan(height/(2*fy)), matching
+    // render_scene_video.py's ``--fov-y`` auto default) so the viewer's default
+    // camera view lines up with the real recording camera's framing.
+    float fov_y_degrees = 45.0f;
 };
 
 /// Render the grid and the active frame into the offscreen framebuffer. The

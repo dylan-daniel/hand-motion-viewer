@@ -1,9 +1,11 @@
 #include "data/mano_model.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
+#include <utility>
 
 namespace {
     // Fixed MANO dimensions. The exporter writes these in the header too and they
@@ -239,4 +241,40 @@ ManoHand mano_forward(const ManoParams& params) {
         joint = place(joint);
     }
     return hand;
+}
+
+std::optional<float> known_k_metric_for_focal_length(float fx) {
+    static constexpr std::array<std::pair<float, float>, 2> known = {{
+        {6900.0f, 0.354f},
+        {3963.732421875f, 0.579f},
+    }};
+    for (const auto& [known_fx, k_metric] : known) {
+        if (std::abs(fx - known_fx) < 1.0f) {
+            return k_metric;
+        }
+    }
+    return std::nullopt;
+}
+
+ManoHand mano_forward_local(const ManoParams& params) {
+    ManoParams local = params;
+    local.cam_t = glm::vec3(0.0f);
+    return mano_forward(local);
+}
+
+std::vector<glm::vec3> place_hand_metric(
+    const std::vector<glm::vec3>& local_points, const glm::vec3& local_wrist, const glm::vec2& wrist_uv, float raw_cam_t_z, float z_metric,
+    const CameraIntrinsics& intrinsics
+) {
+    const float x_metric = (wrist_uv.x - intrinsics.cx) * z_metric / intrinsics.fx;
+    const float y_metric = (wrist_uv.y - intrinsics.cy) * z_metric / intrinsics.fy;
+    const glm::vec3 metric_wrist(x_metric, -y_metric, -z_metric);
+    const float scale = raw_cam_t_z != 0.0f ? z_metric / raw_cam_t_z : 1.0f;
+
+    std::vector<glm::vec3> placed;
+    placed.reserve(local_points.size());
+    for (const glm::vec3& point : local_points) {
+        placed.push_back(scale * (point - local_wrist) + metric_wrist);
+    }
+    return placed;
 }

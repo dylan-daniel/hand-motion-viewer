@@ -67,7 +67,6 @@ Config load_config(const std::string& path) {
 
     read_optional_string(data, "last_folder", config.last_folder);
     read_optional_string(data, "images_folder", config.images_folder);
-    read_optional_string(data, "objects_folder", config.objects_folder);
     read_field(data, "last_frame", config.last_frame);
     read_field(data, "playback_speed", config.playback_speed);
     read_field(data, "hand_translucent", config.hand_translucent);
@@ -92,6 +91,25 @@ Config load_config(const std::string& path) {
     read_field(data, "camera_elevation", config.camera_elevation);
     read_field(data, "camera_distance", config.camera_distance);
     read_field(data, "camera_target", config.camera_target);
+
+    read_field(data, "intrinsics_fx", config.intrinsics_fx);
+    read_field(data, "intrinsics_fy", config.intrinsics_fy);
+    read_field(data, "intrinsics_cx", config.intrinsics_cx);
+    read_field(data, "intrinsics_cy", config.intrinsics_cy);
+    read_field(data, "intrinsics_k_metric", config.intrinsics_k_metric);
+    read_field(data, "hand_depth_source", config.hand_depth_source);
+    read_field(data, "smoothing_enabled", config.smoothing_enabled);
+
+    read_optional_string(data, "sam3_folder", config.sam3_folder);
+    read_optional_string(data, "da3_folder", config.da3_folder);
+    read_field(data, "object_label", config.object_label);
+    read_field(data, "object_shape", config.object_shape);
+    read_field(data, "object_size_m", config.object_size_m);
+
+    read_optional_string(data, "tracking_folder", config.tracking_folder);
+    read_optional_string(data, "baby_hand_idx_folder", config.baby_hand_idx_folder);
+    read_optional_string(data, "k_metric_csv", config.k_metric_csv);
+    read_optional_string(data, "production_csv", config.production_csv);
     return config;
 }
 
@@ -99,7 +117,6 @@ void save_config(const std::string& path, const Config& config) {
     json data;
     data["last_folder"] = config.last_folder ? json(*config.last_folder) : json(nullptr);
     data["images_folder"] = config.images_folder ? json(*config.images_folder) : json(nullptr);
-    data["objects_folder"] = config.objects_folder ? json(*config.objects_folder) : json(nullptr);
     data["last_frame"] = config.last_frame;
     data["playback_speed"] = config.playback_speed;
     data["hand_translucent"] = config.hand_translucent;
@@ -124,6 +141,25 @@ void save_config(const std::string& path, const Config& config) {
     data["camera_elevation"] = config.camera_elevation;
     data["camera_distance"] = config.camera_distance;
     data["camera_target"] = config.camera_target;
+
+    data["intrinsics_fx"] = config.intrinsics_fx;
+    data["intrinsics_fy"] = config.intrinsics_fy;
+    data["intrinsics_cx"] = config.intrinsics_cx;
+    data["intrinsics_cy"] = config.intrinsics_cy;
+    data["intrinsics_k_metric"] = config.intrinsics_k_metric;
+    data["hand_depth_source"] = config.hand_depth_source;
+    data["smoothing_enabled"] = config.smoothing_enabled;
+
+    data["sam3_folder"] = config.sam3_folder ? json(*config.sam3_folder) : json(nullptr);
+    data["da3_folder"] = config.da3_folder ? json(*config.da3_folder) : json(nullptr);
+    data["object_label"] = config.object_label;
+    data["object_shape"] = config.object_shape;
+    data["object_size_m"] = config.object_size_m;
+
+    data["tracking_folder"] = config.tracking_folder ? json(*config.tracking_folder) : json(nullptr);
+    data["baby_hand_idx_folder"] = config.baby_hand_idx_folder ? json(*config.baby_hand_idx_folder) : json(nullptr);
+    data["k_metric_csv"] = config.k_metric_csv ? json(*config.k_metric_csv) : json(nullptr);
+    data["production_csv"] = config.production_csv ? json(*config.production_csv) : json(nullptr);
 
     std::ofstream config_file(path);
     if (config_file) {

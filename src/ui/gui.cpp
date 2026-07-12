@@ -310,7 +310,12 @@ void TransportIcons::load(const std::string& icons_dir) {
 MenuResult draw_menu_bar(MenuState state) {
     bool csv_requested = false;
     bool images_requested = false;
-    bool objects_requested = false;
+    bool sam3_requested = false;
+    bool da3_requested = false;
+    bool tracking_requested = false;
+    bool baby_hand_idx_requested = false;
+    bool k_metric_csv_requested = false;
+    bool production_csv_requested = false;
 
     // Extra padding makes the bar taller; pop it right after begin so dropdown
     // contents don't grow too.
@@ -325,8 +330,23 @@ MenuResult draw_menu_bar(MenuState state) {
             if (ImGui::MenuItem("Set Images Folder")) {
                 images_requested = true;
             }
-            if (ImGui::MenuItem("Set Objects Folder")) {
-                objects_requested = true;
+            if (ImGui::MenuItem("Set SAM3 Folder")) {
+                sam3_requested = true;
+            }
+            if (ImGui::MenuItem("Set DA3 Folder")) {
+                da3_requested = true;
+            }
+            if (ImGui::MenuItem("Set Tracking Folder")) {
+                tracking_requested = true;
+            }
+            if (ImGui::MenuItem("Set Baby-Hand-Idx Folder")) {
+                baby_hand_idx_requested = true;
+            }
+            if (ImGui::MenuItem("Set K-Metric CSV")) {
+                k_metric_csv_requested = true;
+            }
+            if (ImGui::MenuItem("Set Production Log CSV")) {
+                production_csv_requested = true;
             }
             ImGui::EndMenu();
         }
@@ -367,7 +387,10 @@ MenuResult draw_menu_bar(MenuState state) {
 
         ImGui::EndMainMenuBar();
     }
-    return {state, csv_requested, images_requested, objects_requested};
+    return {
+        state,     csv_requested,   images_requested,        sam3_requested,        da3_requested,
+        tracking_requested, baby_hand_idx_requested, k_metric_csv_requested, production_csv_requested
+    };
 }
 
 ViewportResult draw_viewport_window(
@@ -481,6 +504,83 @@ HandPaneState draw_hand_pane(HandPaneState state, ImGuiID dock_id) {
     ImGui::Begin("Hands");
     ImGui::Checkbox("Hide duplicates", &state.hide_duplicates);
     ImGui::Checkbox("Hide adult hands", &state.hide_adults);
+    ImGui::End();
+    return state;
+}
+
+CameraPaneState draw_camera_pane(CameraPaneState state, ImGuiID dock_id) {
+    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Camera");
+    ImGui::TextUnformatted("Recording-camera intrinsics (pixels)");
+    state.intrinsics_committed = false;
+    ImGui::DragFloat("fx", &state.fx, 1.0f, 1.0f, 20000.0f);
+    state.intrinsics_committed |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::DragFloat("fy", &state.fy, 1.0f, 1.0f, 20000.0f);
+    state.intrinsics_committed |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::DragFloat("cx", &state.cx, 1.0f, 0.0f, 8000.0f);
+    state.intrinsics_committed |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::DragFloat("cy", &state.cy, 1.0f, 0.0f, 8000.0f);
+    state.intrinsics_committed |= ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::Separator();
+    ImGui::DragFloat("k_metric", &state.k_metric, 0.001f, 0.01f, 5.0f);
+    state.intrinsics_committed |= ImGui::IsItemDeactivatedAfterEdit();
+    if (!state.calibrated) {
+        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "k_metric not verified for this focal length");
+        ImGui::TextWrapped("fx/fy/cx/cy were auto-detected from the trial's CSV, but k_metric is not portable across "
+                            "focal lengths -- the value shown is whatever was set before opening this trial. Hand "
+                            "depth/size will be wrong until a real calibration for this focal length is known.");
+    }
+    ImGui::Separator();
+    ImGui::Checkbox("Prefer DA3 depth for hands", &state.prefer_da3_hand_depth);
+    ImGui::TextWrapped(
+        state.prefer_da3_hand_depth ? "Samples the wrist depth from the DA3 depth map (needs SAM3/DA3 folders set), "
+                                       "falling back to k_metric * cam_t.z per hand/frame when no robust sample exists."
+                                     : "Always uses k_metric * cam_t.z (HaMeR's own depth) -- ignores DA3 for hand "
+                                       "placement even if SAM3/DA3 folders are set. The tracked object is unaffected "
+                                       "either way; it always uses DA3."
+    );
+    ImGui::Separator();
+    ImGui::Checkbox("Temporal smoothing (sigma=3 frames)", &state.smoothing_enabled);
+    ImGui::TextWrapped(
+        state.smoothing_enabled
+            ? "Hand wrist depth and the tracked object's pose are each Gaussian-smoothed across the whole trial "
+              "(matching render_scene_video.py's default). Loading/reloading the trial takes noticeably longer."
+            : "Each frame keeps its own raw resolved depth/pose -- no whole-trial smoothing pass, faster to (re)load."
+    );
+    ImGui::End();
+    return state;
+}
+
+ObjectPaneState draw_object_pane(ObjectPaneState state, ImGuiID dock_id) {
+    ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
+    ImGui::Begin("Object");
+    static constexpr const char* SHAPE_NAMES[3] = {"None", "Cube", "Sphere"};
+    if (ImGui::BeginCombo("Shape", SHAPE_NAMES[std::clamp(state.shape, 0, 2)])) {
+        for (int shape = 0; shape < 3; ++shape) {
+            const bool selected = state.shape == shape;
+            if (ImGui::Selectable(SHAPE_NAMES[shape], selected)) {
+                state.shape = shape;
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    char label_buffer[64];
+    std::snprintf(label_buffer, sizeof(label_buffer), "%s", state.object_label.c_str());
+    if (ImGui::InputText("SAM3 label", label_buffer, sizeof(label_buffer))) {
+        state.object_label = label_buffer;
+    }
+    ImGui::DragFloat("Size (m)", &state.size_m, 0.001f, 0.001f, 1.0f, "%.3f");
+    ImGui::TextDisabled("Sphere: diameter. Cube: edge length.");
+    if (state.auto_detected) {
+        ImGui::TextDisabled("Auto-detected from the production log for this trial.");
+    } else {
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "Not found in the production log -- set manually, or set File > Set Production Log CSV."
+        );
+    }
     ImGui::End();
     return state;
 }

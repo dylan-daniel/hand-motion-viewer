@@ -53,34 +53,54 @@ inline bool hand_visible(const HandMeta& meta, const HandFilter& filter) {
     return true;
 }
 
-/// A fixed translate-then-scale that frames the whole sequence on the grid.
-struct Transform {
-    glm::vec3 translate;
-    float scale;
-};
-
 using Frame = std::vector<HandData>;
 
-/// Per-hand placed-space stats precomputed in the CSV: the axis-aligned bounding
-/// box and mean depth of the hand's placed vertices (post the place() transform,
-/// pre depth-stabilisation). These let the scene fit (compute_transform) and the
-/// stabilisation reference be derived without running the MANO forward pass on
-/// every frame. See data/SAVE_ALL.md for the ``placed_bbox_*`` / ``placed_mean_z``
-/// columns.
-struct HandBounds {
-    glm::vec3 placed_min{0.0f};
-    glm::vec3 placed_max{0.0f};
-    float placed_mean_z = 0.0f;
+/// Where a hand's per-frame wrist depth comes from — mirrors
+/// render_scene_video.py's ``--hand-depth-source`` flag. ``Da3`` (the
+/// Python default) prefers a DA3 depth-map sample at the wrist pixel,
+/// falling back to HaMeR's own ``k_metric * cam_t.z`` when no robust sample
+/// exists (missing DA3/SAM3 data, or too few valid pixels in the sampling
+/// disk — see object_fit.h's sample_wrist_depth_da3). ``Hamer`` always uses
+/// ``k_metric * cam_t.z``, ignoring DA3 entirely for hand placement (the
+/// tracked object is unaffected either way — it always uses DA3).
+enum class HandDepthSource { Da3, Hamer };
+
+/// Per-trial DA3/SAM3 ``arrays`` directories plus which depth source to
+/// prefer, passed to MeshSequence::load_frame. An empty ``sam3_dir``/
+/// ``da3_dir`` makes ``Da3`` silently behave like ``Hamer`` (nothing to
+/// sample), the same missing-folder tolerance data/object_sequence.h's
+/// tracked-object pipeline has.
+struct HandDepthConfig {
+    HandDepthSource source = HandDepthSource::Da3;
+    std::string sam3_dir;
+    std::string da3_dir;
+};
+
+/// Per-trial sidecar folders used to recover a stable track id and the
+/// duplicate/baby classification hamer_cache's own CSV doesn't carry (see
+/// data/hand_classification.h). Either left empty falls back to whatever
+/// hamer_cache's own track_id/is_duplicate/is_baby columns say (usually
+/// absent, in which case every hand is untracked and treated as a
+/// non-duplicate baby hand — see MeshSequence's constructor).
+struct HandClassificationConfig {
+    std::string tracking_dir;
+    std::string baby_hand_idx_dir;
 };
 
 /// One trial's hand motion, parsed from its CSV once at construction. Holds the
 /// per-frame MANO parameters; ``load_frame`` regenerates a frame's hand geometry
-/// from them each time it is called (no caching, no background threads).
+/// from them each time it is called (no caching, no background threads). Each
+/// hand is placed independently in real metric space (see
+/// data/mano_model.h's place_hand_metric) — there is no scene-wide fit/transform.
 class MeshSequence {
 public:
-    /// ``csv_path`` is a trial's ``*.csv`` file. Throws if it cannot be opened;
-    /// leaves an empty sequence (frame_count 0) if the CSV has no hands.
-    explicit MeshSequence(const std::string& csv_path);
+    /// ``csv_path`` is a trial's raw ``hamer_collect.py`` CSV. Throws if it cannot
+    /// be opened; leaves an empty sequence (frame_count 0) if the CSV has no hands.
+    /// ``classification_config``, if its directories are set, overrides each
+    /// hand's track_id/is_duplicate/is_baby with the tracker-CSV/baby-hand-idx
+    /// join (see data/hand_classification.h) instead of the CSV's own (usually
+    /// absent) columns.
+    explicit MeshSequence(const std::string& csv_path, const HandClassificationConfig& classification_config = {});
 
     int frame_count() const { return static_cast<int>(frames_.size()); }
 
@@ -111,22 +131,53 @@ public:
     /// then ``.png``; returns empty for an out-of-range index or an empty root.
     std::string frame_image_path(int index, const std::string& images_root) const;
 
-    /// Regenerate the hands for frame ``index`` through the MANO layer, keeping
-    /// only those that pass ``filter``. Returns an empty frame for an out-of-range
+    /// Regenerate the hands for frame ``index`` through the MANO layer and metric
+    /// placement (place_hand_metric), keeping only those that pass ``filter``.
+    /// ``depth_config`` selects (and locates) the per-frame wrist-depth source;
+    /// defaults to DA3 with no folders set, i.e. the HaMeR fallback.
+    /// ``smoothed_depths`` (see precompute_smoothed_wrist_depths), if given,
+    /// overrides live per-frame depth resolution with a whole-trial-smoothed
+    /// value — pass the exact table precompute_smoothed_wrist_depths(intrinsics,
+    /// depth_config, ...) returned for THIS csv/intrinsics/depth_config, or the
+    /// two will silently disagree. Returns an empty frame for an out-of-range
     /// index.
-    Frame load_frame(int index, const HandFilter& filter = {}) const;
+    Frame load_frame(
+        int index, const HandFilter& filter, const CameraIntrinsics& intrinsics, const HandDepthConfig& depth_config = {},
+        const std::vector<std::vector<float>>* smoothed_depths = nullptr
+    ) const;
 
-    /// The precomputed placed bounds of frame ``index``'s hands (empty for an
-    /// out-of-range index). Read straight from the CSV, no MANO forward pass.
-    const std::vector<HandBounds>& frame_bounds(int index) const;
+    /// Whole-trial smoothed per-hand wrist depth, mirroring
+    /// render_scene_video.precompute_smoothed_depths's hand-only path: each
+    /// hand's raw depth is resolved exactly like load_frame's live per-frame
+    /// path (DA3 sample or HaMeR fallback, per ``depth_config``), then hands
+    /// are tracked across frames (object_fit.h's track_hand_sequences — a
+    /// CSV's hand_idx is not stable identity), DA3-less frames are filled
+    /// from that same track's own calibrated ratio
+    /// (fill_missing_depths_by_track), and the result is Gaussian-smoothed
+    /// per track by real frame-number distance (smooth_sequence).
+    /// ``sigma_frames`` <= 0 skips the final smoothing pass (fill only).
+    /// The returned table is indexed [frame_index][hand_position_in_that_frame]
+    /// — the same positional order load_frame iterates frames_ in, BEFORE
+    /// HandFilter is applied — and must be passed back to load_frame's
+    /// ``smoothed_depths`` verbatim.
+    std::vector<std::vector<float>> precompute_smoothed_wrist_depths(
+        const CameraIntrinsics& intrinsics, const HandDepthConfig& depth_config, float sigma_frames
+    ) const;
 
-    /// The tracking/classification metadata of frame ``index``'s hands, parallel to
-    /// frame_bounds (empty for an out-of-range index).
+    /// The tracking/classification metadata of frame ``index``'s hands (empty for
+    /// an out-of-range index).
     const std::vector<HandMeta>& frame_meta(int index) const;
 
-    /// Mean placed depth (z) of frame 0's hands — the common plane every other
-    /// frame's hands are depth-snapped onto. Derived from the CSV at construction.
-    float reference_depth() const { return reference_depth_; }
+    /// This trial's own ``scaled_focal_length`` (pixels) that hamer_collect.py
+    /// was run with — the CSV's own camera calibration, read straight from the
+    /// data rather than a Config default. 0 if the CSV predates this column.
+    float focal_length_px() const { return focal_length_px_; }
+
+    /// This trial's frame width/height (pixels), the CSV assumes the principal
+    /// point sits at the center of (see HAMER_COLLECT.md). 0 if the CSV
+    /// predates these columns.
+    float image_width() const { return image_width_; }
+    float image_height() const { return image_height_; }
 
 private:
     std::string csv_path_;
@@ -134,18 +185,12 @@ private:
     std::string trial_;   // ``trial`` key from the CSV (for locating images)
     // One entry per frame, each a list of the frame's hands' MANO parameters.
     std::vector<std::vector<ManoParams>> frames_;
-    // Parallel to frames_: the precomputed placed bounds for each frame's hands.
-    std::vector<std::vector<HandBounds>> bounds_;
     // Parallel to frames_: each hand's tracking/classification metadata.
     std::vector<std::vector<HandMeta>> meta_;
-    // Mean placed depth of frame 0, cached for the stabilisation reference.
-    float reference_depth_ = 0.0f;
     // The original frame number per frame index, used to locate the image on disk.
     std::vector<int> frame_numbers_;
+    // This trial's own camera calibration, captured from the first real row.
+    float focal_length_px_ = 0.0f;
+    float image_width_ = 0.0f;
+    float image_height_ = 0.0f;
 };
-
-/// Build the fixed transform that sits the sequence's hands on the grid and
-/// scales them to a comfortable size. Centering X/Z and the fit scale come from
-/// frame 0 so they stay put across playback, but the floor (Y) is the lowest
-/// point across *every* frame so no frame ever dips below the grid plane.
-Transform compute_transform(const MeshSequence& sequence);

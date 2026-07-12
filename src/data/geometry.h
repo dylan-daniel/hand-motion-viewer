@@ -25,12 +25,6 @@ inline constexpr glm::vec4 DEFAULT_COLOR = {0.6f, 0.75f, 0.9f, 1.0f};
 /// returns DEFAULT_COLOR.
 glm::vec4 track_color(int track_id);
 
-// Target world-unit span a reference hand's largest extent is scaled to fit.
-// The grid spans +/-10 units, so a hand of this size sits comfortably on it.
-// Used by the sequence fit (compute_transform) as the one knob for the overall
-// scene scale.
-inline constexpr float MODEL_FIT_SPAN = 1.0f;
-
 // ── MANO joint skeleton ────────────────────────
 // The reconstructed hand carries only the 21 joint positions, not the colored
 // sphere/bone geometry, so we regenerate that visualization here. The definitions
@@ -99,6 +93,12 @@ MeshArrays build_indexed_surface(const std::vector<glm::vec3>& verts, const std:
 /// (see data/object_sequence.h); the fragment shader's flat per-facet normals give
 /// it crisp faces despite the shared corner vertices.
 MeshArrays build_unit_cube(const glm::vec4& color);
+
+/// Build an indexed unit sphere (radius 1, centred at origin) painted a uniform
+/// ``color`` — a bare icosahedron (12 verts, 20 faces), the same low-poly shape
+/// used for the joint markers. The renderer scales it per frame to draw a
+/// tracked sphere (see data/object_sequence.h).
+MeshArrays build_unit_sphere(const glm::vec4& color);
 
 // ── Shared MANO face topology ──────────────────
 

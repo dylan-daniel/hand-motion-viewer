@@ -1,6 +1,9 @@
 #include "data/mesh_sequence.h"
 
 #include "data/geometry.h"
+#include "data/hand_classification.h"
+#include "data/npy_reader.h"
+#include "data/object_fit.h"
 
 #include <algorithm>
 #include <cctype>
@@ -16,6 +19,56 @@
 
 namespace {
     namespace fs = std::filesystem;
+
+    /// Path to one frame's cached array file, matching object_sequence.cpp's
+    /// own ``frame_file`` helper (kept separate since the two have no other
+    /// shared dependency).
+    std::string frame_array_file(const std::string& dir, int frame_number, const std::string& suffix) {
+        char name[64];
+        std::snprintf(name, sizeof(name), "frame_%04d_", frame_number);
+        return (fs::path(dir) / (std::string(name) + suffix)).string();
+    }
+
+    /// One frame's DA3 depth map + SAM3 hand-mask stacks (mirrors
+    /// render_scene_video.load_depth_frame / load_hand_mask_stacks), loaded
+    /// once and shared by every hand in the frame. Everything stays empty
+    /// (a silent HaMeR fallback everywhere it's used) unless the caller asked
+    /// for DA3 and both folders are set.
+    struct FrameDepthData {
+        std::optional<NpyDepthMap> depth;
+        std::optional<NpyMaskStack> right_masks;
+        std::optional<NpyMaskStack> left_masks;
+    };
+
+    FrameDepthData load_frame_depth_data(const HandDepthConfig& depth_config, int frame_number) {
+        FrameDepthData data;
+        if (depth_config.source == HandDepthSource::Da3 && !depth_config.sam3_dir.empty() && !depth_config.da3_dir.empty()) {
+            data.depth = read_npy_depth(frame_array_file(depth_config.da3_dir, frame_number, "depth.npy"));
+            data.right_masks = read_npy_mask_stack(frame_array_file(depth_config.sam3_dir, frame_number, "right_hand_masks.npy"));
+            data.left_masks = read_npy_mask_stack(frame_array_file(depth_config.sam3_dir, frame_number, "left_hand_masks.npy"));
+        }
+        return data;
+    }
+
+    /// One hand's raw DA3-sampled wrist depth from already-loaded frame data,
+    /// or nullopt if no robust sample exists (caller falls back to HaMeR's
+    /// own k_metric * cam_t.z). Mirrors
+    /// scene_placement.sample_wrist_depth_da3(..., select_hand_mask(...)).
+    std::optional<float> resolve_da3_wrist_depth(const FrameDepthData& frame_data, const ManoParams& hand_params) {
+        if (!frame_data.depth) {
+            return std::nullopt;
+        }
+        const std::optional<NpyMaskStack>& stack = hand_params.is_right ? frame_data.right_masks : frame_data.left_masks;
+        const std::uint8_t* hand_mask = nullptr;
+        if (stack && stack->count > 0) {
+            const int selected = select_hand_mask_instance(stack->masks, stack->count, stack->height, stack->width, hand_params.wrist_uv);
+            if (selected >= 0) {
+                const std::size_t plane = static_cast<std::size_t>(stack->height) * static_cast<std::size_t>(stack->width);
+                hand_mask = stack->masks.data() + static_cast<std::size_t>(selected) * plane;
+            }
+        }
+        return sample_wrist_depth_da3(frame_data.depth->depth, frame_data.depth->height, frame_data.depth->width, hand_params.wrist_uv, hand_mask);
+    }
 
     /// Split a CSV line into fields on commas. The data has no quoted fields, so a
     /// plain split is sufficient; empty fields (e.g. empty-frame marker rows) are
@@ -43,7 +96,7 @@ namespace {
     int to_int(const std::string& text, int fallback) { return text.empty() ? fallback : std::stoi(text); }
 } // namespace
 
-MeshSequence::MeshSequence(const std::string& csv_path) : csv_path_(csv_path) {
+MeshSequence::MeshSequence(const std::string& csv_path, const HandClassificationConfig& classification_config) : csv_path_(csv_path) {
     std::ifstream file(csv_path);
     if (!file) {
         throw std::runtime_error("Could not open CSV " + csv_path);
@@ -68,14 +121,24 @@ MeshSequence::MeshSequence(const std::string& csv_path) : csv_path_(csv_path) {
         }
         return found->second;
     };
+    // Like column_index but tolerates the column being entirely absent (-1),
+    // not just individual blank cells: hamer_collect.py's raw CSV carries no
+    // tracking/classification columns at all (they live in separate per-trial
+    // sidecar files — baby_hand_idx/baby_classification — keyed differently
+    // from hand_idx, not merged into this CSV), so a trial with no
+    // classification pass yet must still load.
+    auto optional_column_index = [&](const std::string& name) -> int {
+        const auto found = column.find(name);
+        return found == column.end() ? -1 : found->second;
+    };
     // The beta/gorient/pose blocks are contiguous, so one base index each suffices.
     const int subject_column = column_index("subject");
     const int trial_column = column_index("trial");
     const int frame_column = column_index("frame");
     const int hand_column = column_index("hand_idx");
-    const int track_column = column_index("track_id");
-    const int duplicate_column = column_index("is_duplicate");
-    const int baby_column = column_index("is_baby");
+    const int track_column = optional_column_index("track_id");
+    const int duplicate_column = optional_column_index("is_duplicate");
+    const int baby_column = optional_column_index("is_baby");
     const int right_column = column_index("is_right");
     const int beta_base = column_index("beta_0");
     const int gorient_base = column_index("gorient_0");
@@ -83,26 +146,29 @@ MeshSequence::MeshSequence(const std::string& csv_path) : csv_path_(csv_path) {
     const int cam_x = column_index("cam_t_x");
     const int cam_y = column_index("cam_t_y");
     const int cam_z = column_index("cam_t_z");
-    // Precomputed placed-space bounds (see HandBounds): the placed bounding box and
-    // mean depth, so the scene fit needs no MANO forward pass.
-    const int bbox_min_x = column_index("placed_bbox_min_x");
-    const int bbox_max_x = column_index("placed_bbox_max_x");
-    const int bbox_min_y = column_index("placed_bbox_min_y");
-    const int bbox_max_y = column_index("placed_bbox_max_y");
-    const int bbox_min_z = column_index("placed_bbox_min_z");
-    const int bbox_max_z = column_index("placed_bbox_max_z");
-    const int mean_z = column_index("placed_mean_z");
+    // The wrist's observed 2D pixel (HaMeR's own j0 reprojection), needed to
+    // backproject the wrist into real metric space (see place_hand_metric).
+    const int wrist_u = column_index("j0_u");
+    const int wrist_v = column_index("j0_v");
+    // This trial's own camera calibration (see HAMER_COLLECT.md's "Camera"
+    // column block): the focal length hamer_collect.py was run with, and the
+    // image size the principal point (cx, cy) is assumed centred in. Optional
+    // so a CSV missing this block (an older export) still loads — just without
+    // auto-detected intrinsics.
+    const int focal_column = optional_column_index("scaled_focal_length");
+    const int width_column = optional_column_index("img_w");
+    const int height_column = optional_column_index("img_h");
 
-    // A row must reach every column we read; placed_mean_z is the last of them.
-    const int last_needed = mean_z;
+    // A row must reach every column we read; j0_v is the last of them (the
+    // focal/width/height columns sit earlier in the schema, before it).
+    const int last_needed = wrist_v;
 
     // Group hands by frame number; frame numbers may have gaps, so the map keeps
-    // them sorted and the result is densified into contiguous frame indices. Each
-    // hand carries its MANO parameters alongside its precomputed placed bounds.
+    // them sorted and the result is densified into contiguous frame indices.
     struct FrameHand {
         ManoParams params;
-        HandBounds bounds;
         HandMeta meta;
+        int hand_idx = -1; // hamer_cache's own per-frame detection index, for the classification join
     };
     std::map<int, std::vector<FrameHand>> by_frame;
     while (std::getline(file, line)) {
@@ -117,11 +183,20 @@ MeshSequence::MeshSequence(const std::string& csv_path) : csv_path_(csv_path) {
         if (fields[hand_column].empty() || std::stoi(fields[hand_column]) < 0) {
             continue;
         }
-        // The subject/trial keys are constant across the file; capture them once
-        // from the first real row to locate this trial's images later.
+        // The subject/trial keys (and this trial's camera calibration) are
+        // constant across the file; capture them once from the first real row.
         if (subject_.empty() && trial_.empty()) {
             subject_ = fields[subject_column];
             trial_ = fields[trial_column];
+            if (focal_column >= 0) {
+                focal_length_px_ = to_float(fields[focal_column]);
+            }
+            if (width_column >= 0) {
+                image_width_ = to_float(fields[width_column]);
+            }
+            if (height_column >= 0) {
+                image_height_ = to_float(fields[height_column]);
+            }
         }
         ManoParams params;
         params.is_right = std::stoi(fields[right_column]) != 0;
@@ -135,55 +210,54 @@ MeshSequence::MeshSequence(const std::string& csv_path) : csv_path_(csv_path) {
             params.hand_pose[index] = to_float(fields[pose_base + index]);
         }
         params.cam_t = glm::vec3(to_float(fields[cam_x]), to_float(fields[cam_y]), to_float(fields[cam_z]));
+        params.wrist_uv = glm::vec2(to_float(fields[wrist_u]), to_float(fields[wrist_v]));
 
-        HandBounds bounds;
-        bounds.placed_min = glm::vec3(to_float(fields[bbox_min_x]), to_float(fields[bbox_min_y]), to_float(fields[bbox_min_z]));
-        bounds.placed_max = glm::vec3(to_float(fields[bbox_max_x]), to_float(fields[bbox_max_y]), to_float(fields[bbox_max_z]));
-        bounds.placed_mean_z = to_float(fields[mean_z]);
-
-        // When the classification columns are blank (not generated yet), default to
-        // an untracked, non-duplicate, shown hand so the trial still displays: id -1
-        // takes the default colour, and is_baby defaults true so "hide adults" keeps
-        // it visible rather than hiding every unclassified hand.
+        // When a classification column is blank OR entirely absent (not
+        // generated yet, or a raw hamer_collect.py CSV with no merged
+        // classification pass), default to an untracked, non-duplicate, shown
+        // hand so the trial still displays: id -1 takes the default colour, and
+        // is_baby defaults true so "hide adults" keeps it visible rather than
+        // hiding every unclassified hand.
         HandMeta meta;
-        meta.track_id = to_int(fields[track_column], -1);
-        meta.is_duplicate = to_int(fields[duplicate_column], 0) != 0;
-        meta.is_baby = to_int(fields[baby_column], 1) != 0;
+        meta.track_id = track_column >= 0 ? to_int(fields[track_column], -1) : -1;
+        meta.is_duplicate = duplicate_column >= 0 ? to_int(fields[duplicate_column], 0) != 0 : false;
+        meta.is_baby = baby_column >= 0 ? to_int(fields[baby_column], 1) != 0 : true;
 
-        by_frame[std::stoi(fields[frame_column])].push_back(FrameHand{std::move(params), bounds, meta});
+        const int hand_idx = std::stoi(fields[hand_column]);
+        by_frame[std::stoi(fields[frame_column])].push_back(FrameHand{std::move(params), meta, hand_idx});
     }
 
+    // Override each hand's track_id/is_duplicate/is_baby with the
+    // tracker-CSV/baby-hand-idx join when both sidecar folders are configured
+    // (see data/hand_classification.h) — otherwise keep whatever the CSV's own
+    // (usually absent) columns produced above.
+    const HandClassification classification =
+        subject_.empty()
+            ? HandClassification()
+            : HandClassification(classification_config.tracking_dir, classification_config.baby_hand_idx_dir, subject_, trial_);
+
     frames_.reserve(by_frame.size());
-    bounds_.reserve(by_frame.size());
     meta_.reserve(by_frame.size());
     frame_numbers_.reserve(by_frame.size());
     for (auto& [frame_number, hands] : by_frame) {
         frame_numbers_.push_back(frame_number);
         std::vector<ManoParams> frame_params;
-        std::vector<HandBounds> frame_bounds;
         std::vector<HandMeta> frame_meta;
         frame_params.reserve(hands.size());
-        frame_bounds.reserve(hands.size());
         frame_meta.reserve(hands.size());
         for (FrameHand& hand : hands) {
+            if (classification.loaded()) {
+                if (const HandClassificationEntry* entry = classification.lookup(frame_number, hand.hand_idx)) {
+                    hand.meta.track_id = entry->track_id;
+                    hand.meta.is_duplicate = entry->is_duplicate;
+                    hand.meta.is_baby = entry->is_baby;
+                }
+            }
             frame_params.push_back(std::move(hand.params));
-            frame_bounds.push_back(hand.bounds);
             frame_meta.push_back(hand.meta);
         }
         frames_.push_back(std::move(frame_params));
-        bounds_.push_back(std::move(frame_bounds));
         meta_.push_back(std::move(frame_meta));
-    }
-
-    // Stabilisation reference: frame 0's mean placed depth. Each hand contributes
-    // an equal vertex count, so the per-vertex mean equals the mean of the hands'
-    // placed_mean_z values.
-    if (!bounds_.empty() && !bounds_.front().empty()) {
-        double sum = 0.0;
-        for (const HandBounds& hand : bounds_.front()) {
-            sum += hand.placed_mean_z;
-        }
-        reference_depth_ = static_cast<float>(sum / static_cast<double>(bounds_.front().size()));
     }
 }
 
@@ -195,14 +269,6 @@ int MeshSequence::hand_count(int index, const HandFilter& filter) const {
         }
     }
     return count;
-}
-
-const std::vector<HandBounds>& MeshSequence::frame_bounds(int index) const {
-    static const std::vector<HandBounds> empty;
-    if (index < 0 || index >= frame_count()) {
-        return empty;
-    }
-    return bounds_[static_cast<std::size_t>(index)];
 }
 
 const std::vector<HandMeta>& MeshSequence::frame_meta(int index) const {
@@ -231,7 +297,10 @@ std::string MeshSequence::frame_image_path(int index, const std::string& images_
     return jpg.string(); // caller treats a missing file as no image
 }
 
-Frame MeshSequence::load_frame(int index, const HandFilter& filter) const {
+Frame MeshSequence::load_frame(
+    int index, const HandFilter& filter, const CameraIntrinsics& intrinsics, const HandDepthConfig& depth_config,
+    const std::vector<std::vector<float>>* smoothed_depths
+) const {
     Frame hands;
     if (index < 0 || index >= frame_count()) {
         return hands;
@@ -239,16 +308,44 @@ Frame MeshSequence::load_frame(int index, const HandFilter& filter) const {
     const std::vector<ManoParams>& params = frames_[static_cast<std::size_t>(index)];
     const std::vector<HandMeta>& metas = meta_[static_cast<std::size_t>(index)];
     hands.reserve(params.size());
+
+    // Only load this frame's DA3 depth map + SAM3 hand-mask stacks when they
+    // might actually be used below: precomputed smoothed depths already
+    // resolved them (across the whole trial), so live per-frame resolution
+    // would be redundant work repeated on every frame change.
+    const FrameDepthData frame_data =
+        smoothed_depths ? FrameDepthData{} : load_frame_depth_data(depth_config, frame_numbers_[static_cast<std::size_t>(index)]);
+
     for (std::size_t hand_index = 0; hand_index < params.size(); ++hand_index) {
         const HandMeta& meta = metas[hand_index];
         if (!hand_visible(meta, filter)) {
             continue;
         }
         const ManoParams& hand_params = params[hand_index];
-        ManoHand mesh = mano_forward(hand_params);
+
+        // Local mesh (cam_t=0), then position + size correction into real metric
+        // space — mirrors scene_placement.place_hand_metric exactly (both are
+        // derived from the single ratio z_metric / raw cam_t.z; see its doc
+        // comment). z_metric is either the precomputed whole-trial-smoothed
+        // depth (see precompute_smoothed_wrist_depths) when given, or resolved
+        // live: a real per-frame DA3 sample at the wrist pixel when
+        // frame_data's depth map loaded and the sample is robust enough,
+        // otherwise (or under HandDepthSource::Hamer) k_metric * cam_t.z.
+        const ManoHand local = mano_forward_local(hand_params);
+        const glm::vec3& local_wrist = local.joints[0];
+        float z_metric;
+        if (smoothed_depths) {
+            z_metric = (*smoothed_depths)[static_cast<std::size_t>(index)][hand_index];
+        } else {
+            z_metric = intrinsics.k_metric * hand_params.cam_t.z;
+            if (const std::optional<float> da3_z = resolve_da3_wrist_depth(frame_data, hand_params)) {
+                z_metric = *da3_z;
+            }
+        }
+
         HandData hand;
-        hand.verts = std::move(mesh.verts);
-        hand.joints = std::move(mesh.joints);
+        hand.verts = place_hand_metric(local.verts, local_wrist, hand_params.wrist_uv, hand_params.cam_t.z, z_metric, intrinsics);
+        hand.joints = place_hand_metric(local.joints, local_wrist, hand_params.wrist_uv, hand_params.cam_t.z, z_metric, intrinsics);
         hand.is_right = hand_params.is_right;
         hand.track_id = meta.track_id;
         hands.push_back(std::move(hand));
@@ -256,63 +353,66 @@ Frame MeshSequence::load_frame(int index, const HandFilter& filter) const {
     return hands;
 }
 
-// Per-hand depth-stabilization factor used by the renderer: each hand is scaled
-// about the origin by reference_depth / its-own-mean-depth. The scene transform
-// measures the *stabilized* geometry, so it applies the same factor here — using
-// the placed mean depth precomputed in the CSV rather than a loaded mesh.
-static float stabilization_scale(const HandBounds& hand, float reference) { return hand.placed_mean_z != 0.0f ? reference / hand.placed_mean_z : 1.0f; }
+std::vector<std::vector<float>> MeshSequence::precompute_smoothed_wrist_depths(
+    const CameraIntrinsics& intrinsics, const HandDepthConfig& depth_config, float sigma_frames
+) const {
+    const std::size_t n = frames_.size();
+    std::vector<std::vector<glm::vec2>> wrist_uv_by_frame(n);
+    std::vector<std::vector<bool>> is_right_by_frame(n);
+    std::vector<std::vector<std::optional<float>>> raw_z_by_frame(n);
+    std::vector<std::vector<float>> raw_cam_t_z_by_frame(n);
 
-Transform compute_transform(const MeshSequence& sequence) {
-    // Centering X/Z and the fit scale come from frame 0 so they stay fixed across
-    // playback. The renderer scales each hand about the origin by reference_depth /
-    // depth before this transform's offset is applied, so everything here is
-    // measured on those stabilized positions. The bounds are the placed AABBs read
-    // from the CSV, so this needs no MANO forward pass (scale > 0, so a stabilized
-    // AABB is just the placed AABB scaled — its min/max stay the min/max).
-    //
-    // Every hand contributes, regardless of the hide-duplicates/adults filter, so
-    // the framing is fixed: toggling a filter only hides hands, it never moves the
-    // ones that remain (and frame 0 always has hands, so centering can't collapse).
-    const float reference = sequence.reference_depth();
+    for (std::size_t index = 0; index < n; ++index) {
+        const std::vector<ManoParams>& params = frames_[index];
+        wrist_uv_by_frame[index].reserve(params.size());
+        is_right_by_frame[index].reserve(params.size());
+        raw_z_by_frame[index].reserve(params.size());
+        raw_cam_t_z_by_frame[index].reserve(params.size());
 
-    // Whole-scene X/Z bounds of frame 0's stabilized hands: used only to centre.
-    glm::vec3 low(std::numeric_limits<float>::max());
-    glm::vec3 high(std::numeric_limits<float>::lowest());
-    for (const HandBounds& hand : sequence.frame_bounds(0)) {
-        const float scale = stabilization_scale(hand, reference);
-        low = glm::min(low, hand.placed_min * scale);
-        high = glm::max(high, hand.placed_max * scale);
-    }
-    const float center_x = (high.x + low.x) / 2.0f;
-    const float center_z = (high.z + low.z) / 2.0f;
-
-    // Floor (Y): the lowest stabilized point across *every* frame, so no frame
-    // ever sinks below the grid plane (only frame 0 would sit on the grid if we
-    // used its bounds alone, and a later frame could reach lower).
-    float floor_y = std::numeric_limits<float>::max();
-    for (int index = 0; index < sequence.frame_count(); ++index) {
-        for (const HandBounds& hand : sequence.frame_bounds(index)) {
-            floor_y = std::min(floor_y, hand.placed_min.y * stabilization_scale(hand, reference));
+        const FrameDepthData frame_data = load_frame_depth_data(depth_config, frame_numbers_[index]);
+        for (const ManoParams& hand_params : params) {
+            wrist_uv_by_frame[index].push_back(hand_params.wrist_uv);
+            is_right_by_frame[index].push_back(hand_params.is_right);
+            raw_cam_t_z_by_frame[index].push_back(hand_params.cam_t.z);
+            raw_z_by_frame[index].push_back(resolve_da3_wrist_depth(frame_data, hand_params));
         }
     }
-    if (floor_y == std::numeric_limits<float>::max()) {
-        floor_y = 0.0f; // no hands in any frame
+
+    const std::vector<std::vector<int>> track_ids = track_hand_sequences(wrist_uv_by_frame, is_right_by_frame);
+    const std::vector<std::vector<float>> filled = fill_missing_depths_by_track(raw_z_by_frame, raw_cam_t_z_by_frame, track_ids, intrinsics.k_metric);
+    if (sigma_frames <= 0.0f) {
+        return filled;
     }
 
-    // Scale from a single reference hand's size, not the whole-scene extent. The
-    // meshes are metric, so one hand is a stable size cue, whereas the full-scene
-    // bounding box balloons when hands sit far apart, which would shrink every
-    // hand to nothing. This keeps a hand a consistent on-screen size across takes.
-    // Measure the stabilized reference hand so the fit matches what's drawn.
-    float span = 1.0f;
-    const std::vector<HandBounds>& frame_zero = sequence.frame_bounds(0);
-    if (!frame_zero.empty()) {
-        const HandBounds& reference_hand = frame_zero.front();
-        const glm::vec3 extent = (reference_hand.placed_max - reference_hand.placed_min) * stabilization_scale(reference_hand, reference);
-        const float largest = std::max({extent.x, extent.y, extent.z});
-        if (largest > 0.0f) {
-            span = largest;
+    // Group entries by track, Gaussian-smooth each track's depth sequence
+    // independently by real frame-number distance (smooth_by_track), then
+    // scatter the smoothed values back into frame/hand-position order.
+    struct Entry {
+        std::size_t frame_index;
+        std::size_t hand_position;
+        int frame_number;
+    };
+    std::unordered_map<int, std::vector<Entry>> by_track;
+    for (std::size_t index = 0; index < n; ++index) {
+        for (std::size_t position = 0; position < track_ids[index].size(); ++position) {
+            by_track[track_ids[index][position]].push_back({index, position, frame_numbers_[index]});
         }
     }
-    return Transform{glm::vec3(-center_x, -floor_y, -center_z), MODEL_FIT_SPAN / span};
+
+    std::vector<std::vector<float>> result = filled;
+    for (const auto& [track_id, entries] : by_track) {
+        std::vector<int> track_frame_numbers;
+        std::vector<float> track_values;
+        track_frame_numbers.reserve(entries.size());
+        track_values.reserve(entries.size());
+        for (const Entry& entry : entries) {
+            track_frame_numbers.push_back(entry.frame_number);
+            track_values.push_back(filled[entry.frame_index][entry.hand_position]);
+        }
+        const std::vector<float> smoothed = smooth_sequence(track_frame_numbers, track_values, sigma_frames);
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            result[entries[i].frame_index][entries[i].hand_position] = smoothed[i];
+        }
+    }
+    return result;
 }

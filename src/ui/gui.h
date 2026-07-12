@@ -27,10 +27,15 @@ struct MenuState {
 };
 
 struct MenuResult {
-    MenuState state;                // the (possibly toggled) menu state
-    bool csv_requested = false;     // user picked "Open Trial CSV"
-    bool images_requested = false;  // user picked "Set Images Folder"
-    bool objects_requested = false; // user picked "Set Objects Folder"
+    MenuState state;               // the (possibly toggled) menu state
+    bool csv_requested = false;    // user picked "Open Trial CSV"
+    bool images_requested = false; // user picked "Set Images Folder"
+    bool sam3_requested = false;             // user picked "Set SAM3 Folder"
+    bool da3_requested = false;              // user picked "Set DA3 Folder"
+    bool tracking_requested = false;         // user picked "Set Tracking Folder"
+    bool baby_hand_idx_requested = false;    // user picked "Set Baby-Hand-Idx Folder"
+    bool k_metric_csv_requested = false;     // user picked "Set K-Metric CSV"
+    bool production_csv_requested = false;   // user picked "Set Production Log CSV"
 };
 
 /// Playback-transport state every pane that can host the player shares: passed in
@@ -129,3 +134,67 @@ ImageViewResult draw_image_window(const char* title, unsigned int texture, int t
 /// Draw the dockable "Hands" pane with the hide-duplicates / hide-adults filter
 /// checkboxes. Returns the (possibly toggled) state.
 HandPaneState draw_hand_pane(HandPaneState state, ImGuiID dock_id);
+
+/// The recording-camera intrinsics editable from the "Camera" pane (mirrors
+/// data/mano_model.h's CameraIntrinsics; kept as plain floats here so gui.h
+/// doesn't need to depend on data/mano_model.h).
+struct CameraPaneState {
+    float fx = 6900.0f;
+    float fy = 6900.0f;
+    float cx = 960.0f;
+    float cy = 540.0f;
+    float k_metric = 0.354f;
+    // Display-only hint (not user-editable, not persisted): false when the
+    // currently-open trial's auto-detected focal length has no known-good
+    // k_metric (see data/mano_model.h's known_k_metric_for_focal_length) —
+    // draws a warning rather than silently trusting a stale/guessed value.
+    bool calibrated = true;
+    // Whether a hand's wrist depth prefers a real per-frame DA3 sample (true,
+    // the default — mirrors data/mesh_sequence.h's HandDepthSource::Da3) or
+    // always uses HaMeR's own k_metric * cam_t.z (false, HandDepthSource::Hamer).
+    // Da3 needs the SAM3/DA3 folders set (File menu) to actually take effect.
+    bool prefer_da3_hand_depth = true;
+    // Whole-trial Gaussian temporal smoothing (sigma=3 frames, matching
+    // render_scene_video.py's --smooth-sigma-frames default) for both hand
+    // wrist depth and the tracked object's pose. Off = each frame's own raw
+    // resolved value.
+    bool smoothing_enabled = true;
+    // Output-only: true on the one frame a fx/fy/cx/cy/k_metric drag just
+    // finished (mouse released after an edit), false every other frame
+    // including the ones while still dragging. The intrinsics values
+    // themselves update live on every drag tick (so the pane always shows
+    // the current number); callers that refit the tracked object/hand
+    // smoothing from these intrinsics should gate that expensive whole-trial
+    // work on this flag instead of "value changed", or a single drag gesture
+    // triggers it dozens of times before the mouse is released.
+    bool intrinsics_committed = false;
+};
+
+/// Draw the dockable "Camera" pane with the recording-camera intrinsics used to
+/// backproject hands (and, once ported, the tracked object) into real metric
+/// space. Returns the (possibly edited) state.
+CameraPaneState draw_camera_pane(CameraPaneState state, ImGuiID dock_id);
+
+/// The tracked-object pipeline's settings, editable from the "Object" pane
+/// (mirrors app/config.h's sam3_folder/da3_folder/object_label/object_shape/
+/// object_size_m; the SAM3/DA3 folders themselves are set via the File menu's
+/// folder pickers, like Images/Objects). ``shape`` mirrors
+/// data/object_sequence.h's ObjectShape: 0 = None, 1 = Cube, 2 = Sphere.
+struct ObjectPaneState {
+    std::string object_label = "small_ball";
+    int shape = 0;
+    float size_m = 0.04f;
+    // Display-only hint (not user-editable, not persisted): true when
+    // shape/label/size were just auto-detected for the open trial from the
+    // production log (data/production_log.h), false when no production log
+    // is configured or the open trial isn't in it — in which case these
+    // values are whatever was last set manually.
+    bool auto_detected = true;
+};
+
+/// Draw the dockable "Object" pane with the tracked-object shape/label/size
+/// settings. A change here requires reopening the trial (or reselecting the
+/// SAM3/DA3 folders) to take effect, since the whole pose sequence is fit
+/// once at load time — see data/object_sequence.h. Returns the (possibly
+/// edited) state.
+ObjectPaneState draw_object_pane(ObjectPaneState state, ImGuiID dock_id);

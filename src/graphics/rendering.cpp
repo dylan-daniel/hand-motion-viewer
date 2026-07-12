@@ -389,56 +389,30 @@ PreparedFrame prepare_frame(const Frame& hands) {
     prepared.reserve(hands.size());
     for (const HandData& hand : hands) {
         PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), track_color(hand.track_id), hand.joints);
-        double sum = 0.0;
-        for (const glm::vec3& position : hand.verts) {
-            sum += position.z;
-        }
-        const float depth = hand.verts.empty() ? 0.0f : static_cast<float>(sum / hand.verts.size());
-        prepared.push_back({std::move(arrays), depth});
+        prepared.push_back({std::move(arrays)});
     }
     return prepared;
 }
 
 FrameGpu::FrameGpu(const PreparedFrame& prepared_hands) {
     hands_.reserve(prepared_hands.size());
-    depths_.reserve(prepared_hands.size());
     for (const PreparedHand& prepared : prepared_hands) {
         HandGpu hand;
         hand.joints = std::make_unique<GpuMesh>(prepared.mesh.joints);
         hand.hand = std::make_unique<GpuMesh>(prepared.mesh.hand);
         hands_.push_back(std::move(hand));
-        depths_.push_back(prepared.depth);
     }
 }
 
-glm::mat4 FrameGpu::hand_matrix(const Transform* transform, float scale) const {
-    glm::mat4 model(1.0f);
-    if (transform != nullptr) {
-        model = glm::scale(model, glm::vec3(transform->scale));
-        model = glm::translate(model, transform->translate);
-    }
-    if (scale != 1.0f) {
-        model = glm::scale(model, glm::vec3(scale));
-    }
-    return model;
-}
-
-void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<float> reference_depth) const {
-    // Stabilise depth: snap every hand to the common reference plane.
-    std::vector<float> scales;
-    scales.reserve(depths_.size());
-    for (float depth : depths_) {
-        scales.push_back((reference_depth && depth != 0.0f) ? (*reference_depth / depth) : 1.0f);
-    }
-
+void FrameGpu::draw(bool translucent) const {
     set_lighting(true);
+    set_model(glm::mat4(1.0f)); // each hand is already placed in scene space (place_hand_metric)
     // The joint skeleton only shows in translucent mode — it reads through the
     // see-through hand, and an opaque hand would hide it. Drawn first so the
     // translucent hand blends correctly over it.
     if (translucent) {
-        for (std::size_t index = 0; index < hands_.size(); ++index) {
-            set_model(hand_matrix(transform, scales[index]));
-            hands_[index].joints->draw();
+        for (const HandGpu& hand : hands_) {
+            hand.joints->draw();
         }
     }
 
@@ -448,9 +422,8 @@ void FrameGpu::draw(bool translucent, const Transform* transform, std::optional<
         glDepthMask(GL_FALSE);
         set_alpha(0.30f);
     }
-    for (std::size_t index = 0; index < hands_.size(); ++index) {
-        set_model(hand_matrix(transform, scales[index]));
-        hands_[index].hand->draw();
+    for (const HandGpu& hand : hands_) {
+        hand.hand->draw();
     }
     if (translucent) {
         set_alpha(1.0f);
@@ -645,18 +618,20 @@ void render_scene(const Framebuffer& framebuffer, const Camera& camera, const Sc
     glClear(static_cast<GLbitfield>(GL_COLOR_BUFFER_BIT) | static_cast<GLbitfield>(GL_DEPTH_BUFFER_BIT));
 
     const float aspect = framebuffer.height() != 0 ? static_cast<float>(framebuffer.width()) / static_cast<float>(framebuffer.height()) : 1.0f;
-    const glm::mat4 projection = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 500.0f);
+    const glm::mat4 projection = glm::perspective(glm::radians(scene.fov_y_degrees), aspect, 0.01f, 500.0f);
 
     glx::UseProgram(g_program);
     glx::UniformMatrix4fv(g_loc_proj, 1, GL_FALSE, glm::value_ptr(projection));
     glx::UniformMatrix4fv(g_loc_view, 1, GL_FALSE, glm::value_ptr(camera.view_matrix()));
     set_alpha(1.0f); // opaque by default; translucent hand draws flip it transiently
 
-    // Grid (flat-coloured; draw_grid keeps lighting off).
-    draw_grid(10, 1.0f, 0.0f);
+    // Grid (flat-coloured; draw_grid keeps lighting off). 0.5m spacing, 6m half
+    // extent — matches render_scene_video.py's real-metric grid, so squares are
+    // directly readable as real distances.
+    draw_grid(12, 0.5f, 0.0f);
 
     if (scene.frame != nullptr) {
-        scene.frame->draw(scene.translucent, scene.transform, scene.reference_depth);
+        scene.frame->draw(scene.translucent);
     }
 
     // Tracked object (cube): one shared unit-cube mesh, placed by this frame's
