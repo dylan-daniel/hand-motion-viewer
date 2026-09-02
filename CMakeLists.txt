@@ -15,7 +15,7 @@ endif ()
 # at configure time: cmake -B build -DRELEASE_STATIC=ON
 option(RELEASE_STATIC "Statically link the release exe (except opengl32.dll)" OFF)
 
-# When ON, gather only the files that need shipping (exe + assets/ + mano/, plus
+# When ON, gather only the files that need shipping (exe + assets/, plus
 # SDL3.dll for a non-static build) into <build>/dist/hand_motion_viewer after each
 # build and zip it into <build>/hand_motion_viewer.zip. Set at configure time:
 # cmake -B build -DPACKAGE_RELEASE=ON
@@ -130,7 +130,43 @@ FetchContent_Declare(
     SOURCE_SUBDIR do-not-configure
 )
 
-FetchContent_MakeAvailable(SDL3 glm nlohmann_json imgui freetype portable_file_dialogs stb)
+# Apache Arrow C++ (Parquet component) — reads the hand-motion export written
+# by infant_grasp_pipeline's run_export_hands (a snappy-compressed Parquet
+# file). This is the one heavyweight dependency in this project: unlike the
+# libraries above, Arrow has its own large transitive dependency tree (Thrift,
+# zlib, snappy, ...); ARROW_DEPENDENCY_SOURCE=BUNDLED tells Arrow's own CMake to
+# fetch and build those from source too, keeping with this project's
+# nothing-to-install-by-hand philosophy at the cost of a much longer first
+# configure/build than any other dependency here. Only the Parquet reader and
+# its snappy codec are enabled; everything else Arrow can build (compute
+# kernels beyond what Parquet itself needs, Flight RPC, Gandiva, Python
+# bindings, datasets, CSV/JSON readers) is off since nothing here uses it.
+set(ARROW_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ARROW_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(ARROW_DEPENDENCY_SOURCE "BUNDLED" CACHE STRING "" FORCE)
+set(ARROW_PARQUET ON CACHE BOOL "" FORCE)
+set(ARROW_WITH_SNAPPY ON CACHE BOOL "" FORCE)
+set(ARROW_COMPUTE ON CACHE BOOL "" FORCE) # Parquet's decode path depends on compute kernels
+set(ARROW_IPC ON CACHE BOOL "" FORCE) # compute links against arrow::ipc symbols even though nothing here calls them directly
+set(ARROW_CSV OFF CACHE BOOL "" FORCE)
+set(ARROW_JSON OFF CACHE BOOL "" FORCE)
+set(ARROW_DATASET OFF CACHE BOOL "" FORCE)
+set(ARROW_FLIGHT OFF CACHE BOOL "" FORCE)
+set(ARROW_GANDIVA OFF CACHE BOOL "" FORCE)
+set(ARROW_PYTHON OFF CACHE BOOL "" FORCE)
+set(ARROW_JEMALLOC OFF CACHE BOOL "" FORCE)
+set(ARROW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ARROW_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(ARROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+    Arrow
+    GIT_REPOSITORY https://github.com/apache/arrow.git
+    GIT_TAG apache-arrow-17.0.0
+    GIT_SHALLOW TRUE
+    SOURCE_SUBDIR cpp
+)
+
+FetchContent_MakeAvailable(SDL3 glm nlohmann_json imgui freetype portable_file_dialogs stb Arrow)
 
 add_library(portable_file_dialogs INTERFACE)
 target_include_directories(portable_file_dialogs INTERFACE ${portable_file_dialogs_SOURCE_DIR})
@@ -178,6 +214,17 @@ add_executable(hand_motion_viewer ${viewer_sources})
 
 target_include_directories(hand_motion_viewer PRIVATE src)
 
+# arrow_static/parquet_static are Arrow's own internal build targets (not the
+# namespaced Arrow::/Parquet:: targets a find_package(Arrow) install would
+# give us), so linking them doesn't propagate their include dirs the way a
+# proper installed package config would -- add them explicitly, mirroring
+# what Arrow's own internal targets use (its generated headers live under the
+# build dir, everything else under the source's cpp/src).
+target_include_directories(hand_motion_viewer PRIVATE
+    ${arrow_SOURCE_DIR}/cpp/src
+    ${arrow_BINARY_DIR}/src
+)
+
 target_link_libraries(hand_motion_viewer PRIVATE
     ${sdl3_target}
     $<TARGET_NAME_IF_EXISTS:SDL3::SDL3main>
@@ -187,6 +234,9 @@ target_link_libraries(hand_motion_viewer PRIVATE
     imgui_lib
     portable_file_dialogs
     stb
+    parquet_static
+    arrow_static
+    $<$<PLATFORM_ID:Windows>:ws2_32> # Thrift's socket code needs htonl/ntohl from Winsock
 )
 
 # Fold the C/C++ runtime into the exe for a static release. opengl32 stays
@@ -237,17 +287,9 @@ add_custom_command(TARGET hand_motion_viewer POST_BUILD
     $<TARGET_FILE_DIR:hand_motion_viewer>/assets
 )
 
-# Copy the shared MANO face topology next to the executable so the .hmesh loader
-# finds it (main.cpp resolves mano/mano_faces.bin relative to the binary). This
-# keeps mano/ a single source of truth and avoids a stale hand-copied build copy.
-add_custom_command(TARGET hand_motion_viewer POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_CURRENT_SOURCE_DIR}/mano
-    $<TARGET_FILE_DIR:hand_motion_viewer>/mano
-)
-
 # Assemble a clean, distributable folder containing only what ships: the exe and
-# the assets/ and mano/ runtime assets (plus SDL3.dll when not statically linked).
+# the assets/ runtime assets, including assets/mano/ (plus SDL3.dll when not
+# statically linked).
 # Built fresh each time (the dir is removed first) so it never holds stale files.
 if (PACKAGE_RELEASE)
     set(dist_dir ${CMAKE_BINARY_DIR}/dist)
@@ -257,7 +299,6 @@ if (PACKAGE_RELEASE)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${package_dir}
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:hand_motion_viewer> ${package_dir}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/assets ${package_dir}/assets
-        COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/mano ${package_dir}/mano
         COMMENT "Packaging shippable files into ${package_dir}"
     )
     if (WIN32 AND NOT RELEASE_STATIC)
