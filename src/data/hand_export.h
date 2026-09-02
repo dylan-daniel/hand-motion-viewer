@@ -1,12 +1,15 @@
 #pragma once
 
-// Loader for the Parquet export written by infant_grasp_pipeline's
-// run_export_hands (src/pipeline/export/exporter.py in that repo). One row per
-// tracked hand per frame; rotations are stored there as axis-angle to save
-// space and get converted back to the row-major 3x3 matrices ManoParams
-// expects here at load time (see axis_angle_to_matrix in the .cpp) --
-// mathematically exact, with only float round-off error (~1e-7), not a
-// meaningful precision loss.
+// Loader for the compact binary export written by infant_grasp_pipeline's
+// run_export_hands (src/pipeline/export/binary_format.py in that repo): a
+// small header (magic, version, decompressed payload size) followed by one
+// zlib-compressed payload holding a name+dtype schema table and the raw
+// column arrays -- see that file for the exact byte layout, which this
+// loader mirrors. One row per tracked hand per frame; rotations are stored
+// there as axis-angle to save space and get converted back to the row-major
+// 3x3 matrices ManoParams expects here at load time (see
+// axis_angle_to_matrix in the .cpp) -- mathematically exact, with only float
+// round-off error (~1e-7), not a meaningful precision loss.
 
 #include <cstdint>
 #include <string>
@@ -31,7 +34,8 @@ struct HandExportRow {
     std::int32_t img_h = 0;
 };
 
-/// Read every row of a hand-motion export Parquet file. Throws
-/// std::runtime_error (wrapping the underlying Arrow/Parquet status) on any
-/// read failure, including a schema mismatch against the columns above.
-std::vector<HandExportRow> load_hand_export(const std::string& parquet_path);
+/// Read every row of a hand-motion export binary file. Throws
+/// std::runtime_error on any read failure: a missing file, a bad magic
+/// number, an unsupported version, a decompression failure, or a missing
+/// expected column.
+std::vector<HandExportRow> load_hand_export(const std::string& export_path);

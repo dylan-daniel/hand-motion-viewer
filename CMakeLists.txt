@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(hand_motion_viewer CXX)
+project(hand_motion_viewer CXX C) # C is needed for miniz_lib, the only C source in this project
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -130,43 +130,39 @@ FetchContent_Declare(
     SOURCE_SUBDIR do-not-configure
 )
 
-# Apache Arrow C++ (Parquet component) — reads the hand-motion export written
-# by infant_grasp_pipeline's run_export_hands (a snappy-compressed Parquet
-# file). This is the one heavyweight dependency in this project: unlike the
-# libraries above, Arrow has its own large transitive dependency tree (Thrift,
-# zlib, snappy, ...); ARROW_DEPENDENCY_SOURCE=BUNDLED tells Arrow's own CMake to
-# fetch and build those from source too, keeping with this project's
-# nothing-to-install-by-hand philosophy at the cost of a much longer first
-# configure/build than any other dependency here. Only the Parquet reader and
-# its snappy codec are enabled; everything else Arrow can build (compute
-# kernels beyond what Parquet itself needs, Flight RPC, Gandiva, Python
-# bindings, datasets, CSV/JSON readers) is off since nothing here uses it.
-set(ARROW_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-set(ARROW_BUILD_STATIC ON CACHE BOOL "" FORCE)
-set(ARROW_DEPENDENCY_SOURCE "BUNDLED" CACHE STRING "" FORCE)
-set(ARROW_PARQUET ON CACHE BOOL "" FORCE)
-set(ARROW_WITH_SNAPPY ON CACHE BOOL "" FORCE)
-set(ARROW_COMPUTE ON CACHE BOOL "" FORCE) # Parquet's decode path depends on compute kernels
-set(ARROW_IPC ON CACHE BOOL "" FORCE) # compute links against arrow::ipc symbols even though nothing here calls them directly
-set(ARROW_CSV OFF CACHE BOOL "" FORCE)
-set(ARROW_JSON OFF CACHE BOOL "" FORCE)
-set(ARROW_DATASET OFF CACHE BOOL "" FORCE)
-set(ARROW_FLIGHT OFF CACHE BOOL "" FORCE)
-set(ARROW_GANDIVA OFF CACHE BOOL "" FORCE)
-set(ARROW_PYTHON OFF CACHE BOOL "" FORCE)
-set(ARROW_JEMALLOC OFF CACHE BOOL "" FORCE)
-set(ARROW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(ARROW_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
-set(ARROW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+# miniz — zlib-compatible inflate, used only to decompress the hand-motion
+# export written by infant_grasp_pipeline's run_export_hands (a custom binary
+# format: a small header followed by one zlib-compressed payload; see
+# data/hand_export.h). A single small C library was chosen deliberately over
+# Apache Arrow/Parquet, which was tried first and pulled in a huge transitive
+# dependency tree (Thrift, snappy, its own bundled zlib, ...) for a format
+# whose framing overhead didn't even beat a plain compressed flat binary at
+# this data's scale (a few hundred KB per trial). SOURCE_SUBDIR points at a
+# non-existent directory so MakeAvailable only downloads the source, skipping
+# miniz's own CMakeLists; the sources are compiled directly into a small
+# static library below instead.
 FetchContent_Declare(
-    Arrow
-    GIT_REPOSITORY https://github.com/apache/arrow.git
-    GIT_TAG apache-arrow-17.0.0
+    miniz
+    GIT_REPOSITORY https://github.com/richgel999/miniz.git
+    GIT_TAG 3.0.2
     GIT_SHALLOW TRUE
-    SOURCE_SUBDIR cpp
+    SOURCE_SUBDIR do-not-configure
 )
 
-FetchContent_MakeAvailable(SDL3 glm nlohmann_json imgui freetype portable_file_dialogs stb Arrow)
+FetchContent_MakeAvailable(SDL3 glm nlohmann_json imgui freetype portable_file_dialogs stb miniz)
+
+# miniz.h expects a generated miniz_export.h defining MINIZ_EXPORT (normally
+# produced by miniz's own CMake build via generate_export_header(), skipped
+# here along with the rest of its CMakeLists). Since miniz_lib is always
+# linked statically -- never built or consumed as a DLL -- the export/import
+# annotation has nothing to do, so a stub defining it empty is exactly
+# equivalent to what a real generated header would produce for a static build.
+set(miniz_export_stub_dir ${CMAKE_BINARY_DIR}/miniz_export_stub)
+file(WRITE ${miniz_export_stub_dir}/miniz_export.h "#pragma once\n#define MINIZ_EXPORT\n")
+
+file(GLOB miniz_sources ${miniz_SOURCE_DIR}/*.c)
+add_library(miniz_lib STATIC ${miniz_sources})
+target_include_directories(miniz_lib PUBLIC ${miniz_SOURCE_DIR} ${miniz_export_stub_dir})
 
 add_library(portable_file_dialogs INTERFACE)
 target_include_directories(portable_file_dialogs INTERFACE ${portable_file_dialogs_SOURCE_DIR})
@@ -214,17 +210,6 @@ add_executable(hand_motion_viewer ${viewer_sources})
 
 target_include_directories(hand_motion_viewer PRIVATE src)
 
-# arrow_static/parquet_static are Arrow's own internal build targets (not the
-# namespaced Arrow::/Parquet:: targets a find_package(Arrow) install would
-# give us), so linking them doesn't propagate their include dirs the way a
-# proper installed package config would -- add them explicitly, mirroring
-# what Arrow's own internal targets use (its generated headers live under the
-# build dir, everything else under the source's cpp/src).
-target_include_directories(hand_motion_viewer PRIVATE
-    ${arrow_SOURCE_DIR}/cpp/src
-    ${arrow_BINARY_DIR}/src
-)
-
 target_link_libraries(hand_motion_viewer PRIVATE
     ${sdl3_target}
     $<TARGET_NAME_IF_EXISTS:SDL3::SDL3main>
@@ -234,9 +219,7 @@ target_link_libraries(hand_motion_viewer PRIVATE
     imgui_lib
     portable_file_dialogs
     stb
-    parquet_static
-    arrow_static
-    $<$<PLATFORM_ID:Windows>:ws2_32> # Thrift's socket code needs htonl/ntohl from Winsock
+    miniz_lib
 )
 
 # Fold the C/C++ runtime into the exe for a static release. opengl32 stays

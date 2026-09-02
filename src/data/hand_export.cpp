@@ -1,14 +1,27 @@
 #include "data/hand_export.h"
 
+#include <array>
 #include <cmath>
-#include <memory>
+#include <cstring>
+#include <fstream>
+#include <map>
 #include <stdexcept>
 
-#include <arrow/api.h>
-#include <arrow/io/api.h>
-#include <parquet/arrow/reader.h>
+#include <miniz.h>
 
 namespace {
+    constexpr char MAGIC[4] = {'H', 'E', 'X', 'P'};
+    constexpr std::uint32_t VERSION = 1;
+    constexpr std::size_t STRING_FIELD_WIDTH = 32;
+    constexpr std::size_t HEADER_SIZE = 16; // magic(4) + version(4) + payload_size(4) + compressed_size(4)
+
+    enum DType : std::uint8_t { kFloat32 = 0, kInt32 = 1, kInt8 = 2, kString = 3 };
+
+    struct ColumnInfo {
+        DType dtype;
+        std::size_t offset; // byte offset into the decompressed payload where this column's data starts
+    };
+
     /// Axis-angle -> row-major flattened 3x3 rotation matrix (Rodrigues'
     /// formula). Exact away from the trivial zero-rotation case (handled
     /// below by falling back to identity); matches what the Python side
@@ -37,117 +50,179 @@ namespace {
         };
     }
 
-    std::shared_ptr<arrow::ChunkedArray> require_column(const std::shared_ptr<arrow::Table>& table, const std::string& name) {
-        auto column = table->GetColumnByName(name);
-        if (!column) {
-            throw std::runtime_error("hand export Parquet file is missing expected column: " + name);
+    std::vector<char> read_file(const std::string& path) {
+        std::ifstream file(path, std::ios::binary | std::ios::ate);
+        if (!file) {
+            throw std::runtime_error("failed to open hand export file: " + path);
         }
-        return column;
+        const std::streamsize size = file.tellg();
+        file.seekg(0);
+        std::vector<char> data(static_cast<std::size_t>(size));
+        if (size > 0 && !file.read(data.data(), size)) {
+            throw std::runtime_error("failed to read hand export file: " + path);
+        }
+        return data;
     }
 
-    template <typename ArrowArrayType, typename ValueType>
-    std::vector<ValueType> read_numeric_column(const std::shared_ptr<arrow::Table>& table, const std::string& name) {
-        auto column = require_column(table, name);
-        std::vector<ValueType> values;
-        values.reserve(static_cast<std::size_t>(column->length()));
-        for (const auto& chunk : column->chunks()) {
-            auto typed = std::static_pointer_cast<ArrowArrayType>(chunk);
-            for (std::int64_t i = 0; i < typed->length(); ++i) {
-                values.push_back(static_cast<ValueType>(typed->Value(i)));
-            }
-        }
-        return values;
+    std::uint32_t read_u32(const char* data) {
+        std::uint32_t value;
+        std::memcpy(&value, data, sizeof(value));
+        return value;
     }
 
-    std::vector<std::string> read_string_column(const std::shared_ptr<arrow::Table>& table, const std::string& name) {
-        auto column = require_column(table, name);
-        std::vector<std::string> values;
-        values.reserve(static_cast<std::size_t>(column->length()));
-        for (const auto& chunk : column->chunks()) {
-            auto typed = std::static_pointer_cast<arrow::StringArray>(chunk);
-            for (std::int64_t i = 0; i < typed->length(); ++i) {
-                values.emplace_back(typed->GetString(i));
-            }
+    std::size_t item_size(DType dtype) {
+        switch (dtype) {
+            case kFloat32:
+            case kInt32:
+                return 4;
+            case kInt8:
+                return 1;
+            case kString:
+                return STRING_FIELD_WIDTH;
         }
-        return values;
+        throw std::runtime_error("unreachable dtype tag");
     }
 } // namespace
 
-std::vector<HandExportRow> load_hand_export(const std::string& parquet_path) {
-    auto maybe_infile = arrow::io::ReadableFile::Open(parquet_path);
-    if (!maybe_infile.ok()) {
-        throw std::runtime_error("failed to open hand export file '" + parquet_path + "': " + maybe_infile.status().ToString());
-    }
-    std::shared_ptr<arrow::io::RandomAccessFile> infile = *maybe_infile;
-
-    std::unique_ptr<parquet::arrow::FileReader> reader;
-    auto open_status = parquet::arrow::OpenFile(infile, arrow::default_memory_pool(), &reader);
-    if (!open_status.ok()) {
-        throw std::runtime_error("failed to open Parquet reader for '" + parquet_path + "': " + open_status.ToString());
+std::vector<HandExportRow> load_hand_export(const std::string& export_path) {
+    const std::vector<char> raw = read_file(export_path);
+    if (raw.size() < HEADER_SIZE || std::memcmp(raw.data(), MAGIC, 4) != 0) {
+        throw std::runtime_error("not a hand export binary file (bad magic): " + export_path);
     }
 
-    std::shared_ptr<arrow::Table> table;
-    auto read_status = reader->ReadTable(&table);
-    if (!read_status.ok()) {
-        throw std::runtime_error("failed to read table from '" + parquet_path + "': " + read_status.ToString());
+    const std::uint32_t version = read_u32(raw.data() + 4);
+    const std::uint32_t payload_size = read_u32(raw.data() + 8);
+    const std::uint32_t compressed_size = read_u32(raw.data() + 12);
+    if (version != VERSION) {
+        throw std::runtime_error(
+            "unsupported hand export binary version " + std::to_string(version) + " (expected " + std::to_string(VERSION) + "): " + export_path
+        );
+    }
+    if (raw.size() < HEADER_SIZE + compressed_size) {
+        throw std::runtime_error("truncated hand export file: " + export_path);
     }
 
-    const auto subject = read_string_column(table, "subject");
-    const auto trial = read_string_column(table, "trial");
-    const auto frame = read_numeric_column<arrow::Int32Array, std::int32_t>(table, "frame");
-    const auto is_right = read_numeric_column<arrow::Int8Array, std::int8_t>(table, "is_right");
-    const auto hand_track_id = read_numeric_column<arrow::Int32Array, std::int32_t>(table, "hand_track_id");
-    const auto label = read_string_column(table, "label");
+    std::vector<unsigned char> payload(payload_size);
+    mz_ulong actual_payload_size = payload_size;
+    const int rc = mz_uncompress(payload.data(), &actual_payload_size, reinterpret_cast<const unsigned char*>(raw.data() + HEADER_SIZE), compressed_size);
+    if (rc != MZ_OK || actual_payload_size != payload_size) {
+        throw std::runtime_error("failed to decompress hand export payload (miniz error " + std::to_string(rc) + "): " + export_path);
+    }
 
-    std::vector<std::vector<float>> beta(10), pose_rotvec(45);
-    std::vector<float> gorient_rotvec[3];
+    const char* p = reinterpret_cast<const char*>(payload.data());
+    std::size_t offset = 0;
+    const std::uint32_t row_count = read_u32(p + offset);
+    offset += 4;
+    const std::uint32_t column_count = read_u32(p + offset);
+    offset += 4;
+
+    struct PendingColumn {
+        std::string name;
+        DType dtype;
+    };
+    std::vector<PendingColumn> ordered;
+    ordered.reserve(column_count);
+    for (std::uint32_t i = 0; i < column_count; ++i) {
+        const auto name_len = static_cast<std::uint8_t>(p[offset]);
+        offset += 1;
+        const auto dtype = static_cast<DType>(static_cast<std::uint8_t>(p[offset]));
+        offset += 1;
+        std::string name(p + offset, name_len);
+        offset += name_len;
+        ordered.push_back({std::move(name), dtype});
+    }
+
+    std::map<std::string, ColumnInfo> columns;
+    for (const auto& col : ordered) {
+        columns[col.name] = ColumnInfo{col.dtype, offset};
+        offset += item_size(col.dtype) * row_count;
+    }
+
+    auto require = [&](const std::string& name) -> const ColumnInfo& {
+        const auto it = columns.find(name);
+        if (it == columns.end()) {
+            throw std::runtime_error("hand export file is missing expected column '" + name + "': " + export_path);
+        }
+        return it->second;
+    };
+    auto get_float = [&](const ColumnInfo& col, std::uint32_t row) -> float {
+        float value;
+        std::memcpy(&value, p + col.offset + static_cast<std::size_t>(row) * 4, 4);
+        return value;
+    };
+    auto get_int32 = [&](const ColumnInfo& col, std::uint32_t row) -> std::int32_t {
+        std::int32_t value;
+        std::memcpy(&value, p + col.offset + static_cast<std::size_t>(row) * 4, 4);
+        return value;
+    };
+    auto get_int8 = [&](const ColumnInfo& col, std::uint32_t row) -> std::int8_t { return static_cast<std::int8_t>(p[col.offset + row]); };
+    auto get_string = [&](const ColumnInfo& col, std::uint32_t row) -> std::string {
+        const char* s = p + col.offset + static_cast<std::size_t>(row) * STRING_FIELD_WIDTH;
+        std::size_t len = 0;
+        while (len < STRING_FIELD_WIDTH && s[len] != '\0') {
+            ++len;
+        }
+        return std::string(s, len);
+    };
+
+    const ColumnInfo& subject_col = require("subject");
+    const ColumnInfo& trial_col = require("trial");
+    const ColumnInfo& frame_col = require("frame");
+    const ColumnInfo& is_right_col = require("is_right");
+    const ColumnInfo& hand_track_id_col = require("hand_track_id");
+    const ColumnInfo& label_col = require("label");
+    const ColumnInfo& scaled_focal_length_col = require("scaled_focal_length");
+    const ColumnInfo& img_w_col = require("img_w");
+    const ColumnInfo& img_h_col = require("img_h");
+    const ColumnInfo& cam_t_x_col = require("cam_t_x");
+    const ColumnInfo& cam_t_y_col = require("cam_t_y");
+    const ColumnInfo& cam_t_z_col = require("cam_t_z");
+
+    std::array<const ColumnInfo*, 10> beta_cols{};
     for (int i = 0; i < 10; ++i) {
-        beta[static_cast<std::size_t>(i)] = read_numeric_column<arrow::FloatArray, float>(table, "beta_" + std::to_string(i));
+        beta_cols[static_cast<std::size_t>(i)] = &require("beta_" + std::to_string(i));
     }
+    std::array<const ColumnInfo*, 3> gorient_rotvec_cols{};
     for (int i = 0; i < 3; ++i) {
-        gorient_rotvec[i] = read_numeric_column<arrow::FloatArray, float>(table, "gorient_rotvec_" + std::to_string(i));
+        gorient_rotvec_cols[static_cast<std::size_t>(i)] = &require("gorient_rotvec_" + std::to_string(i));
     }
+    std::array<const ColumnInfo*, 45> pose_rotvec_cols{};
     for (int i = 0; i < 45; ++i) {
-        pose_rotvec[static_cast<std::size_t>(i)] = read_numeric_column<arrow::FloatArray, float>(table, "pose_rotvec_" + std::to_string(i));
+        pose_rotvec_cols[static_cast<std::size_t>(i)] = &require("pose_rotvec_" + std::to_string(i));
     }
-    const auto cam_t_x = read_numeric_column<arrow::FloatArray, float>(table, "cam_t_x");
-    const auto cam_t_y = read_numeric_column<arrow::FloatArray, float>(table, "cam_t_y");
-    const auto cam_t_z = read_numeric_column<arrow::FloatArray, float>(table, "cam_t_z");
-    const auto scaled_focal_length = read_numeric_column<arrow::FloatArray, float>(table, "scaled_focal_length");
-    const auto img_w = read_numeric_column<arrow::Int32Array, std::int32_t>(table, "img_w");
-    const auto img_h = read_numeric_column<arrow::Int32Array, std::int32_t>(table, "img_h");
 
-    const auto row_count = static_cast<std::size_t>(table->num_rows());
     std::vector<HandExportRow> rows;
     rows.reserve(row_count);
-
-    for (std::size_t i = 0; i < row_count; ++i) {
+    for (std::uint32_t r = 0; r < row_count; ++r) {
         HandExportRow row;
-        row.subject = subject[i];
-        row.trial = trial[i];
-        row.frame = frame[i];
-        row.is_right = is_right[i];
-        row.hand_track_id = hand_track_id[i];
-        row.label = label[i];
+        row.subject = get_string(subject_col, r);
+        row.trial = get_string(trial_col, r);
+        row.frame = get_int32(frame_col, r);
+        row.is_right = get_int8(is_right_col, r);
+        row.hand_track_id = get_int32(hand_track_id_col, r);
+        row.label = get_string(label_col, r);
 
-        for (int b = 0; b < 10; ++b) {
-            row.params.betas[static_cast<std::size_t>(b)] = beta[static_cast<std::size_t>(b)][i];
+        for (int i = 0; i < 10; ++i) {
+            row.params.betas[static_cast<std::size_t>(i)] = get_float(*beta_cols[static_cast<std::size_t>(i)], r);
         }
-        row.params.global_orient = axis_angle_to_matrix(gorient_rotvec[0][i], gorient_rotvec[1][i], gorient_rotvec[2][i]);
+        row.params.global_orient =
+            axis_angle_to_matrix(get_float(*gorient_rotvec_cols[0], r), get_float(*gorient_rotvec_cols[1], r), get_float(*gorient_rotvec_cols[2], r));
         for (int j = 0; j < 15; ++j) {
-            const auto rotvec_base = static_cast<std::size_t>(j * 3);
-            const auto mat = axis_angle_to_matrix(pose_rotvec[rotvec_base][i], pose_rotvec[rotvec_base + 1][i], pose_rotvec[rotvec_base + 2][i]);
+            const auto base = static_cast<std::size_t>(j * 3);
+            const auto mat = axis_angle_to_matrix(
+                get_float(*pose_rotvec_cols[base], r), get_float(*pose_rotvec_cols[base + 1], r), get_float(*pose_rotvec_cols[base + 2], r)
+            );
             const auto matrix_base = static_cast<std::size_t>(j * 9);
             for (int k = 0; k < 9; ++k) {
                 row.params.hand_pose[matrix_base + static_cast<std::size_t>(k)] = mat[static_cast<std::size_t>(k)];
             }
         }
         row.params.is_right = row.is_right != 0;
-        row.params.cam_t = glm::vec3(cam_t_x[i], cam_t_y[i], cam_t_z[i]);
+        row.params.cam_t = glm::vec3(get_float(cam_t_x_col, r), get_float(cam_t_y_col, r), get_float(cam_t_z_col, r));
 
-        row.scaled_focal_length = scaled_focal_length[i];
-        row.img_w = img_w[i];
-        row.img_h = img_h[i];
+        row.scaled_focal_length = get_float(scaled_focal_length_col, r);
+        row.img_w = get_int32(img_w_col, r);
+        row.img_h = get_int32(img_h_col, r);
 
         rows.push_back(std::move(row));
     }
