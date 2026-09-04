@@ -388,7 +388,7 @@ PreparedFrame prepare_frame(const Frame& hands, bool per_track_coloring) {
     PreparedFrame prepared;
     prepared.reserve(hands.size());
     for (const HandData& hand : hands) {
-        if (!per_track_coloring && !hand.label.empty() && hand.label != "infant") {
+        if (!per_track_coloring && hand.label == "adult") {
             continue;
         }
         const glm::vec4 color = per_track_coloring ? track_color(hand.hand_track_id) : hand.is_right ? RIGHT_HAND_COLOR : LEFT_HAND_COLOR;

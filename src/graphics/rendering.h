@@ -81,14 +81,13 @@ private:
 /// Expand a frame's hands into GPU-ready arrays plus each hand's mean depth.
 ///
 /// ``per_track_coloring`` selects between the Hands pane's two modes:
-///  - off (default): hands whose pipeline label is populated and not "infant"
-///    are dropped (a hand with no label at all is never filtered, since there
-///    is no label to judge it by -- in practice every row of a real .hexport
-///    file has one, defaulting to "unclassified" when the pipeline's
-///    classification stage wasn't run, but this stays a safe no-filter
-///    fallback rather than an assumption); surviving hands are tinted red
-///    (left) or blue (right) via LEFT_HAND_COLOR/RIGHT_HAND_COLOR, ignoring
-///    hand_track_id.
+///  - off (default): only hands explicitly labeled "adult" are dropped.
+///    "unclassified"/"unknown" hands are kept -- the pipeline's
+///    classification stage often hasn't run (or couldn't decide), and
+///    treating "not proven infant" as "hide" would blank the whole scene for
+///    perfectly normal export files with no classification data. Surviving
+///    hands are tinted red (left) or blue (right) via
+///    LEFT_HAND_COLOR/RIGHT_HAND_COLOR, ignoring hand_track_id.
 ///  - on: every hand is kept, each colored by track_color(hand_track_id) so
 ///    distinct tracks are visually distinguishable (an untracked hand, id -1,
 ///    falls back to DEFAULT_COLOR).
