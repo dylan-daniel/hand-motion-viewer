@@ -23,6 +23,11 @@ struct HandData {
     std::vector<glm::vec3> verts;  // MANO surface vertices (778)
     std::vector<glm::vec3> joints; // joint positions (21)
     bool is_right = true;          // handedness, picks the shared face winding
+    // Populated only in .hexport mode, from the pipeline's tracking/
+    // classification output; left at their defaults (-1, empty) for a
+    // .hmesh-sourced hand, which carries no such data.
+    int hand_track_id = -1;
+    std::string label; // "infant" | "adult" | "unknown" | "unclassified" | ""
 };
 
 /// A fixed translate-then-scale that frames the whole sequence on the grid.

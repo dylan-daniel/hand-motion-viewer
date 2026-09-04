@@ -15,6 +15,7 @@ struct Config {
     bool hand_translucent = true;           // whether the hand is drawn see-through
     bool show_controls = true;              // whether the viewport controls help panel is open
     bool show_camera_marker = false;        // whether the pink look-at marker ball is drawn
+    bool per_track_coloring = false;        // Hands pane: off = infant-only + red/blue by side, on = colored by track
     bool free_camera = true;                // use the first-person free camera instead of the orbit camera
     int active_pane = 0;                    // last focused pane / selected tab: 0 = Scene, 1 = Frame View
 

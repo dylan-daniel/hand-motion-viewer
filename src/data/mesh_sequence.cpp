@@ -139,6 +139,8 @@ namespace {
             data.verts = hand.verts;
             data.joints = hand.joints;
             data.is_right = row.params.is_right;
+            data.hand_track_id = row.hand_track_id;
+            data.label = row.label;
             by_frame[row.frame].push_back(std::move(data));
         }
 

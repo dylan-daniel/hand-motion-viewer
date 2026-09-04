@@ -79,7 +79,17 @@ private:
 };
 
 /// Expand a frame's hands into GPU-ready arrays plus each hand's mean depth.
-PreparedFrame prepare_frame(const Frame& hands);
+///
+/// ``per_track_coloring`` selects between the Hands pane's two modes:
+///  - off (default): hands whose pipeline label is populated and not "infant"
+///    are dropped (an unlabeled hand -- e.g. from a raw .hmesh source with no
+///    tracking/classification data -- is never filtered, since there is no
+///    label to judge it by); surviving hands are tinted red (left) or blue
+///    (right) via LEFT_HAND_COLOR/RIGHT_HAND_COLOR, ignoring hand_track_id.
+///  - on: every hand is kept, each colored by track_color(hand_track_id) so
+///    distinct tracks are visually distinguishable (an untracked hand, id -1,
+///    falls back to DEFAULT_COLOR).
+PreparedFrame prepare_frame(const Frame& hands, bool per_track_coloring = false);
 
 // ── Offscreen render target ────────────────────
 

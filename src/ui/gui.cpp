@@ -334,6 +334,15 @@ MenuResult draw_menu_bar(MenuState state) {
             ImGui::BeginDisabled(state.free_camera);
             ImGui::Checkbox("Camera Marker", &state.show_camera_marker);
             ImGui::EndDisabled();
+            ImGui::Checkbox("Per-Track Coloring", &state.per_track_coloring);
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Off: only infant-labeled hands are shown, tinted red (left) / blue (right).\n"
+                    "On: every hand is shown, colored uniquely by its tracking ID.\n"
+                    "Only applies to hands opened from a pipeline export file; a raw mesh\n"
+                    "sequence with no tracking/classification data is never filtered."
+                );
+            }
             ImGui::EndMenu();
         }
 

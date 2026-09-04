@@ -384,11 +384,15 @@ void GpuMesh::draw() const {
 
 // ── FrameGpu ───────────────────────────────────
 
-PreparedFrame prepare_frame(const Frame& hands) {
+PreparedFrame prepare_frame(const Frame& hands, bool per_track_coloring) {
     PreparedFrame prepared;
     prepared.reserve(hands.size());
     for (const HandData& hand : hands) {
-        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), DEFAULT_COLOR, hand.joints);
+        if (!per_track_coloring && !hand.label.empty() && hand.label != "infant") {
+            continue;
+        }
+        const glm::vec4 color = per_track_coloring ? track_color(hand.hand_track_id) : hand.is_right ? RIGHT_HAND_COLOR : LEFT_HAND_COLOR;
+        PreparedMesh arrays = prepare_hand(hand.verts, mano_faces(hand.is_right), color, hand.joints);
         double sum = 0.0;
         for (const glm::vec3& position : hand.verts) {
             sum += position.z;

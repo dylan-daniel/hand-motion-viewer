@@ -417,12 +417,20 @@ int main(int, char**) {
                 .hand_translucent = settings.hand_translucent,
                 .show_camera_marker = settings.show_camera_marker,
                 .free_camera = settings.free_camera,
+                .per_track_coloring = settings.per_track_coloring,
                 .open_folder = open_folder_label,
             }
         );
         settings.hand_translucent = menu.state.hand_translucent;
         settings.show_camera_marker = menu.state.show_camera_marker;
         settings.free_camera = menu.state.free_camera;
+        if (menu.state.per_track_coloring != settings.per_track_coloring) {
+            // The toggle changes prepare_frame's output (filtering/coloring), so
+            // force the current frame's GPU buffers to be rebuilt below even
+            // though current_frame itself hasn't moved.
+            loaded_frame = -1;
+        }
+        settings.per_track_coloring = menu.state.per_track_coloring;
         if (settings.free_camera != was_free_camera) {
             if (settings.free_camera) {
                 free_cam.set_from_orbit(orbit_cam);
@@ -541,7 +549,7 @@ int main(int, char**) {
             }
             if (current_frame != loaded_frame) {
                 Frame hands = sequence->load_frame(current_frame);
-                current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands));
+                current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands, settings.per_track_coloring));
                 loaded_frame = current_frame;
             }
             const std::size_t hand_count = sequence->frame_paths(current_frame).size();

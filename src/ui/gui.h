@@ -23,7 +23,8 @@ struct MenuState {
     bool hand_translucent = false;
     bool show_camera_marker = false;
     bool free_camera = false;
-    std::string open_folder; // currently-loaded sequence folder, shown right-aligned in the bar (empty = none)
+    bool per_track_coloring = false; // Hands pane: off = infant-only + red/blue by side, on = colored by track
+    std::string open_folder;         // currently-loaded sequence folder, shown right-aligned in the bar (empty = none)
 };
 
 struct MenuResult {

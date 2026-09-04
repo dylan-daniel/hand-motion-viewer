@@ -8,6 +8,42 @@
 
 #include <glm/gtc/constants.hpp>
 
+namespace {
+    // HSV (h, s, v in 0..1) -> RGB (0..1). Standard six-sector conversion.
+    glm::vec3 hsv_to_rgb(float h, float s, float v) {
+        const float sector = h * 6.0f;
+        const int i = static_cast<int>(std::floor(sector)) % 6;
+        const float f = sector - std::floor(sector);
+        const float p = v * (1.0f - s);
+        const float q = v * (1.0f - s * f);
+        const float t = v * (1.0f - s * (1.0f - f));
+        switch (i) {
+            case 0:
+                return {v, t, p};
+            case 1:
+                return {q, v, p};
+            case 2:
+                return {p, v, t};
+            case 3:
+                return {p, q, v};
+            case 4:
+                return {t, p, v};
+            default:
+                return {v, p, q};
+        }
+    }
+} // namespace
+
+glm::vec4 track_color(int hand_track_id) {
+    if (hand_track_id < 0) {
+        return DEFAULT_COLOR;
+    }
+    constexpr float golden_ratio_conjugate = 0.6180339887498949f;
+    const float hue = std::fmod(static_cast<float>(hand_track_id) * golden_ratio_conjugate, 1.0f);
+    const glm::vec3 rgb = hsv_to_rgb(hue, 0.65f, 0.95f);
+    return {rgb.r, rgb.g, rgb.b, 1.0f};
+}
+
 MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha) {
     MeshArrays out;
     const std::size_t face_count = part.faces.size();

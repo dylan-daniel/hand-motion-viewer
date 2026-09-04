@@ -19,6 +19,19 @@ inline constexpr glm::ivec3 HAND_COLOR_8BIT = {166, 189, 219};
 // Tint applied to a part that carries no per-vertex colours of its own.
 inline constexpr glm::vec4 DEFAULT_COLOR = {0.6f, 0.75f, 0.9f, 1.0f};
 
+// Side tint used in the Hands pane's "filtered" mode (per-track coloring off):
+// left hands red, right hands blue, regardless of hand_track_id.
+inline constexpr glm::vec4 LEFT_HAND_COLOR = {0.85f, 0.15f, 0.15f, 1.0f};
+inline constexpr glm::vec4 RIGHT_HAND_COLOR = {0.15f, 0.40f, 0.90f, 1.0f};
+
+/// A distinct, stable color for a given hand_track_id, used in "per-track
+/// coloring" mode. Hues are spread via a golden-ratio step so consecutive ids
+/// land far apart on the color wheel rather than drifting slowly through it;
+/// the same id always maps to the same color across frames and hand sides. A
+/// negative id (untracked, e.g. a raw .hmesh hand with no pipeline track
+/// data) falls back to DEFAULT_COLOR.
+glm::vec4 track_color(int hand_track_id);
+
 // Target world-unit span a reference hand's largest extent is scaled to fit.
 // The grid spans +/-10 units, so a hand of this size sits comfortably on it.
 // Used by the sequence fit (compute_transform) as the one knob for the overall

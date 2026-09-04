@@ -71,6 +71,7 @@ Config load_config(const std::string& path) {
     read_field(data, "hand_translucent", config.hand_translucent);
     read_field(data, "show_controls", config.show_controls);
     read_field(data, "show_camera_marker", config.show_camera_marker);
+    read_field(data, "per_track_coloring", config.per_track_coloring);
     read_field(data, "free_camera", config.free_camera);
     read_field(data, "active_pane", config.active_pane);
 
@@ -99,6 +100,7 @@ void save_config(const std::string& path, const Config& config) {
     data["hand_translucent"] = config.hand_translucent;
     data["show_controls"] = config.show_controls;
     data["show_camera_marker"] = config.show_camera_marker;
+    data["per_track_coloring"] = config.per_track_coloring;
     data["free_camera"] = config.free_camera;
     data["active_pane"] = config.active_pane;
 
