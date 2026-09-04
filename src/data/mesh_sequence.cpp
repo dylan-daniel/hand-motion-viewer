@@ -5,77 +5,14 @@
 #include "data/mano_model.h"
 
 #include <algorithm>
-#include <cmath>
-#include <cstdint>
-#include <cstdlib>
+#include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <map>
-#include <regex>
 
 namespace {
     namespace fs = std::filesystem;
-
-    // frame_0001_0.hmesh → frame number 0001, hand slot 0.
-    const std::regex kFrameRe(R"(frame_(\d+)_(\d+)\.hmesh$)", std::regex::icase);
 } // namespace
-
-std::vector<std::vector<std::string>> discover_frames(const std::string& folder) {
-    // Group by frame number, each frame's hands ordered by slot; frame numbers
-    // may have gaps, so the result is densified by sorting the keys.
-    std::map<int, std::vector<std::pair<int, std::string>>> by_frame;
-    std::error_code error;
-    for (const fs::directory_entry& entry : fs::directory_iterator(folder, error)) {
-        if (!entry.is_regular_file()) {
-            continue;
-        }
-        const std::string name = entry.path().filename().string();
-        std::smatch match;
-        if (!std::regex_search(name, match, kFrameRe)) {
-            continue;
-        }
-        const int frame_number = std::stoi(match[1].str());
-        const int slot = std::stoi(match[2].str());
-        by_frame[frame_number].emplace_back(slot, entry.path().string());
-    }
-
-    std::vector<std::vector<std::string>> frames;
-    frames.reserve(by_frame.size());
-    for (auto& [frame_number, hands] : by_frame) {
-        std::sort(hands.begin(), hands.end());
-        std::vector<std::string> paths;
-        paths.reserve(hands.size());
-        for (auto& [slot, path] : hands) {
-            paths.push_back(path);
-        }
-        frames.push_back(std::move(paths));
-    }
-    return frames;
-}
-
-std::string frame_image_path(const std::string& mesh_path) {
-    const fs::path mesh(mesh_path);
-    const std::string name = mesh.filename().string();
-    std::smatch match;
-    if (!std::regex_search(name, match, kFrameRe)) {
-        return {};
-    }
-    // Keep the original zero-padded frame number so the name matches on disk.
-    // Both jpg and png are supported; prefer jpg, fall back to png.
-    const std::string base = "frame_" + match[1].str() + "_all_keypoints";
-    const fs::path dir = mesh.parent_path();
-    const fs::path jpg = dir / (base + ".jpg");
-    if (fs::exists(jpg)) {
-        return jpg.string();
-    }
-    const fs::path png = dir / (base + ".png");
-    if (fs::exists(png)) {
-        return png.string();
-    }
-    // Default to the jpg path; the caller treats a missing file as no image.
-    return jpg.string();
-}
 
 Transform compute_transform(const Frame& hands) {
     // Whole-scene bounds: used only to centre the scene on the grid.
@@ -125,11 +62,15 @@ float reference_depth(const Frame& hands) {
 
 namespace {
     // Runs the MANO forward pass for every row of an export file and groups the
-    // results by frame number (sorted, densified the same way discover_frames
-    // densifies .hmesh frame numbers). One-time cost at open: cheap even for a
-    // full trial's worth of hands, since each forward pass is just a handful of
-    // small matrix ops.
-    std::vector<Frame> build_export_frames(const std::string& path) {
+    // results by frame number (sorted; a frame number can be absent, e.g. every
+    // hand in it was filtered out upstream, so this densifies by sorting the
+    // keys rather than assuming a dense 1..N range). frame_numbers[i] is the
+    // pipeline's own frame number for playback index i -- not generally i+1,
+    // since gaps mean the two can diverge -- which is what frame_image_path
+    // needs to find the matching source frame on disk. One-time cost at open:
+    // cheap even for a full trial's worth of hands, since each forward pass is
+    // just a handful of small matrix ops.
+    void build_export_frames(const std::string& path, std::vector<Frame>& frames, std::vector<int>& frame_numbers) {
         std::vector<HandExportRow> rows = load_hand_export(path);
 
         std::map<int, Frame> by_frame;
@@ -144,53 +85,56 @@ namespace {
             by_frame[row.frame].push_back(std::move(data));
         }
 
-        std::vector<Frame> frames;
         frames.reserve(by_frame.size());
+        frame_numbers.reserve(by_frame.size());
         for (auto& [frame_number, hands] : by_frame) {
+            frame_numbers.push_back(frame_number);
             frames.push_back(std::move(hands));
         }
-        return frames;
     }
 } // namespace
 
-MeshSequence::MeshSequence(const std::string& path) : folder_(path) {
-    std::error_code error;
-    if (std::filesystem::is_regular_file(path, error)) {
-        is_export_mode_ = true;
-        export_frames_ = build_export_frames(path);
-        frame_count_ = static_cast<int>(export_frames_.size());
-        // No per-hand file paths exist for export mode; placeholder entries just
-        // carry the correct per-frame hand count for callers that read their
-        // size (the status line), and don't match the .hmesh naming pattern so
-        // frame_image_path() correctly reports "no image" rather than throwing.
-        frame_paths_.reserve(export_frames_.size());
-        for (const Frame& frame : export_frames_) {
-            frame_paths_.emplace_back(frame.size(), "(export)");
-        }
-    } else {
-        frame_paths_ = discover_frames(path);
-        frame_count_ = static_cast<int>(frame_paths_.size());
-    }
+MeshSequence::MeshSequence(const std::string& path) : path_(path) {
+    build_export_frames(path, frames_, frame_numbers_);
+    frame_count_ = static_cast<int>(frames_.size());
 }
 
 Frame MeshSequence::load_frame(int index) const {
     if (index < 0 || index >= frame_count_) {
         return {};
     }
-    if (is_export_mode_) {
-        return export_frames_[static_cast<std::size_t>(index)];
-    }
+    return frames_[static_cast<std::size_t>(index)];
+}
 
-    Frame hands;
-    const std::vector<std::string>& paths = frame_paths_[static_cast<std::size_t>(index)];
-    hands.reserve(paths.size());
-    for (const std::string& path : paths) {
-        HMesh mesh = load_hmesh(path);
-        HandData hand;
-        hand.verts = std::move(mesh.verts);
-        hand.joints = std::move(mesh.joints);
-        hand.is_right = mesh.is_right;
-        hands.push_back(std::move(hand));
+std::string MeshSequence::frame_image_path(int index) const {
+    if (index < 0 || index >= frame_count_) {
+        return {};
     }
-    return hands;
+    // Convention: a plain source-video frame for a hand-motion export lives in
+    // a sibling ``frames/<export-file-stem>/`` folder, named ``frame_%05d.jpg``
+    // (matching infant_grasp_pipeline's own frame-extraction naming) -- e.g.
+    // GZ65_T1_BabyView.hexport looks in frames/GZ65_T1_BabyView/ next to it.
+    // Naming the subfolder after the export file (rather than one shared
+    // frames/ folder) disambiguates multiple .hexport files sitting in the
+    // same directory. Nothing in the .hexport file itself records this path --
+    // it is purely a packaging convention between however the export and its
+    // frames are delivered together, so a missing folder or frame is not an
+    // error, just "no image" (the caller treats an empty path that way).
+    const fs::path export_file(path_);
+    const fs::path frames_dir = export_file.parent_path() / "frames" / export_file.stem();
+    const int frame_number = frame_numbers_[static_cast<std::size_t>(index)];
+
+    char name[32];
+    std::snprintf(name, sizeof(name), "frame_%05d.jpg", frame_number);
+    std::error_code error;
+    fs::path candidate = frames_dir / name;
+    if (fs::exists(candidate, error)) {
+        return candidate.string();
+    }
+    std::snprintf(name, sizeof(name), "frame_%05d.png", frame_number);
+    candidate = frames_dir / name;
+    if (fs::exists(candidate, error)) {
+        return candidate.string();
+    }
+    return {};
 }

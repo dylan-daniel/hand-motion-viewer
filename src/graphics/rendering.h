@@ -82,10 +82,13 @@ private:
 ///
 /// ``per_track_coloring`` selects between the Hands pane's two modes:
 ///  - off (default): hands whose pipeline label is populated and not "infant"
-///    are dropped (an unlabeled hand -- e.g. from a raw .hmesh source with no
-///    tracking/classification data -- is never filtered, since there is no
-///    label to judge it by); surviving hands are tinted red (left) or blue
-///    (right) via LEFT_HAND_COLOR/RIGHT_HAND_COLOR, ignoring hand_track_id.
+///    are dropped (a hand with no label at all is never filtered, since there
+///    is no label to judge it by -- in practice every row of a real .hexport
+///    file has one, defaulting to "unclassified" when the pipeline's
+///    classification stage wasn't run, but this stays a safe no-filter
+///    fallback rather than an assumption); surviving hands are tinted red
+///    (left) or blue (right) via LEFT_HAND_COLOR/RIGHT_HAND_COLOR, ignoring
+///    hand_track_id.
 ///  - on: every hand is kept, each colored by track_color(hand_track_id) so
 ///    distinct tracks are visually distinguishable (an untracked hand, id -1,
 ///    falls back to DEFAULT_COLOR).

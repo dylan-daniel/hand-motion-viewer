@@ -28,8 +28,8 @@ inline constexpr glm::vec4 RIGHT_HAND_COLOR = {0.15f, 0.40f, 0.90f, 1.0f};
 /// coloring" mode. Hues are spread via a golden-ratio step so consecutive ids
 /// land far apart on the color wheel rather than drifting slowly through it;
 /// the same id always maps to the same color across frames and hand sides. A
-/// negative id (untracked, e.g. a raw .hmesh hand with no pipeline track
-/// data) falls back to DEFAULT_COLOR.
+/// negative id (untracked -- HandData::hand_track_id's default) falls back to
+/// DEFAULT_COLOR.
 glm::vec4 track_color(int hand_track_id);
 
 // Target world-unit span a reference hand's largest extent is scaled to fit.
@@ -39,8 +39,8 @@ glm::vec4 track_color(int hand_track_id);
 inline constexpr float MODEL_FIT_SPAN = 1.0f;
 
 // ── MANO joint skeleton ────────────────────────
-// The .hmesh format stores only the 21 joint positions, not the colored sphere/
-// bone geometry the OBJ baked in, so we regenerate that visualization here. The
+// A hand only carries the 21 joint positions themselves, not any colored
+// sphere/bone geometry, so we regenerate that visualization here. The
 // definitions below mirror the authoritative ones in HaMeR's demo.py.
 
 /// 20 (parent, child) bone pairs in standard MANO/OpenPose joint order.
@@ -100,20 +100,6 @@ MeshArrays build_arrays(const MeshPart& part, std::optional<float> alpha = std::
 /// ``color``, plus a triangle index buffer from ``faces``. ~5x smaller than the
 /// expanded form for a closed mesh like the MANO hand.
 MeshArrays build_indexed_surface(const std::vector<glm::vec3>& verts, const std::vector<glm::ivec3>& faces, const glm::vec4& color);
-
-// ── Binary .hmesh format ───────────────────────
-
-/// One hand decoded from a ``.hmesh`` file: the 778 MANO surface vertices and 21
-/// joint positions, both rotated 180° about X into the on-screen pose the OBJ
-/// export used (so they line up with the rest of the viewer).
-struct HMesh {
-    bool is_right = true;
-    std::vector<glm::vec3> verts;  // MANO surface vertices (778 for MANO)
-    std::vector<glm::vec3> joints; // joint positions (21 for MANO)
-};
-
-/// Read a ``.hmesh`` binary file. Throws std::runtime_error on a bad header.
-HMesh load_hmesh(const std::string& path);
 
 /// Load the shared MANO face topology from ``mano_faces.bin`` once at startup.
 /// Builds both the right-hand winding and the left-hand (flipped) winding so a

@@ -1,9 +1,9 @@
 #pragma once
 
-// MANO hand reconstruction from generative parameters. A trial CSV stores the
-// MANO shape/pose parameters per detected hand (see data/SAVE_ALL.md); feeding
-// them through the MANO layer here regenerates the 778 surface vertices and 21
-// joints exactly, which replaces the precomputed .hmesh vertex dumps.
+// MANO hand reconstruction from generative parameters. A .hexport file (see
+// data/hand_export.h) stores the MANO shape/pose parameters per tracked hand
+// per frame; feeding them through the MANO layer here regenerates the 778
+// surface vertices and 21 joints exactly.
 //
 // The model weights (template mesh, shape/pose blendshapes, joint regressor,
 // linear-blend-skinning weights, kinematic tree) are loaded once at startup from

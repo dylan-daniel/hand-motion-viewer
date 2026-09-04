@@ -41,10 +41,9 @@ int main(int, char**) {
     const std::string config_path = default_config_path();
     Config settings = load_config(config_path);
 
-    // Load the shared MANO face topology every hand renders against (both .hmesh
-    // and .hexport sources), plus the MANO model weights .hexport sources need to
-    // regenerate hand geometry via a forward pass. Both live under assets/mano/,
-    // consolidated there from the old top-level mano/ (see CMakeLists.txt).
+    // Load the shared MANO face topology every hand renders against, plus the
+    // MANO model weights needed to regenerate hand geometry via a forward pass
+    // from a .hexport file's parameters. Both live under assets/mano/.
     {
         std::string assets_mano_dir = "assets/mano/";
         const char* base = SDL_GetBasePath();
@@ -59,7 +58,7 @@ int main(int, char**) {
         try {
             init_mano_model(assets_mano_dir + "mano_model.bin");
         } catch (const std::exception& error) {
-            std::printf("Warning: %s — .hexport files will not load.\n", error.what());
+            std::printf("Warning: %s — export files will not load.\n", error.what());
         }
     }
 
@@ -193,24 +192,24 @@ int main(int, char**) {
     float playback_speed = settings.playback_speed;
     double playback_accumulator = 0.0;
 
-    auto open_sequence = [&](const std::string& folder, int start_frame) {
+    auto open_sequence = [&](const std::string& export_path, int start_frame) {
         std::unique_ptr<MeshSequence> opened;
         bool has_frames = false;
         try {
-            opened = std::make_unique<MeshSequence>(folder);
+            opened = std::make_unique<MeshSequence>(export_path);
             has_frames = opened->frame_count() > 0;
             if (!has_frames) {
-                std::printf("No frames found in %s\n", folder.c_str());
+                std::printf("No frames found in %s\n", export_path.c_str());
             }
         } catch (const std::exception& error) {
-            // A .hexport file that fails to parse/decompress, or whose MANO
-            // model wasn't loaded at startup, throws from the constructor
-            // rather than the disk-mode path's "just found nothing" case.
-            std::printf("Failed to open %s: %s\n", folder.c_str(), error.what());
+            // A bad/incompatible .hexport file (wrong magic/version, truncated,
+            // decompression failure), or the MANO model failing to load at
+            // startup, throws from the constructor.
+            std::printf("Failed to open %s: %s\n", export_path.c_str(), error.what());
         }
-        // Reset the viewer to the requested folder either way: a folder with no
-        // frames clears the scene rather than leaving the previous sequence on
-        // screen (so opening from the Explorer always resets, like the menu does).
+        // Reset the viewer to the requested file either way: one with no frames
+        // clears the scene rather than leaving the previous sequence on screen
+        // (so opening from the Explorer always resets, like the menu does).
         sequence = has_frames ? std::move(opened) : nullptr;
         current_gpu.reset();
         loaded_frame = -1;
@@ -219,15 +218,15 @@ int main(int, char**) {
         current_frame = has_frames ? std::clamp(start_frame, 0, sequence->frame_count() - 1) : 0;
     };
 
-    // Reopen the last mesh sequence folder if present.
+    // Reopen the last export file if present.
     namespace fs = std::filesystem;
-    if (settings.last_folder && fs::is_directory(*settings.last_folder)) {
+    if (settings.last_folder && fs::is_regular_file(*settings.last_folder)) {
         open_sequence(*settings.last_folder, settings.last_frame);
     }
 
-    // Explorer pane, rooted at the saved data folder. set_root validates the path and
-    // kicks off the background scan that builds the pruned tree; it is a no-op when no
-    // folder is saved.
+    // Explorer pane, rooted at the saved data folder, listing .hexport files at any
+    // nesting depth. set_root validates the path and kicks off the background scan
+    // that builds the pruned tree; it is a no-op when no folder is saved.
     FileExplorer explorer;
     // Play/pause icons for the transport bar, loaded once here (GL context is current).
     TransportIcons transport_icons;
@@ -244,16 +243,14 @@ int main(int, char**) {
         explorer.set_root(*settings.data_folder);
     }
 
-    // Native pickers: a folder for opening a .hmesh mesh sequence (menu / Explorer
-    // click) or choosing the Explorer's data-folder root, and a single-file picker
-    // for opening a .hexport binary export.
-    std::unique_ptr<pfd::select_folder> folder_dialog;
+    // Native pickers: a folder picker for choosing the Explorer's data-folder
+    // root, and a single-file picker for opening a .hexport export (menu bar).
     std::unique_ptr<pfd::select_folder> data_folder_dialog;
     std::unique_ptr<pfd::open_file> export_file_dialog;
-    // A folder the Explorer asked to open, applied at the top of the next frame
+    // A file the Explorer asked to open, applied at the top of the next frame
     // rather than mid-frame: open_sequence frees current_gpu, and the render below
     // still holds a pointer to it, so opening inline would use freed memory.
-    std::optional<std::string> pending_open_folder;
+    std::optional<std::string> pending_open_file;
 
     // Both cameras kept alive; ``camera`` points at the active one.
     OrbitCamera orbit_cam;
@@ -404,12 +401,12 @@ int main(int, char**) {
 
         const bool was_free_camera = settings.free_camera;
 
-        // Label for the menu bar: the absolute path of the open sequence folder.
-        std::string open_folder_label;
+        // Label for the menu bar: the absolute path of the open export file.
+        std::string open_file_label;
         if (sequence) {
             std::error_code abs_error;
-            const fs::path absolute_folder = fs::absolute(sequence->folder(), abs_error);
-            open_folder_label = abs_error ? sequence->folder() : absolute_folder.string();
+            const fs::path absolute_path = fs::absolute(sequence->path(), abs_error);
+            open_file_label = abs_error ? sequence->path() : absolute_path.string();
         }
 
         const MenuResult menu = draw_menu_bar(
@@ -418,7 +415,7 @@ int main(int, char**) {
                 .show_camera_marker = settings.show_camera_marker,
                 .free_camera = settings.free_camera,
                 .per_track_coloring = settings.per_track_coloring,
-                .open_folder = open_folder_label,
+                .open_file = open_file_label,
             }
         );
         settings.hand_translucent = menu.state.hand_translucent;
@@ -475,11 +472,8 @@ int main(int, char**) {
             ImGui::DockBuilderFinish(dock_id);
         }
 
-        // Apply the open-folder/open-file request before choosing what to draw,
-        // since it frees GPU buffers the drawable below must reflect.
-        if (menu.folder_requested && !folder_dialog) {
-            folder_dialog = std::make_unique<pfd::select_folder>("Select mesh sequence folder");
-        }
+        // Apply the open-file request before choosing what to draw, since it
+        // frees GPU buffers the drawable below must reflect.
         if (menu.export_file_requested && !export_file_dialog) {
             export_file_dialog =
                 std::make_unique<pfd::open_file>("Select hand-motion export file", "", std::vector<std::string>{"Hand export files", "*.hexport"});
@@ -488,13 +482,6 @@ int main(int, char**) {
         // Poll with a zero timeout: pfd's ready() defaults to a 20ms wait that
         // blocks this thread every frame the dialog is open. A zero timeout
         // returns immediately and keeps idle frames.
-        if (folder_dialog && folder_dialog->ready(0)) {
-            const std::string folder = folder_dialog->result();
-            if (!folder.empty()) {
-                open_sequence(folder, 0);
-            }
-            folder_dialog.reset();
-        }
         if (export_file_dialog && export_file_dialog->ready(0)) {
             const std::vector<std::string> chosen = export_file_dialog->result();
             if (!chosen.empty()) {
@@ -516,9 +503,9 @@ int main(int, char**) {
 
         // Apply a deferred Explorer open here, before the current frame's GPU
         // buffers are read below, so opening never frees a buffer still in use.
-        if (pending_open_folder) {
-            open_sequence(*pending_open_folder, 0);
-            pending_open_folder.reset();
+        if (pending_open_file) {
+            open_sequence(*pending_open_file, 0);
+            pending_open_file.reset();
         }
 
         // Advance playback at a fixed rate independent of the render frame rate.
@@ -552,7 +539,7 @@ int main(int, char**) {
                 current_gpu = std::make_unique<FrameGpu>(prepare_frame(hands, settings.per_track_coloring));
                 loaded_frame = current_frame;
             }
-            const std::size_t hand_count = sequence->frame_paths(current_frame).size();
+            const std::size_t hand_count = sequence->hand_count(current_frame);
             char buffer[128];
             std::snprintf(
                 buffer, sizeof(buffer), "frame %d / %d - %zu hand%s", current_frame + 1, sequence->frame_count(), hand_count, hand_count == 1 ? "" : "s"
@@ -564,11 +551,12 @@ int main(int, char**) {
         const bool has_sequence = sequence != nullptr;
         const int frame_count = has_sequence ? sequence->frame_count() : 0;
 
-        // Decode the current frame's modeled keypoint image (cached by path, so
-        // this is a no-op unless the frame changed).
+        // Decode the current frame's plain source-video frame (cached by path, so
+        // this is a no-op unless the frame changed). See
+        // MeshSequence::frame_image_path for the frames/<export-stem>/ lookup
+        // convention; empty means no matching frame was found on disk.
         if (has_sequence) {
-            const std::vector<std::string>& hands = sequence->frame_paths(current_frame);
-            const std::string image_path = hands.empty() ? std::string() : frame_image_path(hands.front());
+            const std::string image_path = sequence->frame_image_path(current_frame);
             if (!image_path.empty()) {
                 frame_image.load(image_path);
             } else {
@@ -611,8 +599,8 @@ int main(int, char**) {
         if (explorer_result.choose_root_requested && !data_folder_dialog) {
             data_folder_dialog = std::make_unique<pfd::select_folder>("Select data folder");
         }
-        if (explorer_result.open_folder) {
-            pending_open_folder = explorer_result.open_folder;
+        if (explorer_result.open_file) {
+            pending_open_file = explorer_result.open_file;
         }
 
         if (has_sequence) {
@@ -674,7 +662,7 @@ int main(int, char**) {
 
     // ── Persist settings ───────────────────────
     if (sequence) {
-        settings.last_folder = sequence->folder();
+        settings.last_folder = sequence->path();
         settings.last_frame = current_frame;
     } else {
         settings.last_folder.reset();

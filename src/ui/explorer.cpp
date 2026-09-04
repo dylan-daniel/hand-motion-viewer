@@ -58,7 +58,7 @@ namespace {
         return name.empty() ? path.string() : name;
     }
 
-    /// Natural-order ("human") comparison of two folder names. Each name is read as
+    /// Natural-order ("human") comparison of two names. Each name is read as
     /// an alternating sequence of non-digit and digit runs; digit runs compare by
     /// numeric value rather than lexically, so e.g. ``T1_BabyView`` splits into
     /// (``T``, ``1``, ``_BabyView``) and sorts before ``T10_BabyView`` instead of
@@ -117,17 +117,23 @@ namespace {
         return (left.size() - left_index) < (right.size() - right_index);
     }
 
-    /// Sort a node's kept children by natural (human) folder-name order.
+    /// Sort a node's kept children: folders before files (so containers group
+    /// together above the exports they lead to), natural name order within each
+    /// group.
     void sort_children(FileExplorer::Node& node) {
         std::sort(node.children.begin(), node.children.end(), [](const FileExplorer::Node& left, const FileExplorer::Node& right) {
+            if (left.is_file != right.is_file) {
+                return !left.is_file;
+            }
             return natural_less(left.name, right.name);
         });
     }
 
-    /// True once a kept child should stay in the pruned tree: it either directly
-    /// holds ``.hmesh`` files or has a descendant that does. A child with neither is
-    /// a dead branch and is dropped.
-    bool keep_child(const FileExplorer::Node& child) { return child.has_meshes || !child.children.empty(); }
+    /// True once a kept child should stay in the pruned tree: a file child is
+    /// always a real ``.hexport`` export (kept unconditionally); a folder child
+    /// is kept only if it retained anything below it (otherwise it is a dead
+    /// branch, dropped).
+    bool keep_child(const FileExplorer::Node& child) { return child.is_file || !child.children.empty(); }
 
 #ifdef _WIN32
     /// Convert a UTF-8 path to UTF-16 for the wide Win32 directory APIs.
@@ -152,12 +158,12 @@ namespace {
         return result;
     }
 
-    /// True if ``name`` ends with a case-insensitive ``.hmesh`` extension. Tests the
-    /// suffix in place — no path/extension allocation, which matters across the
-    /// hundreds of thousands of files a sequence folder can hold.
-    bool wname_is_hmesh(const wchar_t* name) {
-        static const wchar_t ext[] = L".hmesh";
-        const std::size_t ext_length = 6; // wcslen(L".hmesh")
+    /// True if ``name`` ends with a case-insensitive ``.hexport`` extension. Tests
+    /// the suffix in place — no path/extension allocation, which matters across
+    /// the hundreds of thousands of files a data folder can hold.
+    bool wname_is_hexport(const wchar_t* name) {
+        static const wchar_t ext[] = L".hexport";
+        const std::size_t ext_length = 8; // wcslen(L".hexport")
         const std::size_t name_length = std::wcslen(name);
         if (name_length < ext_length) {
             return false;
@@ -171,7 +177,8 @@ namespace {
     }
 
     /// Recursively fill ``node`` (whose ``path``/``name`` are already set) with its
-    /// pruned subtree, setting ``has_meshes`` and the kept ``children`` (sorted).
+    /// pruned subtree: kept subfolders plus any ``.hexport`` files found directly
+    /// inside it, both as ``children`` (sorted, folders first).
     ///
     /// Uses FindFirstFileExW with FIND_FIRST_EX_LARGE_FETCH rather than
     /// std::filesystem: the directory entry's type and name come straight from the
@@ -180,8 +187,6 @@ namespace {
     /// std::filesystem walk, which issues a stat per entry (see bench/). Runs on the
     /// worker thread; touches no shared state.
     void scan_children(FileExplorer::Node& node) {
-        node.has_meshes = false;
-
         const std::wstring pattern = widen(node.path) + L"\\*";
         WIN32_FIND_DATAW find_data;
         HANDLE handle = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &find_data, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
@@ -199,8 +204,12 @@ namespace {
                     if (keep_child(child)) {
                         node.children.push_back(std::move(child));
                     }
-                } else if (!node.has_meshes && wname_is_hmesh(name)) {
-                    node.has_meshes = true;
+                } else if (wname_is_hexport(name)) {
+                    FileExplorer::Node child;
+                    child.is_file = true;
+                    child.name = narrow(name, static_cast<int>(std::wcslen(name)));
+                    child.path = node.path + "\\" + child.name;
+                    node.children.push_back(std::move(child));
                 }
             } while (FindNextFileW(handle, &find_data) != 0);
             FindClose(handle);
@@ -208,10 +217,10 @@ namespace {
         sort_children(node);
     }
 #else
-    /// True if ``name`` ends with a case-insensitive ``.hmesh`` extension, tested in
-    /// place without building a path/extension string.
-    bool name_is_hmesh(const std::string& name) {
-        static const std::string ext = ".hmesh";
+    /// True if ``name`` ends with a case-insensitive ``.hexport`` extension, tested
+    /// in place without building a path/extension string.
+    bool name_is_hexport(const std::string& name) {
+        static const std::string ext = ".hexport";
         if (name.size() < ext.size()) {
             return false;
         }
@@ -225,12 +234,9 @@ namespace {
     }
 
     /// Portable std::filesystem fallback for non-Windows builds. Same contract as the
-    /// Win32 ``scan_children`` above: a single pass classifies each entry as a
-    /// subdirectory (recursed and kept if it leads to a sequence) or an ``.hmesh``
-    /// file (which marks this folder openable).
+    /// Win32 ``scan_children`` above: a single pass classifies each entry as a kept
+    /// subdirectory or an ``.hexport`` file (both become children of this node).
     void scan_children(FileExplorer::Node& node) {
-        node.has_meshes = false;
-
         std::error_code error;
         fs::directory_iterator iterator(node.path, fs::directory_options::skip_permission_denied, error);
         if (!error) {
@@ -244,8 +250,12 @@ namespace {
                     if (keep_child(child)) {
                         node.children.push_back(std::move(child));
                     }
-                } else if (!node.has_meshes && entry.is_regular_file(type_error) && name_is_hmesh(entry.path().filename().string())) {
-                    node.has_meshes = true;
+                } else if (entry.is_regular_file(type_error) && name_is_hexport(entry.path().filename().string())) {
+                    FileExplorer::Node child;
+                    child.is_file = true;
+                    child.path = entry.path().string();
+                    child.name = entry.path().filename().string();
+                    node.children.push_back(std::move(child));
                 }
             }
         }
@@ -255,7 +265,7 @@ namespace {
 
     /// Paint a node's icon and name over the tree-node row just submitted. The row
     /// itself is drawn with an empty label (so it stays full-width clickable via
-    /// SpanFullWidth and keeps its expand arrow); here we blit the folder icon
+    /// SpanFullWidth and keeps its expand arrow); here we blit the folder/file icon
     /// where the label would start, then the name after it. Drawing both ourselves
     /// is what lets the icon sit between the arrow and the text — imgui's tree node
     /// has no built-in slot for it. A missing icon texture (0) just draws the name.
@@ -263,7 +273,7 @@ namespace {
     /// was drawn. It is passed in rather than read from GetItemRectMin because
     /// SpanFullWidth stretches the item rect to the full row width, which would put
     /// the icon over the arrow and ignore nesting indent.
-    void draw_node_label(const ExplorerIcons& icons, const std::string& name, bool expanded, float node_left) {
+    void draw_node_label(const ExplorerIcons& icons, const std::string& name, bool is_file, bool expanded, float node_left) {
         const float icon_size = ImGui::GetFontSize(); // square icon, matched to text height
         const ImVec2 item_min = ImGui::GetItemRectMin();
         const ImVec2 item_max = ImGui::GetItemRectMax();
@@ -272,7 +282,7 @@ namespace {
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
 
         float text_x = label_x;
-        const unsigned int texture = expanded ? icons.folder_open : icons.folder_closed;
+        const unsigned int texture = is_file ? icons.file : (expanded ? icons.folder_open : icons.folder_closed);
         if (texture != 0) {
             const ImVec2 icon_min(label_x, center_y - icon_size * 0.5f);
             const ImVec2 icon_max(label_x + icon_size, center_y + icon_size * 0.5f);
@@ -310,11 +320,14 @@ namespace {
         ++draw.row_index;
     }
 
-    /// Recursively draw one folder node and record any click on a sequence folder
-    /// into ``draw.result``. The tree is already fully scanned, so this only walks
-    /// memory. Only folders that directly hold ``.hmesh`` files (``has_meshes``) are
-    /// openable; pure container folders just expand/collapse via their arrow.
+    /// Recursively draw one node and record any click on a ``.hexport`` leaf into
+    /// ``draw.result``. The tree is already fully scanned, so this only walks
+    /// memory. Only file leaves are openable; folders are pure containers that
+    /// just expand/collapse via their arrow.
     void draw_node(TreeDraw& draw, FileExplorer::Node& node) {
+        // A file node is always a leaf by construction (scan_children never gives
+        // it children); a folder node with no children would have been pruned, so
+        // in practice every leaf reaching this point is a file.
         const bool leaf = node.children.empty();
 
         // SpanFullWidth makes the node's hover/selection fill the row so it lines up
@@ -325,14 +338,12 @@ namespace {
             stripe_row(draw);
             // Empty label, path as the id: the name is painted by draw_node_label so
             // the icon can sit between the arrow and the text, and the path keeps ids
-            // unique even when two folders share a name.
+            // unique even when two files share a name in different folders.
             const float node_left = ImGui::GetCursorScreenPos().x;
             ImGui::TreeNodeEx(node.path.c_str(), flags, "%s", "");
-            draw_node_label(draw.explorer.icons(), node.name, false, node_left);
-            // A leaf with no meshes shouldn't happen (it would have been pruned), but
-            // guard anyway: only sequence folders open on click.
-            if (node.has_meshes && ImGui::IsItemClicked()) {
-                draw.result.open_folder = node.path;
+            draw_node_label(draw.explorer.icons(), node.name, node.is_file, false, node_left);
+            if (node.is_file && ImGui::IsItemClicked()) {
+                draw.result.open_file = node.path;
             }
             return;
         }
@@ -348,13 +359,7 @@ namespace {
         stripe_row(draw);
         const float node_left = ImGui::GetCursorScreenPos().x;
         const bool open = ImGui::TreeNodeEx(node.path.c_str(), flags, "%s", "");
-        draw_node_label(draw.explorer.icons(), node.name, open, node_left);
-        // Only a sequence folder is clickable; pure containers ignore label clicks
-        // (the arrow still toggles them). The toggle check keeps a click on the arrow
-        // from also opening the sequence.
-        if (node.has_meshes && ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-            draw.result.open_folder = node.path;
-        }
+        draw_node_label(draw.explorer.icons(), node.name, node.is_file, open, node_left);
         if (open) {
             draw.explorer.mark_expanded(node.path); // record for persisting the open state
             for (FileExplorer::Node& child : node.children) {
@@ -372,6 +377,9 @@ ExplorerIcons::~ExplorerIcons() {
     if (folder_open != 0) {
         glDeleteTextures(1, &folder_open);
     }
+    if (file != 0) {
+        glDeleteTextures(1, &file);
+    }
     if (change_root != 0) {
         glDeleteTextures(1, &change_root);
     }
@@ -384,6 +392,7 @@ void ExplorerIcons::load(const std::string& assets_dir) {
     const std::string prefix = assets_dir.empty() || assets_dir.back() == '/' || assets_dir.back() == '\\' ? assets_dir : assets_dir + "/";
     folder_closed = load_texture(prefix + "folder-blue.png");
     folder_open = load_texture(prefix + "folder-blue-open.png");
+    file = load_texture(prefix + "file-hexport.png");
     change_root = load_texture(prefix + "folder-lucide.png");
     refresh = load_texture(prefix + "folder-sync.png");
 }
@@ -393,8 +402,8 @@ FileExplorer::Node FileExplorer::scan_root(const std::string& root) {
     node.path = root;
     node.name = folder_name(fs::path(root));
     node.default_open = true; // root opens so its kept subfolders are visible
-    // Fill has_meshes and the pruned, sorted children. Unlike a subtree the root is
-    // always kept (even with no sequences below) so the pane has something to show.
+    // Fill the pruned, sorted children. Unlike a subtree the root is always kept
+    // (even with no exports below) so the pane has something to show.
     scan_children(node);
     return node;
 }
@@ -472,7 +481,7 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id) {
         const ExplorerIcons& icons = explorer.icons();
 
         const char* heading = "No data folder selected";
-        const char* hint = "Choose a folder to scan for mesh sequences.";
+        const char* hint = "Choose a folder to scan for .hexport files.";
         const char* button_label = "Choose Data Folder";
         const float icon_size = 48.0f;
         const bool has_icon = icons.change_root != 0;
@@ -583,7 +592,7 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id) {
         } else if (scanning) {
             ImGui::TextDisabled("Scanning...");
         } else {
-            ImGui::TextDisabled("No folders with .hmesh files found.");
+            ImGui::TextDisabled("No .hexport files found.");
         }
     }
 

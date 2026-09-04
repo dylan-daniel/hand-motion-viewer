@@ -9,7 +9,7 @@
 #include <vector>
 
 struct Config {
-    std::optional<std::string> last_folder; // path of the most recently loaded mesh sequence folder
+    std::optional<std::string> last_folder; // path of the most recently loaded .hexport export file
     int last_frame = 0;                     // frame index to reopen the sequence on
     float playback_speed = 1.0f;            // playback rate multiplier (0.5x .. 4x)
     bool hand_translucent = true;           // whether the hand is drawn see-through

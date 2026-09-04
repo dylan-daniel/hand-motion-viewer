@@ -1,15 +1,17 @@
 #pragma once
 
 // Explorer pane: a folder tree rooted at a chosen data folder, pruned to the
-// folders that lead to mesh sequences.
+// folders that lead to a ``.hexport`` export file, with the files themselves
+// shown as openable leaves at whatever depth they sit.
 //
 // On set_root (and on an explicit refresh) the whole subtree is walked once on a
-// background thread, keeping only folders that directly contain ``.hmesh`` files
-// or that have a descendant which does — so dead branches (no sequences anywhere
-// below) are dropped while the path to every sequence folder is preserved. The
-// finished tree is swapped in on the UI thread; drawing each frame only walks the
-// in-memory tree. Only folders that directly hold ``.hmesh`` files are openable;
-// the rest are pure containers that can merely expand/collapse.
+// background thread: every ``.hexport`` file found becomes a leaf node in the
+// pruned tree (wherever it is, no matter how deeply nested), and every folder
+// that leads to at least one such file (directly or via a descendant) is kept as
+// a pure container node — one that only expands/collapses, never opens anything
+// itself. A folder with no ``.hexport`` file anywhere below it is dropped
+// entirely. The finished tree is swapped in on the UI thread; drawing each frame
+// only walks the in-memory tree.
 
 #include <atomic>
 #include <mutex>
@@ -43,22 +45,25 @@ struct ExplorerIcons {
 
     unsigned int folder_closed = 0; // shown for a collapsed folder
     unsigned int folder_open = 0;   // shown for an expanded folder
+    unsigned int file = 0;          // shown for a leaf .hexport file
     unsigned int change_root = 0;   // the "change data folder" toolbar button (white, tinted at draw time)
     unsigned int refresh = 0;       // the "rescan current folder" toolbar button (white, tinted at draw time)
 };
 
-/// A folder tree pruned to sequence-bearing branches. Built in full by a single
-/// background scan rather than lazily, so drawing never touches the disk.
+/// A folder tree pruned to branches that lead to a ``.hexport`` file, with the
+/// files themselves as leaves. Built in full by a single background scan rather
+/// than lazily, so drawing never touches the disk.
 class FileExplorer {
 public:
-    /// One folder in the pruned tree. ``children`` is the kept subfolders (those
-    /// with ``.hmesh`` files somewhere below). ``has_meshes`` means this folder
-    /// directly contains ``.hmesh`` files, which is what makes it openable.
+    /// One node in the pruned tree: either a folder (pure container, never
+    /// itself openable; ``children`` holds its kept subfolders and any
+    /// ``.hexport`` files found directly inside it) or a file (``is_file``,
+    /// always a leaf with no children — an openable ``.hexport`` export).
     struct Node {
         std::string path;
         std::string name;
         std::vector<Node> children;
-        bool has_meshes = false;   // directly contains .hmesh files (=> openable)
+        bool is_file = false;      // true => a leaf .hexport file, openable on click
         bool default_open = false; // seed imgui's initial open state once (the root)
     };
 
@@ -138,8 +143,8 @@ private:
 struct ExplorerResult {
     bool hovered = false;
     bool focused = false;
-    std::optional<std::string> open_folder; // a sequence folder was clicked: load it
-    bool choose_root_requested = false;     // the "Choose Data Folder" / change button was pressed
+    std::optional<std::string> open_file; // a .hexport leaf was clicked: load it
+    bool choose_root_requested = false;   // the "Choose Data Folder" / change button was pressed
 };
 
 /// Draw the dockable "Explorer" window. Polls for a finished scan and may start a

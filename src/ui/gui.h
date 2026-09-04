@@ -24,12 +24,11 @@ struct MenuState {
     bool show_camera_marker = false;
     bool free_camera = false;
     bool per_track_coloring = false; // Hands pane: off = infant-only + red/blue by side, on = colored by track
-    std::string open_folder;         // currently-loaded sequence folder, shown right-aligned in the bar (empty = none)
+    std::string open_file;           // currently-loaded .hexport file, shown right-aligned in the bar (empty = none)
 };
 
 struct MenuResult {
     MenuState state;                    // the (possibly toggled) menu state
-    bool folder_requested = false;      // user picked "Open Mesh Sequence Folder"
     bool export_file_requested = false; // user picked "Open Export File"
 };
 
