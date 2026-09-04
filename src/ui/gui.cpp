@@ -309,6 +309,7 @@ void TransportIcons::load(const std::string& icons_dir) {
 
 MenuResult draw_menu_bar(MenuState state) {
     bool folder_requested = false;
+    bool export_file_requested = false;
 
     // Extra padding makes the bar taller; pop it right after begin so dropdown
     // contents don't grow too.
@@ -319,6 +320,9 @@ MenuResult draw_menu_bar(MenuState state) {
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Open Mesh Sequence Folder")) {
                 folder_requested = true;
+            }
+            if (ImGui::MenuItem("Open Export File")) {
+                export_file_requested = true;
             }
             ImGui::EndMenu();
         }
@@ -359,7 +363,7 @@ MenuResult draw_menu_bar(MenuState state) {
 
         ImGui::EndMainMenuBar();
     }
-    return {state, folder_requested};
+    return {state, folder_requested, export_file_requested};
 }
 
 ViewportResult draw_viewport_window(

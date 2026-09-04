@@ -27,8 +27,9 @@ struct MenuState {
 };
 
 struct MenuResult {
-    MenuState state;               // the (possibly toggled) menu state
-    bool folder_requested = false; // user picked "Open Mesh Sequence Folder"
+    MenuState state;                    // the (possibly toggled) menu state
+    bool folder_requested = false;      // user picked "Open Mesh Sequence Folder"
+    bool export_file_requested = false; // user picked "Open Export File"
 };
 
 /// Playback-transport state every pane that can host the player shares: passed in

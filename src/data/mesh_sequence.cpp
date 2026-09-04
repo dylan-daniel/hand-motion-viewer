@@ -1,6 +1,8 @@
 #include "data/mesh_sequence.h"
 
 #include "data/geometry.h"
+#include "data/hand_export.h"
+#include "data/mano_model.h"
 
 #include <algorithm>
 #include <cmath>
@@ -121,16 +123,63 @@ float reference_depth(const Frame& hands) {
     return count == 0 ? 0.0f : static_cast<float>(sum / static_cast<double>(count));
 }
 
-MeshSequence::MeshSequence(const std::string& folder) : folder_(folder) {
-    frame_paths_ = discover_frames(folder);
-    frame_count_ = static_cast<int>(frame_paths_.size());
+namespace {
+    // Runs the MANO forward pass for every row of an export file and groups the
+    // results by frame number (sorted, densified the same way discover_frames
+    // densifies .hmesh frame numbers). One-time cost at open: cheap even for a
+    // full trial's worth of hands, since each forward pass is just a handful of
+    // small matrix ops.
+    std::vector<Frame> build_export_frames(const std::string& path) {
+        std::vector<HandExportRow> rows = load_hand_export(path);
+
+        std::map<int, Frame> by_frame;
+        for (const HandExportRow& row : rows) {
+            const ManoHand hand = mano_forward(row.params);
+            HandData data;
+            data.verts = hand.verts;
+            data.joints = hand.joints;
+            data.is_right = row.params.is_right;
+            by_frame[row.frame].push_back(std::move(data));
+        }
+
+        std::vector<Frame> frames;
+        frames.reserve(by_frame.size());
+        for (auto& [frame_number, hands] : by_frame) {
+            frames.push_back(std::move(hands));
+        }
+        return frames;
+    }
+} // namespace
+
+MeshSequence::MeshSequence(const std::string& path) : folder_(path) {
+    std::error_code error;
+    if (std::filesystem::is_regular_file(path, error)) {
+        is_export_mode_ = true;
+        export_frames_ = build_export_frames(path);
+        frame_count_ = static_cast<int>(export_frames_.size());
+        // No per-hand file paths exist for export mode; placeholder entries just
+        // carry the correct per-frame hand count for callers that read their
+        // size (the status line), and don't match the .hmesh naming pattern so
+        // frame_image_path() correctly reports "no image" rather than throwing.
+        frame_paths_.reserve(export_frames_.size());
+        for (const Frame& frame : export_frames_) {
+            frame_paths_.emplace_back(frame.size(), "(export)");
+        }
+    } else {
+        frame_paths_ = discover_frames(path);
+        frame_count_ = static_cast<int>(frame_paths_.size());
+    }
 }
 
 Frame MeshSequence::load_frame(int index) const {
-    Frame hands;
     if (index < 0 || index >= frame_count_) {
-        return hands;
+        return {};
     }
+    if (is_export_mode_) {
+        return export_frames_[static_cast<std::size_t>(index)];
+    }
+
+    Frame hands;
     const std::vector<std::string>& paths = frame_paths_[static_cast<std::size_t>(index)];
     hands.reserve(paths.size());
     for (const std::string& path : paths) {

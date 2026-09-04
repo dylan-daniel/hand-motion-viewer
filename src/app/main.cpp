@@ -19,6 +19,7 @@
 
 #include "app/config.h"
 #include "app/window.h"
+#include "data/mano_model.h"
 #include "data/mesh_sequence.h"
 #include "graphics/gl_loader.h"
 #include "graphics/image.h"
@@ -40,18 +41,25 @@ int main(int, char**) {
     const std::string config_path = default_config_path();
     Config settings = load_config(config_path);
 
-    // Load the shared MANO face topology the .hmesh sequences render against. The
-    // binary stores only vertices/joints, so faces come from this one file.
+    // Load the shared MANO face topology every hand renders against (both .hmesh
+    // and .hexport sources), plus the MANO model weights .hexport sources need to
+    // regenerate hand geometry via a forward pass. Both live under assets/mano/,
+    // consolidated there from the old top-level mano/ (see CMakeLists.txt).
     {
-        std::string faces_path = "mano/mano_faces.bin";
+        std::string assets_mano_dir = "assets/mano/";
         const char* base = SDL_GetBasePath();
         if (base != nullptr) {
-            faces_path = std::string(base) + "mano/mano_faces.bin";
+            assets_mano_dir = std::string(base) + "assets/mano/";
         }
         try {
-            init_mano_topology(faces_path);
+            init_mano_topology(assets_mano_dir + "mano_faces.bin");
         } catch (const std::exception& error) {
             std::printf("Warning: %s — hand sequences will not render.\n", error.what());
+        }
+        try {
+            init_mano_model(assets_mano_dir + "mano_model.bin");
+        } catch (const std::exception& error) {
+            std::printf("Warning: %s — .hexport files will not load.\n", error.what());
         }
     }
 
@@ -186,10 +194,19 @@ int main(int, char**) {
     double playback_accumulator = 0.0;
 
     auto open_sequence = [&](const std::string& folder, int start_frame) {
-        auto opened = std::make_unique<MeshSequence>(folder);
-        const bool has_frames = opened->frame_count() > 0;
-        if (!has_frames) {
-            std::printf("No frame_*.hmesh files found in %s\n", folder.c_str());
+        std::unique_ptr<MeshSequence> opened;
+        bool has_frames = false;
+        try {
+            opened = std::make_unique<MeshSequence>(folder);
+            has_frames = opened->frame_count() > 0;
+            if (!has_frames) {
+                std::printf("No frames found in %s\n", folder.c_str());
+            }
+        } catch (const std::exception& error) {
+            // A .hexport file that fails to parse/decompress, or whose MANO
+            // model wasn't loaded at startup, throws from the constructor
+            // rather than the disk-mode path's "just found nothing" case.
+            std::printf("Failed to open %s: %s\n", folder.c_str(), error.what());
         }
         // Reset the viewer to the requested folder either way: a folder with no
         // frames clears the scene rather than leaving the previous sequence on
@@ -227,10 +244,12 @@ int main(int, char**) {
         explorer.set_root(*settings.data_folder);
     }
 
-    // Two independent native folder pickers: one for opening a mesh sequence (menu
-    // / Explorer click), one for choosing the Explorer's data-folder root.
+    // Native pickers: a folder for opening a .hmesh mesh sequence (menu / Explorer
+    // click) or choosing the Explorer's data-folder root, and a single-file picker
+    // for opening a .hexport binary export.
     std::unique_ptr<pfd::select_folder> folder_dialog;
     std::unique_ptr<pfd::select_folder> data_folder_dialog;
+    std::unique_ptr<pfd::open_file> export_file_dialog;
     // A folder the Explorer asked to open, applied at the top of the next frame
     // rather than mid-frame: open_sequence frees current_gpu, and the render below
     // still holds a pointer to it, so opening inline would use freed memory.
@@ -448,10 +467,14 @@ int main(int, char**) {
             ImGui::DockBuilderFinish(dock_id);
         }
 
-        // Apply the open-folder request before choosing what to draw, since it
-        // frees GPU buffers the drawable below must reflect.
+        // Apply the open-folder/open-file request before choosing what to draw,
+        // since it frees GPU buffers the drawable below must reflect.
         if (menu.folder_requested && !folder_dialog) {
             folder_dialog = std::make_unique<pfd::select_folder>("Select mesh sequence folder");
+        }
+        if (menu.export_file_requested && !export_file_dialog) {
+            export_file_dialog =
+                std::make_unique<pfd::open_file>("Select hand-motion export file", "", std::vector<std::string>{"Hand export files", "*.hexport"});
         }
 
         // Poll with a zero timeout: pfd's ready() defaults to a 20ms wait that
@@ -463,6 +486,13 @@ int main(int, char**) {
                 open_sequence(folder, 0);
             }
             folder_dialog.reset();
+        }
+        if (export_file_dialog && export_file_dialog->ready(0)) {
+            const std::vector<std::string> chosen = export_file_dialog->result();
+            if (!chosen.empty()) {
+                open_sequence(chosen.front(), 0);
+            }
+            export_file_dialog.reset();
         }
 
         // A chosen data folder becomes the Explorer root (one scan here) and is
