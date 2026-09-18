@@ -50,6 +50,11 @@ struct Transport {
     // The loaded sequence, for the transport bar's per-frame flag overlay
     // (MeshSequence::is_flagged). Null when has_sequence is false.
     const MeshSequence* sequence = nullptr;
+    // Mirrors MenuState::per_track_coloring. When false, the hands pane hides
+    // everything but infant-labeled hands, so a flag layer whose conflict
+    // involves a hidden ("unknown") hand is invisible on screen -- the
+    // transport bar overlay skips that layer in lockstep, see draw_flag_overlay.
+    bool per_track_coloring = false;
 };
 
 /// GL textures for the transport's play/pause button. Loaded once after the GL

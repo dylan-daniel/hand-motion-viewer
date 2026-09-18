@@ -581,6 +581,7 @@ int main(int, char**) {
             .pause_icon = transport_icons.pause,
             .speed_icon = transport_icons.speed,
             .sequence = sequence.get(),
+            .per_track_coloring = menu.state.per_track_coloring,
         };
         Transport viewport_transport = transport_base;
         viewport_transport.show_transport = transport_pane == 0;

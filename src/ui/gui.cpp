@@ -164,18 +164,30 @@ namespace {
     struct FlagLayer {
         const char* column_name; // documents which .hexport column this is, not looked up by name here
         ImU32 color;             // low base alpha so overlapping active reasons compound via normal blending
+        // True if this reason's conflict involves a hand that "Per-Track Coloring"
+        // being off hides (i.e. anything not label=="infant", see rendering.cpp's
+        // prepare_frame filter). With that toggle off, such a layer would show as
+        // an unexplained band over what looks like a single clean infant hand, so
+        // draw_flag_overlay skips it in that mode instead of rendering a conflict
+        // the user has no visible hand to attribute it to.
+        bool hidden_hand_involved;
     };
     constexpr std::array<FlagLayer, kFlagLayerCount> FLAG_LAYERS = {
-        FlagLayer{"flag_same_side_infant_conflict", IM_COL32(255, 220, 0, 90)},
-        FlagLayer{"flag_same_side_infant_unknown_conflict", IM_COL32(255, 150, 0, 90)},
+        FlagLayer{"flag_same_side_infant_conflict", IM_COL32(255, 220, 0, 90), false},
+        FlagLayer{"flag_same_side_infant_unknown_conflict", IM_COL32(255, 150, 0, 90), true},
     };
 
     /// Draws one AddRectFilled per contiguous run of frames where flag_reason
     /// ``flag_index`` is active, spanning the full height of ``slider_min``/
     /// ``slider_max`` so the band sits directly on the slider's own track
     /// (caller is responsible for z-ordering this between the track fill and
-    /// the grab handle).
-    void draw_flag_overlay(ImDrawList* draw_list, const ImVec2& slider_min, const ImVec2& slider_max, int frame_count, const MeshSequence& sequence) {
+    /// the grab handle). Layers whose conflict involves a hand that's hidden
+    /// under the current "Per-Track Coloring" setting are skipped -- see
+    /// FlagLayer::hidden_hand_involved.
+    void draw_flag_overlay(
+        ImDrawList* draw_list, const ImVec2& slider_min, const ImVec2& slider_max, int frame_count, const MeshSequence& sequence,
+        bool per_track_coloring
+    ) {
         if (frame_count <= 1) {
             return;
         }
@@ -185,6 +197,9 @@ namespace {
         auto frame_to_x = [&](int frame) { return slider_min.x + (static_cast<float>(frame) / static_cast<float>(frame_count - 1)) * width; };
 
         for (std::size_t layer = 0; layer < FLAG_LAYERS.size(); ++layer) {
+            if (FLAG_LAYERS[layer].hidden_hand_involved && !per_track_coloring) {
+                continue;
+            }
             int run_start = -1;
             for (int frame = 0; frame < frame_count; ++frame) {
                 const bool active = sequence.is_flagged(frame, static_cast<int>(layer));
@@ -253,7 +268,7 @@ namespace {
         draw_list->AddRectFilled(slider_min, slider_max, track_color, style.FrameRounding);
 
         if (transport.sequence != nullptr) {
-            draw_flag_overlay(draw_list, slider_min, slider_max, frame_count, *transport.sequence);
+            draw_flag_overlay(draw_list, slider_min, slider_max, frame_count, *transport.sequence, transport.per_track_coloring);
         }
 
         // Grab handle: same padding/size/position math as above, centred over the
