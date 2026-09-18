@@ -74,6 +74,7 @@ Config load_config(const std::string& path) {
     read_field(data, "per_track_coloring", config.per_track_coloring);
     read_field(data, "free_camera", config.free_camera);
     read_field(data, "active_pane", config.active_pane);
+    read_field(data, "flag_layers_enabled", config.flag_layers_enabled);
 
     read_optional_string(data, "data_folder", config.data_folder);
     read_field(data, "expanded_folders", config.expanded_folders);
@@ -103,6 +104,7 @@ void save_config(const std::string& path, const Config& config) {
     data["per_track_coloring"] = config.per_track_coloring;
     data["free_camera"] = config.free_camera;
     data["active_pane"] = config.active_pane;
+    data["flag_layers_enabled"] = config.flag_layers_enabled;
 
     data["data_folder"] = config.data_folder ? json(*config.data_folder) : json(nullptr);
     data["expanded_folders"] = config.expanded_folders;

@@ -3,6 +3,7 @@
 // imgui UI: bundled fonts, the top menu bar, the dockable viewport window that
 // displays the rendered scene texture, and the sequence playback transport bar.
 
+#include <array>
 #include <string>
 #include <utility>
 
@@ -55,6 +56,8 @@ struct Transport {
     // involves a hidden ("unknown") hand is invisible on screen -- the
     // transport bar overlay skips that layer in lockstep, see draw_flag_overlay.
     bool per_track_coloring = false;
+    // Per-flag enable state for the transport bar's flag overlay.
+    std::array<bool, kFlagLayerCount> flag_layers_enabled = {true, true, true, true, true, true, true};
 };
 
 /// GL textures for the transport's play/pause button. Loaded once after the GL
@@ -125,3 +128,8 @@ ViewportResult draw_viewport_window(
 /// are set the transport bar is drawn here too, so the player follows whichever
 /// pane the mouse is on; the result's ``transport`` carries any user changes back.
 ImageViewResult draw_image_window(const char* title, unsigned int texture, int texture_width, int texture_height, ImGuiID dock_id, const Transport& transport);
+
+/// Draw the dockable "Flags" window that controls which flag indicators are
+/// shown in the timeline progress bar. Contains a scrolling list of flag layer
+/// checkboxes and a button beneath that enables/disables all flags.
+void draw_flags_window(const char* title, std::array<bool, kFlagLayerCount>& flag_layers_enabled, ImGuiID dock_id = 0);

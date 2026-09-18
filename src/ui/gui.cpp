@@ -177,7 +177,7 @@ namespace {
         FlagLayer{"flag_same_side_infant_conflict", "Same-Side Infant Conflict", IM_COL32(255, 220, 0, 90), false},
         FlagLayer{"flag_same_side_infant_unknown_conflict", "Infant/Unknown Side Conflict", IM_COL32(255, 150, 0, 90), true},
         FlagLayer{"flag_translation_jump", "3D Translation Jump (>0.35m)", IM_COL32(255, 60, 60, 110), false},
-        FlagLayer{"flag_pose_rotation_jump", "Pose Rotation Jump (>50 deg)", IM_COL32(0, 210, 255, 110), false},
+        FlagLayer{"flag_pose_rotation_jump", "Pose Rotation Jump (>350 deg)", IM_COL32(0, 210, 255, 110), false},
         FlagLayer{"flag_scale_jump", "Scale Ratio Jump (>1.6x)", IM_COL32(185, 80, 255, 110), false},
         FlagLayer{"flag_track_contaminated", "Track Contaminated (Mixed Identity)", IM_COL32(255, 100, 150, 90), false},
         FlagLayer{"flag_track_fragmented", "Track Fragmented (Multiple IDs)", IM_COL32(80, 200, 120, 90), false},
@@ -188,10 +188,16 @@ namespace {
     /// ``slider_max`` so the band sits directly on the slider's own track
     /// (caller is responsible for z-ordering this between the track fill and
     /// the grab handle). Layers whose conflict involves a hand that's hidden
-    /// under the current "Per-Track Coloring" setting are skipped -- see
-    /// FlagLayer::hidden_hand_involved.
+    /// under the current "Per-Track Coloring" setting or layers disabled via
+    /// the Flags UI are skipped -- see FlagLayer::hidden_hand_involved.
     void draw_flag_overlay(
-        ImDrawList* draw_list, const ImVec2& slider_min, const ImVec2& slider_max, int frame_count, const MeshSequence& sequence, bool per_track_coloring
+        ImDrawList* draw_list,
+        const ImVec2& slider_min,
+        const ImVec2& slider_max,
+        int frame_count,
+        const MeshSequence& sequence,
+        bool per_track_coloring,
+        const std::array<bool, kFlagLayerCount>& flag_layers_enabled
     ) {
         if (frame_count <= 1) {
             return;
@@ -202,6 +208,9 @@ namespace {
         auto frame_to_x = [&](int frame) { return slider_min.x + (static_cast<float>(frame) / static_cast<float>(frame_count - 1)) * width; };
 
         for (std::size_t layer = 0; layer < FLAG_LAYERS.size(); ++layer) {
+            if (!flag_layers_enabled[layer]) {
+                continue;
+            }
             if (FLAG_LAYERS[layer].hidden_hand_involved && !per_track_coloring) {
                 continue;
             }
@@ -272,7 +281,9 @@ namespace {
         draw_list->AddRectFilled(slider_min, slider_max, track_color, style.FrameRounding);
 
         if (transport.sequence != nullptr) {
-            draw_flag_overlay(draw_list, slider_min, slider_max, frame_count, *transport.sequence, transport.per_track_coloring);
+            draw_flag_overlay(
+                draw_list, slider_min, slider_max, frame_count, *transport.sequence, transport.per_track_coloring, transport.flag_layers_enabled
+            );
         }
 
         // Grab handle: same padding/size/position math as above, centred over the
@@ -291,6 +302,9 @@ namespace {
 
             std::vector<std::size_t> active_layers;
             for (std::size_t layer = 0; layer < FLAG_LAYERS.size(); ++layer) {
+                if (!transport.flag_layers_enabled[layer]) {
+                    continue;
+                }
                 if (FLAG_LAYERS[layer].hidden_hand_involved && !transport.per_track_coloring) {
                     continue;
                 }
@@ -634,3 +648,65 @@ ImageViewResult draw_image_window(const char* title, unsigned int texture, int t
     ImGui::PopStyleVar();
     return {hovered, focused, echo};
 }
+
+void draw_flags_window(const char* title, std::array<bool, kFlagLayerCount>& flag_layers_enabled, ImGuiID dock_id) {
+    if (dock_id != 0) {
+        ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
+    }
+
+    if (!ImGui::Begin(title)) {
+        ImGui::End();
+        return;
+    }
+
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float button_height = ImGui::GetFrameHeight();
+    const float footer_space = button_height + style.ItemSpacing.y;
+
+    // Scrolling element containing checkboxes for each flag layer
+    if (ImGui::BeginChild("FlagScrollList", ImVec2(0.0f, -footer_space), true)) {
+        for (std::size_t i = 0; i < FLAG_LAYERS.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+
+            // Color indicator swatch matching the progress bar timeline band
+            const ImVec2 pos = ImGui::GetCursorScreenPos();
+            const float line_h = ImGui::GetFrameHeight();
+            const float swatch_pad = 4.0f;
+            const float swatch_w = line_h - swatch_pad * 2.0f;
+            const ImVec2 swatch_min(pos.x, pos.y + swatch_pad);
+            const ImVec2 swatch_max(pos.x + swatch_w, pos.y + line_h - swatch_pad);
+            const ImU32 opaque_color = (FLAG_LAYERS[i].color & 0x00FFFFFF) | 0xFF000000;
+            ImGui::GetWindowDrawList()->AddRectFilled(swatch_min, swatch_max, opaque_color, 2.0f);
+
+            // Advance cursor past swatch
+            ImGui::Dummy(ImVec2(swatch_w, line_h));
+            ImGui::SameLine(0.0f, style.ItemInnerSpacing.x);
+
+            // Checkbox to toggle flag indicator
+            ImGui::Checkbox(FLAG_LAYERS[i].display_name, &flag_layers_enabled[i]);
+
+            ImGui::PopID();
+        }
+    }
+    ImGui::EndChild();
+
+    // Button underneath the scrolling frame that enables/disables all flags
+    bool any_enabled = false;
+    for (std::size_t i = 0; i < FLAG_LAYERS.size(); ++i) {
+        if (flag_layers_enabled[i]) {
+            any_enabled = true;
+            break;
+        }
+    }
+
+    const char* button_label = any_enabled ? "Disable All" : "Enable All";
+    if (ImGui::Button(button_label, ImVec2(ImGui::GetContentRegionAvail().x, button_height))) {
+        const bool target_state = !any_enabled;
+        for (std::size_t i = 0; i < FLAG_LAYERS.size(); ++i) {
+            flag_layers_enabled[i] = target_state;
+        }
+    }
+
+    ImGui::End();
+}
+

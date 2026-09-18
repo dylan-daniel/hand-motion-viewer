@@ -466,9 +466,15 @@ int main(int, char**) {
             ImGuiID dock_scene = 0;
             ImGui::DockBuilderSplitNode(dock_rest, ImGuiDir_Right, 0.25f / 0.75f, &dock_frame, &dock_scene);
 
+            // Split the default Frame View area: Top 70% Frame View, Bottom 30% Flags
+            ImGuiID dock_flags = 0;
+            ImGuiID dock_frame_view = 0;
+            ImGui::DockBuilderSplitNode(dock_frame, ImGuiDir_Down, 0.30f, &dock_flags, &dock_frame_view);
+
             ImGui::DockBuilderDockWindow("Explorer", dock_explorer);
             ImGui::DockBuilderDockWindow("Scene", dock_scene);
-            ImGui::DockBuilderDockWindow("Frame View", dock_frame);
+            ImGui::DockBuilderDockWindow("Frame View", dock_frame_view);
+            ImGui::DockBuilderDockWindow("Flags", dock_flags);
             ImGui::DockBuilderFinish(dock_id);
         }
 
@@ -582,6 +588,7 @@ int main(int, char**) {
             .speed_icon = transport_icons.speed,
             .sequence = sequence.get(),
             .per_track_coloring = menu.state.per_track_coloring,
+            .flag_layers_enabled = settings.flag_layers_enabled,
         };
         Transport viewport_transport = transport_base;
         viewport_transport.show_transport = transport_pane == 0;
@@ -595,6 +602,8 @@ int main(int, char**) {
 
         const ImageViewResult image_view =
             draw_image_window("Frame View", frame_image.texture(), frame_image.width(), frame_image.height(), dock_id, image_transport);
+
+        draw_flags_window("Flags", settings.flag_layers_enabled, dock_id);
 
         // Explorer pane. Lazy: only expanding a folder touches the filesystem.
         const ExplorerResult explorer_result = draw_explorer_window(explorer, dock_id);

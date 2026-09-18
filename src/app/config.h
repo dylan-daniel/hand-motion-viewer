@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "data/mesh_sequence.h"
+
 struct Config {
     std::optional<std::string> last_folder; // path of the most recently loaded .hexport export file
     int last_frame = 0;                     // frame index to reopen the sequence on
@@ -18,6 +20,7 @@ struct Config {
     bool per_track_coloring = false;        // Hands pane: off = infant-only + red/blue by side, on = colored by track
     bool free_camera = true;                // use the first-person free camera instead of the orbit camera
     int active_pane = 0;                    // last focused pane / selected tab: 0 = Scene, 1 = Frame View
+    std::array<bool, kFlagLayerCount> flag_layers_enabled = {true, true, true, true, true, true, true};
 
     std::optional<std::string> data_folder;    // root folder the Explorer pane browses, if chosen
     std::vector<std::string> expanded_folders; // Explorer tree folders left expanded, restored on launch
