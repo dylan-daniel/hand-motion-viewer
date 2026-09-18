@@ -8,6 +8,7 @@
 
 #include <imgui.h>
 
+#include "data/mesh_sequence.h"
 #include "graphics/rendering.h"
 
 // Pixel sizes the bundled font is baked at (baking each size keeps text crisp).
@@ -46,6 +47,9 @@ struct Transport {
     unsigned int play_icon = 0;  // play button texture (0 => text-button fallback)
     unsigned int pause_icon = 0; // pause button texture (0 => text-button fallback)
     unsigned int speed_icon = 0; // speed (gauge) button texture (0 => text-button fallback)
+    // The loaded sequence, for the transport bar's per-frame flag overlay
+    // (MeshSequence::is_flagged). Null when has_sequence is false.
+    const MeshSequence* sequence = nullptr;
 };
 
 /// GL textures for the transport's play/pause button. Loaded once after the GL

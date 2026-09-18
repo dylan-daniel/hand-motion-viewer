@@ -174,6 +174,8 @@ std::vector<HandExportRow> load_hand_export(const std::string& export_path) {
     const ColumnInfo& scaled_focal_length_col = require("scaled_focal_length");
     const ColumnInfo& img_w_col = require("img_w");
     const ColumnInfo& img_h_col = require("img_h");
+    const ColumnInfo& flag_same_side_infant_conflict_col = require("flag_same_side_infant_conflict");
+    const ColumnInfo& flag_same_side_infant_unknown_conflict_col = require("flag_same_side_infant_unknown_conflict");
     const ColumnInfo& cam_t_x_col = require("cam_t_x");
     const ColumnInfo& cam_t_y_col = require("cam_t_y");
     const ColumnInfo& cam_t_z_col = require("cam_t_z");
@@ -223,6 +225,8 @@ std::vector<HandExportRow> load_hand_export(const std::string& export_path) {
         row.scaled_focal_length = get_float(scaled_focal_length_col, r);
         row.img_w = get_int32(img_w_col, r);
         row.img_h = get_int32(img_h_col, r);
+        row.flag_same_side_infant_conflict = get_int8(flag_same_side_infant_conflict_col, r);
+        row.flag_same_side_infant_unknown_conflict = get_int8(flag_same_side_infant_unknown_conflict_col, r);
 
         rows.push_back(std::move(row));
     }

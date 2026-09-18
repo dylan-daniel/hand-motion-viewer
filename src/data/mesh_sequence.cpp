@@ -5,6 +5,7 @@
 #include "data/mano_model.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <limits>
@@ -12,6 +13,14 @@
 
 namespace {
     namespace fs = std::filesystem;
+
+    // Index into HandData-adjacent per-frame flag arrays <-> the .hexport
+    // column it comes from. Order must match kFlagLayerCount in the header and
+    // the FlagLayer color table in ui/gui.cpp.
+    constexpr std::array<std::int8_t HandExportRow::*, kFlagLayerCount> FLAG_COLUMNS = {
+        &HandExportRow::flag_same_side_infant_conflict,
+        &HandExportRow::flag_same_side_infant_unknown_conflict,
+    };
 } // namespace
 
 Transform compute_transform(const Frame& hands) {
@@ -70,10 +79,17 @@ namespace {
     // needs to find the matching source frame on disk. One-time cost at open:
     // cheap even for a full trial's worth of hands, since each forward pass is
     // just a handful of small matrix ops.
-    void build_export_frames(const std::string& path, std::vector<Frame>& frames, std::vector<int>& frame_numbers) {
+    void build_export_frames(
+        const std::string& path, std::vector<Frame>& frames, std::vector<int>& frame_numbers,
+        std::vector<std::array<bool, kFlagLayerCount>>& frame_flags
+    ) {
         std::vector<HandExportRow> rows = load_hand_export(path);
 
         std::map<int, Frame> by_frame;
+        // Union across every row for a frame (both sides, both tracks): a
+        // flag_reason is active for the frame if any row for it has that
+        // column set, per the locked side-aggregation design.
+        std::map<int, std::array<bool, kFlagLayerCount>> flags_by_frame;
         for (const HandExportRow& row : rows) {
             const ManoHand hand = mano_forward(row.params);
             HandData data;
@@ -83,19 +99,28 @@ namespace {
             data.hand_track_id = row.hand_track_id;
             data.label = row.label;
             by_frame[row.frame].push_back(std::move(data));
+
+            std::array<bool, kFlagLayerCount>& flags = flags_by_frame[row.frame];
+            for (int i = 0; i < kFlagLayerCount; ++i) {
+                if (row.*FLAG_COLUMNS[static_cast<std::size_t>(i)] != 0) {
+                    flags[static_cast<std::size_t>(i)] = true;
+                }
+            }
         }
 
         frames.reserve(by_frame.size());
         frame_numbers.reserve(by_frame.size());
+        frame_flags.reserve(by_frame.size());
         for (auto& [frame_number, hands] : by_frame) {
             frame_numbers.push_back(frame_number);
             frames.push_back(std::move(hands));
+            frame_flags.push_back(flags_by_frame[frame_number]);
         }
     }
 } // namespace
 
 MeshSequence::MeshSequence(const std::string& path) : path_(path) {
-    build_export_frames(path, frames_, frame_numbers_);
+    build_export_frames(path, frames_, frame_numbers_, frame_flags_);
     frame_count_ = static_cast<int>(frames_.size());
 }
 
@@ -104,6 +129,13 @@ Frame MeshSequence::load_frame(int index) const {
         return {};
     }
     return frames_[static_cast<std::size_t>(index)];
+}
+
+bool MeshSequence::is_flagged(int index, int flag_index) const {
+    if (index < 0 || index >= frame_count_ || flag_index < 0 || flag_index >= kFlagLayerCount) {
+        return false;
+    }
+    return frame_flags_[static_cast<std::size_t>(index)][static_cast<std::size_t>(flag_index)];
 }
 
 std::string MeshSequence::frame_image_path(int index) const {

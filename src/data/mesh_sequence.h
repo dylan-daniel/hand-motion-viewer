@@ -8,10 +8,17 @@
 // identical for every hand and shared globally (see geometry's mano_faces),
 // so only the moving vertices are held here.
 
+#include <array>
 #include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
+
+/// Number of distinct per-frame flag_reason columns the export can carry (see
+/// FLAG_COLUMNS in the .cpp for the HandExportRow field each index corresponds
+/// to). Bump this and FLAG_COLUMNS together when a new flag_reason column is
+/// added to the .hexport format.
+inline constexpr int kFlagLayerCount = 2;
 
 /// One hand in one frame: the moving MANO surface vertices and joint
 /// positions, plus the pipeline's own tracking/classification identity. The
@@ -63,9 +70,16 @@ public:
     /// frames/<export-stem>/ convention this looks for).
     std::string frame_image_path(int index) const;
 
+    /// Whether flag_reason ``flag_index`` (into FLAG_COLUMNS) is active on
+    /// playback frame ``index`` -- true if ANY row for that frame, on either
+    /// side, has that flag column set (see the union rule in the .cpp).
+    /// Always false for an out-of-range frame or flag index.
+    bool is_flagged(int index, int flag_index) const;
+
 private:
     std::string path_;
     std::vector<Frame> frames_;
     std::vector<int> frame_numbers_; // frame_numbers_[i] = the pipeline's own frame number for playback index i
+    std::vector<std::array<bool, kFlagLayerCount>> frame_flags_; // frame_flags_[i] mirrors frames_[i]
     int frame_count_;
 };

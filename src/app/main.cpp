@@ -580,6 +580,7 @@ int main(int, char**) {
             .play_icon = transport_icons.play,
             .pause_icon = transport_icons.pause,
             .speed_icon = transport_icons.speed,
+            .sequence = sequence.get(),
         };
         Transport viewport_transport = transport_base;
         viewport_transport.show_transport = transport_pane == 0;

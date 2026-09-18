@@ -156,6 +156,49 @@ namespace {
     constexpr float MIN_PLAYBACK_SPEED = 0.5f;
     constexpr float MAX_PLAYBACK_SPEED = 4.0f;
 
+    /// One flag_reason's overlay color, keyed by its index into MeshSequence's
+    /// FLAG_COLUMNS (see data/mesh_sequence.cpp). Add a new entry here (plus a
+    /// column/field in hand_export.h/.cpp and FLAG_COLUMNS) to add another
+    /// flag_reason overlay -- the drawing loop below needs no changes.
+    struct FlagLayer {
+        const char* column_name; // documents which .hexport column this is, not looked up by name here
+        ImU32 color;             // low base alpha so overlapping active reasons compound via normal blending
+    };
+    constexpr std::array<FlagLayer, kFlagLayerCount> FLAG_LAYERS = {
+        FlagLayer{"flag_same_side_infant_conflict", IM_COL32(255, 220, 0, 90)},
+        FlagLayer{"flag_same_side_infant_unknown_conflict", IM_COL32(255, 150, 0, 90)},
+    };
+
+    /// Draws one AddRectFilled per contiguous run of frames where flag_reason
+    /// ``flag_index`` is active, as a thin band just below the slider rect so
+    /// the draggable grab handle stays fully visible.
+    void draw_flag_overlay(ImDrawList* draw_list, const ImVec2& slider_min, const ImVec2& slider_max, int frame_count, const MeshSequence& sequence) {
+        if (frame_count <= 1) {
+            return;
+        }
+        const float band_top = slider_max.y + 2.0f;
+        const float band_bottom = band_top + 4.0f;
+        const float width = slider_max.x - slider_min.x;
+        auto frame_to_x = [&](int frame) { return slider_min.x + (static_cast<float>(frame) / static_cast<float>(frame_count - 1)) * width; };
+
+        for (std::size_t layer = 0; layer < FLAG_LAYERS.size(); ++layer) {
+            int run_start = -1;
+            for (int frame = 0; frame < frame_count; ++frame) {
+                const bool active = sequence.is_flagged(frame, static_cast<int>(layer));
+                if (active && run_start < 0) {
+                    run_start = frame;
+                }
+                if ((!active || frame == frame_count - 1) && run_start >= 0) {
+                    const int run_end = active ? frame : frame - 1;
+                    draw_list->AddRectFilled(
+                        ImVec2(frame_to_x(run_start), band_top), ImVec2(frame_to_x(run_end) + 1.0f, band_bottom), FLAG_LAYERS[layer].color
+                    );
+                    run_start = -1;
+                }
+            }
+        }
+    }
+
     TransportState draw_transport_bar(float left, float strip_top, float width, const Transport& transport) {
         int current_frame = transport.current_frame;
         const int frame_count = transport.frame_count;
@@ -209,6 +252,9 @@ namespace {
         // True while the user holds and drags the scrubber, so playback can be
         // suspended and the hands don't jitter between the dragged and next frame.
         const bool scrubbing = ImGui::IsItemActive();
+        if (transport.sequence != nullptr) {
+            draw_flag_overlay(draw_list, ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), frame_count, *transport.sequence);
+        }
 
         ImGui::SameLine();
         ImGui::TextUnformatted(label);

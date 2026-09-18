@@ -32,6 +32,11 @@ struct HandExportRow {
     float scaled_focal_length = 0.0f;
     std::int32_t img_w = 0;
     std::int32_t img_h = 0;
+    // Per (subject, trial, frame, is_right): both hand tracks on that side/frame
+    // share this value -- the flag describes a conflict between two tracks on
+    // the same side, so it applies to the frame+side, not a specific track.
+    std::int8_t flag_same_side_infant_conflict = 0;
+    std::int8_t flag_same_side_infant_unknown_conflict = 0;
 };
 
 /// Read every row of a hand-motion export binary file. Throws
