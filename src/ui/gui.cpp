@@ -222,10 +222,26 @@ namespace {
         const bool active = ImGui::IsItemActive();
         const bool hovered = ImGui::IsItemHovered();
 
+        // Grab sizing/positioning follows ImGui's own SliderBehavior (imgui_widgets.cpp):
+        // a fixed 2px inset on all sides, and a grab width that grows for small ranges
+        // (one "cell" per value) but never shrinks below GrabMinSize, clamped to the
+        // track's usable size. The value<->pixel mapping below must use the same
+        // usable-position bounds (i.e. positions the grab's *center* can reach, not the
+        // track's raw edges), or clicking near either end would over/under-shoot.
         const int max_frame = std::max(0, frame_count - 1);
-        if (active && max_frame > 0) {
+        const float grab_padding = 2.0f;
+        const float slider_sz = std::max(0.0f, width - grab_padding * 2.0f);
+        float grab_sz = style.GrabMinSize;
+        if (max_frame > 0) {
+            grab_sz = std::max(slider_sz / static_cast<float>(max_frame + 1), style.GrabMinSize);
+        }
+        grab_sz = std::min(grab_sz, slider_sz);
+        const float usable_pos_min = slider_min.x + grab_padding + grab_sz * 0.5f;
+        const float usable_pos_max = slider_max.x - grab_padding - grab_sz * 0.5f;
+
+        if (active && max_frame > 0 && usable_pos_max > usable_pos_min) {
             const float mouse_x = ImGui::GetIO().MousePos.x;
-            const float t = std::clamp((mouse_x - slider_min.x) / width, 0.0f, 1.0f);
+            const float t = std::clamp((mouse_x - usable_pos_min) / (usable_pos_max - usable_pos_min), 0.0f, 1.0f);
             *current_frame = std::clamp(static_cast<int>(std::round(t * static_cast<float>(max_frame))), 0, max_frame);
         }
 
@@ -240,14 +256,12 @@ namespace {
             draw_flag_overlay(draw_list, slider_min, slider_max, frame_count, *transport.sequence);
         }
 
-        // Grab handle, matching ImGui's default proportions (GrabMinSize width,
-        // GrabRounding corners) centred over the current frame's position.
-        const float grab_width = std::max(style.GrabMinSize, height * 0.5f);
+        // Grab handle: same padding/size/position math as above, centred over the
+        // current frame's value, with GrabRounding corners.
         const float t = max_frame > 0 ? static_cast<float>(*current_frame) / static_cast<float>(max_frame) : 0.0f;
-        const float grab_center_x = slider_min.x + t * width;
-        const float grab_half = grab_width * 0.5f;
-        const ImVec2 grab_min(std::clamp(grab_center_x - grab_half, slider_min.x, slider_max.x - grab_width), slider_min.y);
-        const ImVec2 grab_max(grab_min.x + grab_width, slider_max.y);
+        const float grab_center_x = usable_pos_max > usable_pos_min ? std::lerp(usable_pos_min, usable_pos_max, t) : usable_pos_min;
+        const ImVec2 grab_min(grab_center_x - grab_sz * 0.5f, slider_min.y + grab_padding);
+        const ImVec2 grab_max(grab_center_x + grab_sz * 0.5f, slider_max.y - grab_padding);
         const ImU32 grab_color = ImGui::ColorConvertFloat4ToU32(style.Colors[active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab]);
         draw_list->AddRectFilled(grab_min, grab_max, grab_color, style.GrabRounding);
 
