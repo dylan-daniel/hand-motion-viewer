@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -170,14 +171,16 @@ namespace {
     };
 
     /// Draws one AddRectFilled per contiguous run of frames where flag_reason
-    /// ``flag_index`` is active, as a thin band just below the slider rect so
-    /// the draggable grab handle stays fully visible.
+    /// ``flag_index`` is active, spanning the full height of ``slider_min``/
+    /// ``slider_max`` so the band sits directly on the slider's own track
+    /// (caller is responsible for z-ordering this between the track fill and
+    /// the grab handle).
     void draw_flag_overlay(ImDrawList* draw_list, const ImVec2& slider_min, const ImVec2& slider_max, int frame_count, const MeshSequence& sequence) {
         if (frame_count <= 1) {
             return;
         }
-        const float band_top = slider_max.y + 2.0f;
-        const float band_bottom = band_top + 4.0f;
+        const float band_top = slider_min.y;
+        const float band_bottom = slider_max.y;
         const float width = slider_max.x - slider_min.x;
         auto frame_to_x = [&](int frame) { return slider_min.x + (static_cast<float>(frame) / static_cast<float>(frame_count - 1)) * width; };
 
@@ -197,6 +200,58 @@ namespace {
                 }
             }
         }
+    }
+
+    /// Custom replacement for ``ImGui::SliderInt`` on the timeline scrubber:
+    /// ``SliderInt`` draws its background and grab handle in one atomic call
+    /// with no hook point in between, so there is no way to slot the flag
+    /// overlay band between those two layers using the built-in widget.
+    /// This draws the same three layers manually -- track fill, flag band,
+    /// grab handle -- while reusing ``ImGui::InvisibleButton`` for hit-testing
+    /// so click-to-seek and drag-to-scrub behave the same as the stock slider.
+    /// Returns true while the widget is actively being clicked/dragged.
+    bool draw_frame_slider(ImDrawList* draw_list, int* current_frame, int frame_count, const Transport& transport) {
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float height = ImGui::GetFrameHeight();
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+        const float width = std::max(1.0f, ImGui::CalcItemWidth());
+        const ImVec2 slider_min = pos;
+        const ImVec2 slider_max = ImVec2(pos.x + width, pos.y + height);
+
+        ImGui::InvisibleButton("##frame", ImVec2(width, height));
+        const bool active = ImGui::IsItemActive();
+        const bool hovered = ImGui::IsItemHovered();
+
+        const int max_frame = std::max(0, frame_count - 1);
+        if (active && max_frame > 0) {
+            const float mouse_x = ImGui::GetIO().MousePos.x;
+            const float t = std::clamp((mouse_x - slider_min.x) / width, 0.0f, 1.0f);
+            *current_frame = std::clamp(static_cast<int>(std::round(t * static_cast<float>(max_frame))), 0, max_frame);
+        }
+
+        // Track fill, using the same theme colours ImGui's own slider uses for
+        // its background so the custom widget stays visually consistent.
+        const ImU32 track_color = ImGui::ColorConvertFloat4ToU32(
+            style.Colors[active ? ImGuiCol_FrameBgActive : (hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg)]
+        );
+        draw_list->AddRectFilled(slider_min, slider_max, track_color, style.FrameRounding);
+
+        if (transport.sequence != nullptr) {
+            draw_flag_overlay(draw_list, slider_min, slider_max, frame_count, *transport.sequence);
+        }
+
+        // Grab handle, matching ImGui's default proportions (GrabMinSize width,
+        // GrabRounding corners) centred over the current frame's position.
+        const float grab_width = std::max(style.GrabMinSize, height * 0.5f);
+        const float t = max_frame > 0 ? static_cast<float>(*current_frame) / static_cast<float>(max_frame) : 0.0f;
+        const float grab_center_x = slider_min.x + t * width;
+        const float grab_half = grab_width * 0.5f;
+        const ImVec2 grab_min(std::clamp(grab_center_x - grab_half, slider_min.x, slider_max.x - grab_width), slider_min.y);
+        const ImVec2 grab_max(grab_min.x + grab_width, slider_max.y);
+        const ImU32 grab_color = ImGui::ColorConvertFloat4ToU32(style.Colors[active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab]);
+        draw_list->AddRectFilled(grab_min, grab_max, grab_color, style.GrabRounding);
+
+        return active;
     }
 
     TransportState draw_transport_bar(float left, float strip_top, float width, const Transport& transport) {
@@ -247,14 +302,9 @@ namespace {
         const float speed_button_width = button_width;
         const float slider_width = width - 8.0f - button_width - spacing - ImGui::CalcTextSize(label).x - spacing - speed_button_width - spacing - 8.0f;
         ImGui::SetNextItemWidth(std::max(1.0f, slider_width));
-        // Empty format: the standalone label shows the 1-based frame instead.
-        ImGui::SliderInt("##frame", &current_frame, 0, frame_count - 1, "");
         // True while the user holds and drags the scrubber, so playback can be
         // suspended and the hands don't jitter between the dragged and next frame.
-        const bool scrubbing = ImGui::IsItemActive();
-        if (transport.sequence != nullptr) {
-            draw_flag_overlay(draw_list, ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), frame_count, *transport.sequence);
-        }
+        const bool scrubbing = draw_frame_slider(draw_list, &current_frame, frame_count, transport);
 
         ImGui::SameLine();
         ImGui::TextUnformatted(label);
