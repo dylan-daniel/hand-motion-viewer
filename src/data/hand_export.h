@@ -37,6 +37,11 @@ struct HandExportRow {
     // the same side, so it applies to the frame+side, not a specific track.
     std::int8_t flag_same_side_infant_conflict = 0;
     std::int8_t flag_same_side_infant_unknown_conflict = 0;
+    std::int8_t flag_translation_jump = 0;
+    std::int8_t flag_pose_rotation_jump = 0;
+    std::int8_t flag_scale_jump = 0;
+    std::int8_t flag_track_contaminated = 0;
+    std::int8_t flag_track_fragmented = 0;
 };
 
 /// Read every row of a hand-motion export binary file. Throws

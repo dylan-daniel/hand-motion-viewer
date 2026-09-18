@@ -162,8 +162,9 @@ namespace {
     /// column/field in hand_export.h/.cpp and FLAG_COLUMNS) to add another
     /// flag_reason overlay -- the drawing loop below needs no changes.
     struct FlagLayer {
-        const char* column_name; // documents which .hexport column this is, not looked up by name here
-        ImU32 color;             // low base alpha so overlapping active reasons compound via normal blending
+        const char* column_name;  // documents which .hexport column this is, not looked up by name here
+        const char* display_name; // human-readable name for tooltips / UI
+        ImU32 color;              // low base alpha so overlapping active reasons compound via normal blending
         // True if this reason's conflict involves a hand that "Per-Track Coloring"
         // being off hides (i.e. anything not label=="infant", see rendering.cpp's
         // prepare_frame filter). With that toggle off, such a layer would show as
@@ -173,8 +174,13 @@ namespace {
         bool hidden_hand_involved;
     };
     constexpr std::array<FlagLayer, kFlagLayerCount> FLAG_LAYERS = {
-        FlagLayer{"flag_same_side_infant_conflict", IM_COL32(255, 220, 0, 90), false},
-        FlagLayer{"flag_same_side_infant_unknown_conflict", IM_COL32(255, 150, 0, 90), true},
+        FlagLayer{"flag_same_side_infant_conflict", "Same-Side Infant Conflict", IM_COL32(255, 220, 0, 90), false},
+        FlagLayer{"flag_same_side_infant_unknown_conflict", "Infant/Unknown Side Conflict", IM_COL32(255, 150, 0, 90), true},
+        FlagLayer{"flag_translation_jump", "3D Translation Jump (>0.35m)", IM_COL32(255, 60, 60, 110), false},
+        FlagLayer{"flag_pose_rotation_jump", "Pose Rotation Jump (>50 deg)", IM_COL32(0, 210, 255, 110), false},
+        FlagLayer{"flag_scale_jump", "Scale Ratio Jump (>1.6x)", IM_COL32(185, 80, 255, 110), false},
+        FlagLayer{"flag_track_contaminated", "Track Contaminated (Mixed Identity)", IM_COL32(255, 100, 150, 90), false},
+        FlagLayer{"flag_track_fragmented", "Track Fragmented (Multiple IDs)", IM_COL32(80, 200, 120, 90), false},
     };
 
     /// Draws one AddRectFilled per contiguous run of frames where flag_reason
@@ -185,8 +191,7 @@ namespace {
     /// under the current "Per-Track Coloring" setting are skipped -- see
     /// FlagLayer::hidden_hand_involved.
     void draw_flag_overlay(
-        ImDrawList* draw_list, const ImVec2& slider_min, const ImVec2& slider_max, int frame_count, const MeshSequence& sequence,
-        bool per_track_coloring
+        ImDrawList* draw_list, const ImVec2& slider_min, const ImVec2& slider_max, int frame_count, const MeshSequence& sequence, bool per_track_coloring
     ) {
         if (frame_count <= 1) {
             return;
@@ -202,7 +207,7 @@ namespace {
             }
             int run_start = -1;
             for (int frame = 0; frame < frame_count; ++frame) {
-                const bool active = sequence.is_flagged(frame, static_cast<int>(layer));
+                const bool active = sequence.is_flagged(frame, static_cast<int>(layer), per_track_coloring);
                 if (active && run_start < 0) {
                     run_start = frame;
                 }
@@ -262,9 +267,8 @@ namespace {
 
         // Track fill, using the same theme colours ImGui's own slider uses for
         // its background so the custom widget stays visually consistent.
-        const ImU32 track_color = ImGui::ColorConvertFloat4ToU32(
-            style.Colors[active ? ImGuiCol_FrameBgActive : (hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg)]
-        );
+        const ImU32 track_color =
+            ImGui::ColorConvertFloat4ToU32(style.Colors[active ? ImGuiCol_FrameBgActive : (hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg)]);
         draw_list->AddRectFilled(slider_min, slider_max, track_color, style.FrameRounding);
 
         if (transport.sequence != nullptr) {
@@ -279,6 +283,35 @@ namespace {
         const ImVec2 grab_max(grab_center_x + grab_sz * 0.5f, slider_max.y - grab_padding);
         const ImU32 grab_color = ImGui::ColorConvertFloat4ToU32(style.Colors[active ? ImGuiCol_SliderGrabActive : ImGuiCol_SliderGrab]);
         draw_list->AddRectFilled(grab_min, grab_max, grab_color, style.GrabRounding);
+
+        if (hovered && transport.sequence != nullptr && max_frame > 0) {
+            const float mouse_x = ImGui::GetIO().MousePos.x;
+            const float t_hover = std::clamp((mouse_x - usable_pos_min) / (usable_pos_max - usable_pos_min), 0.0f, 1.0f);
+            const int hover_frame = std::clamp(static_cast<int>(std::round(t_hover * static_cast<float>(max_frame))), 0, max_frame);
+
+            std::vector<std::size_t> active_layers;
+            for (std::size_t layer = 0; layer < FLAG_LAYERS.size(); ++layer) {
+                if (FLAG_LAYERS[layer].hidden_hand_involved && !transport.per_track_coloring) {
+                    continue;
+                }
+                if (transport.sequence->is_flagged(hover_frame, static_cast<int>(layer), transport.per_track_coloring)) {
+                    active_layers.push_back(layer);
+                }
+            }
+            if (!active_layers.empty()) {
+                if (ImGui::BeginTooltip()) {
+                    ImGui::Text("Frame %d Flags:", hover_frame + 1);
+                    for (std::size_t layer : active_layers) {
+                        ImVec4 c = ImGui::ColorConvertU32ToFloat4(FLAG_LAYERS[layer].color);
+                        c.w = 1.0f;
+                        ImGui::ColorButton("##flag_color", c, ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(12, 12));
+                        ImGui::SameLine();
+                        ImGui::TextUnformatted(FLAG_LAYERS[layer].display_name);
+                    }
+                    ImGui::EndTooltip();
+                }
+            }
+        }
 
         return active;
     }

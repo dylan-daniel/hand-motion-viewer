@@ -20,6 +20,11 @@ namespace {
     constexpr std::array<std::int8_t HandExportRow::*, kFlagLayerCount> FLAG_COLUMNS = {
         &HandExportRow::flag_same_side_infant_conflict,
         &HandExportRow::flag_same_side_infant_unknown_conflict,
+        &HandExportRow::flag_translation_jump,
+        &HandExportRow::flag_pose_rotation_jump,
+        &HandExportRow::flag_scale_jump,
+        &HandExportRow::flag_track_contaminated,
+        &HandExportRow::flag_track_fragmented,
     };
 } // namespace
 
@@ -80,16 +85,19 @@ namespace {
     // cheap even for a full trial's worth of hands, since each forward pass is
     // just a handful of small matrix ops.
     void build_export_frames(
-        const std::string& path, std::vector<Frame>& frames, std::vector<int>& frame_numbers,
-        std::vector<std::array<bool, kFlagLayerCount>>& frame_flags
+        const std::string& path,
+        std::vector<Frame>& frames,
+        std::vector<int>& frame_numbers,
+        std::vector<std::array<bool, kFlagLayerCount>>& frame_flags_all,
+        std::vector<std::array<bool, kFlagLayerCount>>& frame_flags_infant_only
     ) {
         std::vector<HandExportRow> rows = load_hand_export(path);
 
         std::map<int, Frame> by_frame;
-        // Union across every row for a frame (both sides, both tracks): a
-        // flag_reason is active for the frame if any row for it has that
-        // column set, per the locked side-aggregation design.
-        std::map<int, std::array<bool, kFlagLayerCount>> flags_by_frame;
+        // Flags active for any hand in the frame (for per-track coloring mode)
+        std::map<int, std::array<bool, kFlagLayerCount>> flags_all_by_frame;
+        // Flags active only for infant-classified hands (when per-track coloring is off)
+        std::map<int, std::array<bool, kFlagLayerCount>> flags_infant_by_frame;
         for (const HandExportRow& row : rows) {
             const ManoHand hand = mano_forward(row.params);
             HandData data;
@@ -100,27 +108,35 @@ namespace {
             data.label = row.label;
             by_frame[row.frame].push_back(std::move(data));
 
-            std::array<bool, kFlagLayerCount>& flags = flags_by_frame[row.frame];
+            std::array<bool, kFlagLayerCount>& flags_all = flags_all_by_frame[row.frame];
+            std::array<bool, kFlagLayerCount>& flags_infant = flags_infant_by_frame[row.frame];
+            const bool is_infant = (row.label == "infant");
+
             for (int i = 0; i < kFlagLayerCount; ++i) {
                 if (row.*FLAG_COLUMNS[static_cast<std::size_t>(i)] != 0) {
-                    flags[static_cast<std::size_t>(i)] = true;
+                    flags_all[static_cast<std::size_t>(i)] = true;
+                    if (is_infant) {
+                        flags_infant[static_cast<std::size_t>(i)] = true;
+                    }
                 }
             }
         }
 
         frames.reserve(by_frame.size());
         frame_numbers.reserve(by_frame.size());
-        frame_flags.reserve(by_frame.size());
+        frame_flags_all.reserve(by_frame.size());
+        frame_flags_infant_only.reserve(by_frame.size());
         for (auto& [frame_number, hands] : by_frame) {
             frame_numbers.push_back(frame_number);
             frames.push_back(std::move(hands));
-            frame_flags.push_back(flags_by_frame[frame_number]);
+            frame_flags_all.push_back(flags_all_by_frame[frame_number]);
+            frame_flags_infant_only.push_back(flags_infant_by_frame[frame_number]);
         }
     }
 } // namespace
 
 MeshSequence::MeshSequence(const std::string& path) : path_(path) {
-    build_export_frames(path, frames_, frame_numbers_, frame_flags_);
+    build_export_frames(path, frames_, frame_numbers_, frame_flags_all_, frame_flags_infant_only_);
     frame_count_ = static_cast<int>(frames_.size());
 }
 
@@ -131,11 +147,12 @@ Frame MeshSequence::load_frame(int index) const {
     return frames_[static_cast<std::size_t>(index)];
 }
 
-bool MeshSequence::is_flagged(int index, int flag_index) const {
+bool MeshSequence::is_flagged(int index, int flag_index, bool per_track_coloring) const {
     if (index < 0 || index >= frame_count_ || flag_index < 0 || flag_index >= kFlagLayerCount) {
         return false;
     }
-    return frame_flags_[static_cast<std::size_t>(index)][static_cast<std::size_t>(flag_index)];
+    const auto& flags = per_track_coloring ? frame_flags_all_ : frame_flags_infant_only_;
+    return flags[static_cast<std::size_t>(index)][static_cast<std::size_t>(flag_index)];
 }
 
 std::string MeshSequence::frame_image_path(int index) const {
