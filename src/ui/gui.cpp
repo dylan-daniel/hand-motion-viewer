@@ -95,14 +95,19 @@ namespace {
     }
 
     /// Draw the "Controls" button + help panel in the viewport's top-right corner.
-    bool draw_controls_overlay(const ImVec2& top_left, int width, bool has_sequence, bool playing, bool show_panel) {
+    /// Draw the "Controls" button + help panel in the viewport's top-right corner.
+    bool draw_controls_overlay(const ImVec2& top_left, int width, bool has_sequence, bool playing, bool show_panel, float* out_bottom_y = nullptr) {
         const char* label = "Controls";
         const float button_width = ImGui::CalcTextSize(label).x + 16.0f;
-        ImGui::SetCursorScreenPos(ImVec2(top_left.x + width - button_width, top_left.y + 8.0f));
+        ImGui::SetCursorScreenPos(ImVec2(top_left.x + width - button_width - 8.0f, top_left.y + 8.0f));
         if (ImGui::Button(label)) {
             show_panel = !show_panel;
         }
+        float bottom_y = top_left.y + 8.0f + ImGui::GetFrameHeight();
         if (!show_panel) {
+            if (out_bottom_y != nullptr) {
+                *out_bottom_y = bottom_y;
+            }
             return show_panel;
         }
 
@@ -142,9 +147,13 @@ namespace {
                 ImGui::EndTable();
             }
         }
+        bottom_y = ImGui::GetItemRectMax().y;
         ImGui::EndChild();
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor();
+        if (out_bottom_y != nullptr) {
+            *out_bottom_y = bottom_y;
+        }
         return show_panel;
     }
 
@@ -228,6 +237,82 @@ namespace {
                     run_start = -1;
                 }
             }
+        }
+    }
+
+    /// Draw the active flag indicators on the right side of the Scene viewport for the current frame.
+    /// Each row displays the text label on the left and the color swatch on the right.
+    /// Flags disabled in the flags menu are hidden.
+    void draw_scene_flags_overlay(const ImVec2& top_left, int width, float start_y, const Transport& transport) {
+        if (!transport.has_sequence || transport.sequence == nullptr) {
+            return;
+        }
+
+        const int frame = transport.current_frame;
+        std::vector<std::size_t> active_indices;
+        for (std::size_t layer = 0; layer < FLAG_LAYERS.size(); ++layer) {
+            if (!transport.flag_layers_enabled[layer]) {
+                continue;
+            }
+            if (FLAG_LAYERS[layer].hidden_hand_involved && !transport.per_track_coloring) {
+                continue;
+            }
+            if (transport.sequence->is_flagged(frame, static_cast<int>(layer), transport.per_track_coloring)) {
+                active_indices.push_back(layer);
+            }
+        }
+
+        if (active_indices.empty()) {
+            return;
+        }
+
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        const float right_margin = 8.0f;
+        const float right_edge = top_left.x + static_cast<float>(width) - right_margin;
+        const float swatch_size = 14.0f;
+        const float pad_x = 8.0f;
+        const float pad_y = 4.0f;
+        const float text_swatch_gap = 8.0f;
+        const float row_spacing = 4.0f;
+
+        float max_text_width = 0.0f;
+        float max_text_height = 0.0f;
+        for (std::size_t idx : active_indices) {
+            const ImVec2 sz = ImGui::CalcTextSize(FLAG_LAYERS[idx].display_name);
+            max_text_width = std::max(max_text_width, sz.x);
+            max_text_height = std::max(max_text_height, sz.y);
+        }
+
+        const float row_h = std::max(max_text_height, swatch_size) + pad_y * 2.0f;
+        const float total_w = pad_x + max_text_width + text_swatch_gap + swatch_size + pad_x;
+        const float box_x0 = right_edge - total_w;
+        const float box_x1 = right_edge;
+
+        float current_y = start_y;
+        for (std::size_t idx : active_indices) {
+            const float box_y0 = current_y;
+            const float box_y1 = current_y + row_h;
+
+            // Semi-translucent dark badge background with subtle border
+            draw_list->AddRectFilled(ImVec2(box_x0, box_y0), ImVec2(box_x1, box_y1), IM_COL32(18, 18, 22, 215), 4.0f);
+            draw_list->AddRect(ImVec2(box_x0, box_y0), ImVec2(box_x1, box_y1), IM_COL32(65, 65, 78, 180), 4.0f);
+
+            // Text on the left
+            const ImVec2 text_sz = ImGui::CalcTextSize(FLAG_LAYERS[idx].display_name);
+            const float text_x = box_x0 + pad_x;
+            const float text_y = box_y0 + (row_h - text_sz.y) * 0.5f;
+            draw_list->AddText(ImVec2(text_x, text_y), IM_COL32(235, 235, 240, 255), FLAG_LAYERS[idx].display_name);
+
+            // Color swatch on the right
+            const float swatch_x1 = box_x1 - pad_x;
+            const float swatch_x0 = swatch_x1 - swatch_size;
+            const float swatch_y0 = box_y0 + (row_h - swatch_size) * 0.5f;
+            const float swatch_y1 = swatch_y0 + swatch_size;
+            const ImU32 opaque_color = (FLAG_LAYERS[idx].color & 0x00FFFFFF) | 0xFF000000;
+            draw_list->AddRectFilled(ImVec2(swatch_x0, swatch_y0), ImVec2(swatch_x1, swatch_y1), opaque_color, 2.0f);
+            draw_list->AddRect(ImVec2(swatch_x0, swatch_y0), ImVec2(swatch_x1, swatch_y1), IM_COL32(255, 255, 255, 70), 2.0f);
+
+            current_y += row_h + row_spacing;
         }
     }
 
@@ -579,7 +664,10 @@ ViewportResult draw_viewport_window(
         draw_list->AddText(fps_font, FPS_FONT_SIZE, ImVec2(image_pos.x + 8.0f, image_pos.y + 6.0f + FPS_FONT_SIZE), status_color, status.c_str());
     }
 
-    show_controls = draw_controls_overlay(image_pos, width, transport.has_sequence, transport.playing, show_controls);
+    float controls_bottom_y = 0.0f;
+    show_controls = draw_controls_overlay(image_pos, width, transport.has_sequence, transport.playing, show_controls, &controls_bottom_y);
+
+    draw_scene_flags_overlay(image_pos, width, controls_bottom_y + 8.0f, transport);
 
     // Transport overlay pinned to the bottom edge of the scene image. Seed the echo
     // from the incoming state so an unchanged frame still reports it back.
