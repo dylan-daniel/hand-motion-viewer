@@ -208,6 +208,8 @@ def find_frames_dir(export_path_str: str):
     4. Sibling stem layout: <dir>/frames/<export_stem>/
     5. Cache stem layout: <cache_root>/frames/<export_stem>/
     """
+    if not export_path_str:
+        return None
     export_path = Path(os.path.expanduser(export_path_str))
     stem = export_path.stem
     frames_key = stem.rsplit("__", 1)[0] if "__" in stem else stem
@@ -252,8 +254,8 @@ def handle_get_file(req, out):
 
 
 def handle_get_frame(req, out):
-    export_path_str = req.get("export_path", "")
-    frame_number = req.get("frame_number", 1)
+    export_path_str = req.get("path") or req.get("export_path", "")
+    frame_number = req.get("frame") if "frame" in req else req.get("frame_number", 1)
 
     frames_dir = find_frames_dir(export_path_str)
     if not frames_dir:
@@ -261,25 +263,26 @@ def handle_get_frame(req, out):
         return
 
     for ext in [".jpg", ".png", ".jpeg"]:
-        candidate = frames_dir / f"frame_{frame_number:05d}{ext}"
-        if candidate.exists():
-            try:
-                resolved = candidate.resolve()
-                with open(resolved, "rb") as f:
-                    data = f.read()
-                write_json_line(out, {"id": req["id"], "status": "ok", "size": len(data)})
-                out.write(data)
-                out.flush()
-                return
-            except Exception as e:
-                write_json_line(out, {"id": req["id"], "status": "error", "message": str(e)})
-                return
+        for fmt in [f"frame_{frame_number:05d}{ext}", f"frame_{frame_number:04d}{ext}", f"frame_{frame_number}{ext}"]:
+            candidate = frames_dir / fmt
+            if candidate.exists():
+                try:
+                    resolved = candidate.resolve()
+                    with open(resolved, "rb") as f:
+                        data = f.read()
+                    write_json_line(out, {"id": req["id"], "status": "ok", "size": len(data)})
+                    out.write(data)
+                    out.flush()
+                    return
+                except Exception as e:
+                    write_json_line(out, {"id": req["id"], "status": "error", "message": str(e)})
+                    return
 
     write_json_line(out, {"id": req["id"], "status": "not_found"})
 
 
 def handle_bundle_frames(req, out):
-    export_path_str = req.get("export_path", "")
+    export_path_str = req.get("path") or req.get("export_path", "")
     frames_dir = find_frames_dir(export_path_str)
 
     if not frames_dir:

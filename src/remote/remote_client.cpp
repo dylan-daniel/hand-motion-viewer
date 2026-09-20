@@ -427,7 +427,14 @@ bool RemoteClient::fetch_single_frame(const std::string& remote_export_path, int
         return false;
     }
 
-    json req = {{"id", next_id_++}, {"cmd", "get_frame"}, {"path", remote_export_path}, {"frame", frame_number}};
+    json req = {
+        {"id", next_id_++},
+        {"cmd", "get_frame"},
+        {"path", remote_export_path},
+        {"export_path", remote_export_path},
+        {"frame", frame_number},
+        {"frame_number", frame_number}
+    };
     json hdr;
     std::vector<uint8_t> data;
     if (!send_command_binary_locked(req, hdr, data, error_out)) {
@@ -465,7 +472,7 @@ bool RemoteClient::fetch_and_extract_bundle(
         return false;
     }
 
-    json req = {{"id", next_id_++}, {"cmd", "bundle_frames"}, {"path", remote_export_path}};
+    json req = {{"id", next_id_++}, {"cmd", "bundle_frames"}, {"path", remote_export_path}, {"export_path", remote_export_path}};
     json hdr;
     std::vector<uint8_t> zip_data;
     if (!send_command_binary_locked(req, hdr, zip_data, error_out)) {

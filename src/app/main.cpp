@@ -707,7 +707,8 @@ int main(int, char**) {
         if (explorer_result.open_file) {
             if (explorer_result.is_remote) {
                 const std::string remote_path = *explorer_result.open_file;
-                const std::string local_export = CacheManager::get_local_export_path(settings.remote_host, remote_path);
+                const std::string host = !remote_client.config().host.empty() ? remote_client.config().host : settings.remote_host;
+                const std::string local_export = CacheManager::get_local_export_path(host, remote_path);
                 const std::string local_frames_dir = CacheManager::get_local_frames_dir(local_export);
 
                 if (CacheManager::is_export_cached(local_export)) {
@@ -715,6 +716,10 @@ int main(int, char**) {
                     pending_open_file = local_export;
                     if (!CacheManager::are_frames_cached(local_frames_dir)) {
                         remote_fetch_worker.submit([&remote_client, remote_path, local_frames_dir]() {
+                            std::string frame1_err;
+                            const std::string frame1_path = local_frames_dir + "/frame_00001.jpg";
+                            remote_client.fetch_single_frame(remote_path, 1, frame1_path, frame1_err);
+
                             int count = 0;
                             std::string bundle_err;
                             remote_client.fetch_and_extract_bundle(remote_path, local_frames_dir, count, bundle_err);
