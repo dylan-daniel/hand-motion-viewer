@@ -85,6 +85,7 @@ Config load_config(const std::string& path) {
     read_field(data, "remote_python", config.remote_python);
     read_field(data, "remote_script", config.remote_script);
     read_field(data, "remote_data_folder", config.remote_data_folder);
+    read_field(data, "cache_folder", config.cache_folder);
 
     read_optional_int(data, "window_x", config.window_x);
     read_optional_int(data, "window_y", config.window_y);
@@ -122,6 +123,7 @@ void save_config(const std::string& path, const Config& config) {
     data["remote_python"] = config.remote_python;
     data["remote_script"] = config.remote_script;
     data["remote_data_folder"] = config.remote_data_folder;
+    data["cache_folder"] = config.cache_folder;
 
     data["window_x"] = config.window_x ? json(*config.window_x) : json(nullptr);
     data["window_y"] = config.window_y ? json(*config.window_y) : json(nullptr);

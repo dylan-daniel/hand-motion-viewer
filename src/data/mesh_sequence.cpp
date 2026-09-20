@@ -227,7 +227,7 @@ std::string MeshSequence::frame_image_path(int index) const {
         std::snprintf(name, sizeof(name), fmt, frame_number);
         const fs::path candidate = frames_path / name;
         std::error_code error;
-        if (fs::exists(candidate, error)) {
+        if (fs::exists(candidate, error) && fs::file_size(candidate, error) > 0) {
             return candidate.string();
         }
     }

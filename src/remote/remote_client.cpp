@@ -450,7 +450,8 @@ bool RemoteClient::fetch_single_frame(const std::string& remote_export_path, int
     fs::path local_p(local_file_dest);
     fs::create_directories(local_p.parent_path(), ec);
 
-    std::ofstream out(local_file_dest, std::ios::binary);
+    const std::string tmp_file = local_file_dest + ".tmp";
+    std::ofstream out(tmp_file, std::ios::binary);
     if (!out) {
         error_out = "Failed to open local frame destination: " + local_file_dest;
         return false;
@@ -459,13 +460,19 @@ bool RemoteClient::fetch_single_frame(const std::string& remote_export_path, int
     if (!data.empty()) {
         out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
     }
+    out.close();
+
+    fs::rename(tmp_file, local_file_dest, ec);
 
     const std::string original_filename = hdr.value("filename", "");
     if (!original_filename.empty() && original_filename != local_p.filename().string() && !data.empty()) {
         const fs::path alt_path = local_p.parent_path() / original_filename;
-        std::ofstream alt_out(alt_path, std::ios::binary);
+        const std::string alt_tmp = alt_path.string() + ".tmp";
+        std::ofstream alt_out(alt_tmp, std::ios::binary);
         if (alt_out) {
             alt_out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+            alt_out.close();
+            fs::rename(alt_tmp, alt_path, ec);
         }
     }
 
@@ -531,7 +538,11 @@ bool RemoteClient::fetch_and_extract_bundle(
 
         if (!mz_zip_reader_is_file_a_directory(&zip_archive, i)) {
             fs::path out_file = fs::path(local_frames_dir) / file_stat.m_filename;
-            mz_zip_reader_extract_to_file(&zip_archive, i, out_file.string().c_str(), 0);
+            fs::path tmp_file = fs::path(local_frames_dir) / (std::string(file_stat.m_filename) + ".tmp");
+            if (mz_zip_reader_extract_to_file(&zip_archive, i, tmp_file.string().c_str(), 0)) {
+                std::error_code ren_ec;
+                fs::rename(tmp_file, out_file, ren_ec);
+            }
         }
     }
     mz_zip_reader_end(&zip_archive);

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <vector>
+#include "remote/cache_manager.h"
 #include "remote/remote_client.h"
 
 #include <SDL3/SDL.h>
@@ -568,6 +569,7 @@ MenuResult draw_menu_bar(MenuState state) {
     bool export_file_requested = false;
     bool open_remote_modal_requested = false;
     bool disconnect_remote_requested = false;
+    bool open_storage_modal_requested = false;
 
     // Extra padding makes the bar taller; pop it right after begin so dropdown
     // contents don't grow too.
@@ -609,6 +611,10 @@ MenuResult draw_menu_bar(MenuState state) {
                     "sequence with no tracking/classification data is never filtered."
                 );
             }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Storage & Cache Settings...")) {
+                open_storage_modal_requested = true;
+            }
             ImGui::EndMenu();
         }
 
@@ -638,7 +644,7 @@ MenuResult draw_menu_bar(MenuState state) {
 
         ImGui::EndMainMenuBar();
     }
-    return {state, export_file_requested, open_remote_modal_requested, disconnect_remote_requested};
+    return {state, export_file_requested, open_remote_modal_requested, disconnect_remote_requested, open_storage_modal_requested};
 }
 
 ViewportResult draw_viewport_window(
@@ -919,6 +925,115 @@ void draw_remote_modal(bool& is_open, RemoteConfig& config, RemoteClient& client
             connect_in_flight = true;
         }
         ImGui::EndDisabled();
+
+        ImGui::EndPopup();
+    }
+}
+
+void draw_storage_modal(bool& is_open, std::string& cache_folder, bool& browse_requested) {
+    if (is_open) {
+        if (!ImGui::IsPopupOpen("Storage & Cache Settings")) {
+            ImGui::OpenPopup("Storage & Cache Settings");
+        }
+    }
+
+    constexpr float MODAL_WIDTH = 540.0f;
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(MODAL_WIDTH, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(MODAL_WIDTH, 0.0f), ImVec2(MODAL_WIDTH, 2000.0f));
+
+    static char path_buf[512] = "";
+    static bool was_open = false;
+    static std::string last_synced_folder;
+    static std::uintmax_t cached_size_bytes = 0;
+
+    auto format_size = [](std::uintmax_t bytes) -> std::string {
+        constexpr double KiB = 1024.0;
+        constexpr double MiB = KiB * 1024.0;
+        constexpr double GiB = MiB * 1024.0;
+        char buf[64];
+        if (bytes >= GiB) {
+            std::snprintf(buf, sizeof(buf), "%.2f GB", static_cast<double>(bytes) / GiB);
+        } else if (bytes >= MiB) {
+            std::snprintf(buf, sizeof(buf), "%.2f MB", static_cast<double>(bytes) / MiB);
+        } else if (bytes >= KiB) {
+            std::snprintf(buf, sizeof(buf), "%.1f KB", static_cast<double>(bytes) / KiB);
+        } else {
+            std::snprintf(buf, sizeof(buf), "%llu bytes", static_cast<unsigned long long>(bytes));
+        }
+        return buf;
+    };
+
+    if (is_open && (!was_open || cache_folder != last_synced_folder)) {
+        std::snprintf(path_buf, sizeof(path_buf), "%s", cache_folder.c_str());
+        last_synced_folder = cache_folder;
+        cached_size_bytes = CacheManager::calculate_cache_size_bytes();
+    }
+    was_open = is_open;
+
+    if (ImGui::BeginPopupModal(
+            "Storage & Cache Settings", &is_open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove
+        )) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            is_open = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::TextUnformatted("Configure local storage and frame cache location:");
+        ImGui::Spacing();
+
+        ImGui::TextDisabled("Custom Cache Directory:");
+        const float browse_btn_width = 80.0f;
+        ImGui::SetNextItemWidth(-browse_btn_width - ImGui::GetStyle().ItemSpacing.x);
+        if (ImGui::InputTextWithHint("##cache_folder_input", "Default (OS Temp)", path_buf, sizeof(path_buf))) {
+            cache_folder = path_buf;
+            last_synced_folder = cache_folder;
+            CacheManager::set_custom_cache_root(cache_folder);
+            cached_size_bytes = CacheManager::calculate_cache_size_bytes();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Browse...", ImVec2(browse_btn_width, 0.0f))) {
+            browse_requested = true;
+        }
+
+        if (ImGui::Button("Reset to Default Temp")) {
+            cache_folder.clear();
+            path_buf[0] = '\0';
+            last_synced_folder = cache_folder;
+            CacheManager::set_custom_cache_root("");
+            cached_size_bytes = CacheManager::calculate_cache_size_bytes();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::TextDisabled("Active Cache Path:");
+        const std::string active_cache_dir = CacheManager::get_cache_root();
+        ImGui::TextWrapped("%s", active_cache_dir.c_str());
+
+        ImGui::Spacing();
+        ImGui::Text("Cache Disk Usage: %s", format_size(cached_size_bytes).c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Refresh##cache_size")) {
+            cached_size_bytes = CacheManager::calculate_cache_size_bytes();
+        }
+
+        ImGui::Spacing();
+        if (ImGui::Button("Clear Cache")) {
+            CacheManager::clear_cache();
+            cached_size_bytes = CacheManager::calculate_cache_size_bytes();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        if (ImGui::Button("Close", ImVec2(-1.0f, 0.0f))) {
+            is_open = false;
+            ImGui::CloseCurrentPopup();
+        }
 
         ImGui::EndPopup();
     }

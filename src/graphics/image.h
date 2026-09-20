@@ -29,6 +29,9 @@ public:
     /// true if a valid texture is currently available.
     bool load(const std::string& path);
 
+    /// Upload any finished decode to the GL texture on the render thread.
+    void update() { upload_ready(); }
+
     /// Drop the texture and forget the loaded path (cancels any pending decode).
     void clear();
 

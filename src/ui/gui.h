@@ -34,10 +34,11 @@ struct MenuState {
 };
 
 struct MenuResult {
-    MenuState state;                          // the (possibly toggled) menu state
-    bool export_file_requested = false;       // user picked "Open Export File"
-    bool open_remote_modal_requested = false; // user picked "Remote -> Connect to Server..."
-    bool disconnect_remote_requested = false; // user picked "Remote -> Disconnect"
+    MenuState state;                           // the (possibly toggled) menu state
+    bool export_file_requested = false;        // user picked "Open Export File"
+    bool open_remote_modal_requested = false;  // user picked "Remote -> Connect to Server..."
+    bool disconnect_remote_requested = false;  // user picked "Remote -> Disconnect"
+    bool open_storage_modal_requested = false; // user picked "Settings -> Storage & Cache Settings..."
 };
 
 /// Playback-transport state every pane that can host the player shares: passed in
@@ -142,3 +143,6 @@ void draw_flags_window(const char* title, std::array<bool, kFlagLayerCount>& fla
 
 /// Draw the centered modal popup for connecting to a remote SSH server.
 void draw_remote_modal(bool& is_open, RemoteConfig& config, RemoteClient& client);
+
+/// Draw the centered modal popup for storage & cache configuration.
+void draw_storage_modal(bool& is_open, std::string& cache_folder, bool& browse_requested);

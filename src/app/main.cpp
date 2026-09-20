@@ -241,9 +241,10 @@ int main(int, char**) {
         std::string local_frames_dir;
     };
 
-    CacheManager::init();
+    CacheManager::set_custom_cache_root(settings.cache_folder);
     RemoteClient remote_client;
     WorkerQueue remote_fetch_worker;
+    WorkerQueue remote_open_worker;
     ScrubWorker scrub_worker(remote_client);
     std::string current_remote_path;
     std::string current_local_frames_dir;
@@ -258,6 +259,8 @@ int main(int, char**) {
         .root_folder = settings.remote_data_folder,
     };
     bool show_remote_connect_modal = false;
+    bool show_storage_modal = false;
+    bool browse_cache_folder_requested = false;
 
     // Explorer pane, rooted at the saved data folder, listing .hexport files at any
     // nesting depth. set_root validates the path and kicks off the background scan
@@ -289,6 +292,7 @@ int main(int, char**) {
     // Native pickers: a folder picker for choosing the Explorer's data-folder
     // root, and a single-file picker for opening a .hexport export (menu bar).
     std::unique_ptr<pfd::select_folder> data_folder_dialog;
+    std::unique_ptr<pfd::select_folder> cache_folder_dialog;
     std::unique_ptr<pfd::open_file> export_file_dialog;
     // A file the Explorer asked to open, applied at the top of the next frame
     // rather than mid-frame: open_sequence frees current_gpu, and the render below
@@ -333,10 +337,12 @@ int main(int, char**) {
                 win_height = event.window.data2;
             } else if (event.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode key = event.key.key;
-                const bool modal_open = show_remote_connect_modal || (ImGui::GetCurrentContext() != nullptr && ImGui::GetTopMostPopupModal() != nullptr);
+                const bool modal_open =
+                    show_remote_connect_modal || show_storage_modal || (ImGui::GetCurrentContext() != nullptr && ImGui::GetTopMostPopupModal() != nullptr);
                 if (key == SDLK_ESCAPE) {
                     if (modal_open) {
                         show_remote_connect_modal = false;
+                        show_storage_modal = false;
                         ImGui::ClearActiveID();
                     } else if (imgui_io.WantTextInput) {
                         ImGui::ClearActiveID();
@@ -503,6 +509,9 @@ int main(int, char**) {
         if (menu.open_remote_modal_requested) {
             show_remote_connect_modal = true;
         }
+        if (menu.open_storage_modal_requested) {
+            show_storage_modal = true;
+        }
         if (menu.disconnect_remote_requested) {
             remote_client.disconnect();
             settings.remote_mode = false;
@@ -565,6 +574,10 @@ int main(int, char**) {
         if (export_file_dialog && export_file_dialog->ready(0)) {
             const std::vector<std::string> chosen = export_file_dialog->result();
             if (!chosen.empty()) {
+                ++active_sequence_id;
+                remote_fetch_worker.clear();
+                scrub_worker.cancel();
+                remote_open_worker.clear();
                 pending_open_file = PendingOpen{
                     .local_path = chosen.front(),
                     .remote_path = "",
@@ -585,6 +598,19 @@ int main(int, char**) {
             data_folder_dialog.reset();
         }
 
+        if (browse_cache_folder_requested && !cache_folder_dialog) {
+            browse_cache_folder_requested = false;
+            cache_folder_dialog = std::make_unique<pfd::select_folder>("Select Cache Folder");
+        }
+        if (cache_folder_dialog && cache_folder_dialog->ready(0)) {
+            const std::string folder = cache_folder_dialog->result();
+            if (!folder.empty()) {
+                settings.cache_folder = folder;
+                CacheManager::set_custom_cache_root(folder);
+            }
+            cache_folder_dialog.reset();
+        }
+
         // Apply a deferred Explorer open here, before the current frame's GPU
         // buffers are read below, so opening never frees a buffer still in use.
         if (pending_open_file) {
@@ -594,6 +620,7 @@ int main(int, char**) {
             pending_open_file.reset();
 
             const uint64_t seq_id = ++active_sequence_id;
+            remote_fetch_worker.clear();
             scrub_worker.cancel();
 
             if (!current_remote_path.empty() && sequence && remote_client.is_connected()) {
@@ -726,13 +753,16 @@ int main(int, char**) {
             const std::string image_path = sequence->frame_image_path(current_frame);
             if (!image_path.empty()) {
                 frame_image.load(image_path);
-            } else if (!current_remote_path.empty() && remote_client.is_connected()) {
-                const int f_num = sequence->frame_number(current_frame);
-                if (f_num > 0) {
-                    char name[64];
-                    std::snprintf(name, sizeof(name), "frame_%05d.jpg", f_num);
-                    const std::string dest = (fs::path(current_local_frames_dir) / name).string();
-                    scrub_worker.request(current_remote_path, f_num, dest);
+            } else {
+                frame_image.update();
+                if (!current_remote_path.empty() && remote_client.is_connected()) {
+                    const int f_num = sequence->frame_number(current_frame);
+                    if (f_num > 0) {
+                        char name[64];
+                        std::snprintf(name, sizeof(name), "frame_%05d.jpg", f_num);
+                        const std::string dest = (fs::path(current_local_frames_dir) / name).string();
+                        scrub_worker.request(current_remote_path, f_num, dest);
+                    }
                 }
             }
         } else {
@@ -801,6 +831,7 @@ int main(int, char**) {
             show_remote_connect_modal = true;
         }
         draw_remote_modal(show_remote_connect_modal, remote_config, remote_client);
+        draw_storage_modal(show_storage_modal, settings.cache_folder, browse_cache_folder_requested);
 
         settings.remote_host = remote_config.host;
         settings.remote_port = remote_config.port;
@@ -812,6 +843,11 @@ int main(int, char**) {
             data_folder_dialog = std::make_unique<pfd::select_folder>("Select data folder");
         }
         if (explorer_result.open_file) {
+            const uint64_t open_gen = ++active_sequence_id;
+            remote_fetch_worker.clear();
+            scrub_worker.cancel();
+            remote_open_worker.clear();
+
             if (explorer_result.is_remote) {
                 const std::string remote_path = *explorer_result.open_file;
                 const std::string host = !remote_client.config().host.empty() ? remote_client.config().host : settings.remote_host;
@@ -826,16 +862,25 @@ int main(int, char**) {
                         .local_frames_dir = local_frames_dir,
                     };
                 } else {
-                    // Fetch export file in background so UI thread never stalls
-                    remote_fetch_worker.submit([&remote_client, remote_path, local_export, local_frames_dir, &remote_open_mutex, &pending_remote_open]() {
+                    // Fetch export file on dedicated open worker so frame prefetching never delays opening
+                    remote_open_worker.submit([&remote_client,
+                                               remote_path,
+                                               local_export,
+                                               local_frames_dir,
+                                               &remote_open_mutex,
+                                               &pending_remote_open,
+                                               open_gen,
+                                               &active_sequence_id]() {
                         std::string err;
                         if (remote_client.fetch_file(remote_path, local_export, err)) {
-                            std::lock_guard<std::mutex> lock(remote_open_mutex);
-                            pending_remote_open = PendingOpen{
-                                .local_path = local_export,
-                                .remote_path = remote_path,
-                                .local_frames_dir = local_frames_dir,
-                            };
+                            if (active_sequence_id.load() == open_gen) {
+                                std::lock_guard<std::mutex> lock(remote_open_mutex);
+                                pending_remote_open = PendingOpen{
+                                    .local_path = local_export,
+                                    .remote_path = remote_path,
+                                    .local_frames_dir = local_frames_dir,
+                                };
+                            }
                         }
                     });
                 }

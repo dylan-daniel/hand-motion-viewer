@@ -33,6 +33,9 @@ struct Config {
     std::string remote_script = "";
     std::string remote_data_folder = "";
 
+    // Local storage & cache settings
+    std::string cache_folder = ""; // custom frames cache folder; empty => OS default Temp folder
+
     // Window placement. Position is stored relative to ``window_display``'s
     // top-left corner so the window returns to the right monitor next launch.
     std::optional<int> window_x;

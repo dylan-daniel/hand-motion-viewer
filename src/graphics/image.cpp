@@ -43,7 +43,7 @@ bool ImageTexture::load(const std::string& path) {
     bool submit = false;
     {
         std::lock_guard<std::mutex> guard(mutex_);
-        if (path != desired_path_) {
+        if (path != desired_path_ || (texture_ == 0 && !worker_busy_)) {
             desired_path_ = path;
             // Only kick a new decode chain if one is not already running; a running
             // chain picks up the new desired path itself.
@@ -118,6 +118,8 @@ void ImageTexture::upload_ready() {
         if (is_current_target) {
             release();
             path_ = ready.path;
+            std::lock_guard<std::mutex> guard(mutex_);
+            desired_path_.clear();
         }
         return;
     }

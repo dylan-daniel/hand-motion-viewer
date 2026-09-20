@@ -10,6 +10,8 @@
 namespace fs = std::filesystem;
 
 namespace {
+    std::string s_custom_cache_root;
+
     std::string sanitize_identifier(const std::string& input) {
         std::string result;
         for (char c : input) {
@@ -32,16 +34,51 @@ void CacheManager::init() {
     fs::create_directories(root, ec);
 }
 
-std::string CacheManager::get_cache_root() {
-    char* pref = SDL_GetPrefPath("hand_motion_viewer", "hand_motion_viewer");
-    std::string root;
-    if (pref != nullptr) {
-        root = std::string(pref) + "remote_cache";
-        SDL_free(pref);
-    } else {
-        root = "remote_cache";
+std::string CacheManager::get_default_cache_root() {
+    std::error_code ec;
+    fs::path temp_dir = fs::temp_directory_path(ec);
+    if (ec || temp_dir.empty()) {
+        temp_dir = fs::path("/tmp");
     }
-    return root;
+    return (temp_dir / "hand_motion_viewer_cache").string();
+}
+
+void CacheManager::set_custom_cache_root(const std::string& custom_root) {
+    s_custom_cache_root = custom_root;
+    init();
+}
+
+const std::string& CacheManager::get_custom_cache_root() { return s_custom_cache_root; }
+
+std::string CacheManager::get_cache_root() {
+    if (!s_custom_cache_root.empty()) {
+        return s_custom_cache_root;
+    }
+    return get_default_cache_root();
+}
+
+std::uintmax_t CacheManager::calculate_cache_size_bytes() {
+    const std::string root = get_cache_root();
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) {
+        return 0;
+    }
+    std::uintmax_t total_size = 0;
+    for (const auto& entry : fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied, ec)) {
+        if (entry.is_regular_file(ec)) {
+            total_size += entry.file_size(ec);
+        }
+    }
+    return total_size;
+}
+
+void CacheManager::clear_cache() {
+    const std::string root = get_cache_root();
+    std::error_code ec;
+    if (fs::exists(root, ec)) {
+        fs::remove_all(root, ec);
+    }
+    init();
 }
 
 std::string CacheManager::get_local_export_path(const std::string& host, const std::string& remote_export_path) {

@@ -32,6 +32,13 @@ public:
         condition_.notify_one();
     }
 
+    /// Discard all pending queued tasks without running them.
+    void clear() {
+        std::lock_guard<std::mutex> guard(mutex_);
+        std::queue<std::function<void()>> empty;
+        std::swap(tasks_, empty);
+    }
+
     /// Stop accepting tasks and join the worker (also called by the destructor).
     void shutdown() {
         {

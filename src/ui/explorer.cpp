@@ -438,9 +438,6 @@ namespace {
             const float node_left = ImGui::GetCursorScreenPos().x;
             ImGui::TreeNodeEx(node.path.c_str(), flags, "%s", "");
             draw_node_label(draw.explorer.icons(), node.name, node.is_file, false, node_left);
-            if (node.is_file && ImGui::IsItemHovered()) {
-                ImGui::SetItemTooltip("%s", node.path.c_str());
-            }
             if (node.is_file && ImGui::IsItemClicked()) {
                 draw.result.open_file = node.path;
                 draw.result.is_remote = draw.explorer.mode() == FileExplorer::SourceMode::Remote;
