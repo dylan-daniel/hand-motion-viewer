@@ -1,4 +1,5 @@
 #include "ui/explorer.h"
+#include "remote/remote_client.h"
 
 #include <algorithm>
 #include <cctype>
@@ -344,6 +345,7 @@ namespace {
             draw_node_label(draw.explorer.icons(), node.name, node.is_file, false, node_left);
             if (node.is_file && ImGui::IsItemClicked()) {
                 draw.result.open_file = node.path;
+                draw.result.is_remote = draw.explorer.mode() == FileExplorer::SourceMode::Remote;
             }
             return;
         }
@@ -408,6 +410,24 @@ FileExplorer::Node FileExplorer::scan_root(const std::string& root) {
     return node;
 }
 
+void FileExplorer::set_mode(SourceMode mode) {
+    if (mode_ != mode) {
+        mode_ = mode;
+        root_.reset();
+        scan_error_.clear();
+        refresh();
+    }
+}
+
+void FileExplorer::set_remote_root(const std::string& root) {
+    remote_root_path_ = root;
+    if (mode_ == SourceMode::Remote) {
+        root_.reset();
+        scan_error_.clear();
+        refresh();
+    }
+}
+
 void FileExplorer::start_scan() {
     bool expected = false;
     if (!scanning_.compare_exchange_strong(expected, true)) {
@@ -416,17 +436,45 @@ void FileExplorer::start_scan() {
     {
         std::lock_guard<std::mutex> guard(mutex_);
         has_ready_ = false;
+        ready_error_.clear();
     }
-    const std::string root = root_path_;
-    worker_.submit([this, root] {
-        Node tree = scan_root(root);
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-            ready_root_ = std::move(tree);
-            has_ready_ = true;
-        }
-        scanning_.store(false);
-    });
+
+    if (mode_ == SourceMode::Local) {
+        const std::string root = root_path_;
+        worker_.submit([this, root] {
+            Node tree = scan_root(root);
+            {
+                std::lock_guard<std::mutex> guard(mutex_);
+                ready_root_ = std::move(tree);
+                has_ready_ = true;
+            }
+            scanning_.store(false);
+        });
+    } else {
+        const std::string root = remote_root_path_;
+        RemoteClient* client = remote_client_;
+        worker_.submit([this, root, client] {
+            Node tree;
+            std::string err;
+            bool ok = false;
+            if (client && client->is_connected()) {
+                ok = client->scan_tree(root, tree, err);
+            } else {
+                err = "Not connected to remote server";
+            }
+            {
+                std::lock_guard<std::mutex> guard(mutex_);
+                if (ok) {
+                    ready_root_ = std::move(tree);
+                } else {
+                    ready_root_.reset();
+                    ready_error_ = err;
+                }
+                has_ready_ = true;
+            }
+            scanning_.store(false);
+        });
+    }
 }
 
 void FileExplorer::set_root(const std::string& root) {
@@ -438,12 +486,20 @@ void FileExplorer::set_root(const std::string& root) {
         return;
     }
     root_path_ = root;
-    start_scan();
+    if (mode_ == SourceMode::Local) {
+        start_scan();
+    }
 }
 
 void FileExplorer::refresh() {
-    if (root_path_.empty()) {
-        return;
+    if (mode_ == SourceMode::Local) {
+        if (root_path_.empty()) {
+            return;
+        }
+    } else {
+        if (remote_root_path_.empty()) {
+            return;
+        }
     }
     start_scan();
 }
@@ -452,7 +508,9 @@ void FileExplorer::poll() {
     std::lock_guard<std::mutex> guard(mutex_);
     if (has_ready_) {
         root_ = std::move(ready_root_);
+        scan_error_ = std::move(ready_error_);
         ready_root_.reset();
+        ready_error_.clear();
         has_ready_ = false;
     }
 }
@@ -461,7 +519,7 @@ void FileExplorer::set_saved_open(std::vector<std::string> paths) {
     saved_open_ = std::unordered_set<std::string>(std::make_move_iterator(paths.begin()), std::make_move_iterator(paths.end()));
 }
 
-ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id) {
+ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, RemoteConfig* remote_config) {
     ExplorerResult result;
 
     // Fold in a finished background scan (if any) before drawing this frame's tree.
@@ -472,127 +530,265 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id) {
     result.focused = ImGui::IsWindowFocused();
     result.hovered = ImGui::IsWindowHovered();
 
-    if (!explorer.has_root()) {
-        // Empty state: a muted folder icon, a heading, one line of guidance, and the
-        // primary action — centred as a block a little above the pane's middle.
-        const ImGuiStyle& style = ImGui::GetStyle();
-        const ImVec2 origin = ImGui::GetCursorPos();
-        const ImVec2 avail = ImGui::GetContentRegionAvail();
-        const ExplorerIcons& icons = explorer.icons();
-
-        const char* heading = "No data folder selected";
-        const char* hint = "Choose a folder to scan for .hexport files.";
-        const char* button_label = "Choose Data Folder";
-        const float icon_size = 48.0f;
-        const bool has_icon = icons.change_root != 0;
-        const float gap = ImGui::GetTextLineHeight() * 0.6f;
-        const float line_height = ImGui::GetTextLineHeight();
-        const float button_width = ImGui::CalcTextSize(button_label).x + style.FramePadding.x * 2.0f;
-
-        // Total block height, to place it slightly above centre.
-        float block_height = line_height + style.ItemSpacing.y + line_height + gap + ImGui::GetFrameHeight();
-        if (has_icon) {
-            block_height += icon_size + gap;
+    // ── Source Mode Switcher ──────────────────────────────
+    const bool is_remote = explorer.mode() == FileExplorer::SourceMode::Remote;
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+    if (!is_remote) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    if (ImGui::Button("  Local  ")) {
+        if (is_remote) {
+            explorer.set_mode(FileExplorer::SourceMode::Local);
+            result.mode_changed = true;
         }
-        ImGui::SetCursorPosY(origin.y + std::max(0.0f, (avail.y - block_height) * 0.4f));
+    }
+    if (!is_remote) {
+        ImGui::PopStyleColor();
+    }
 
-        // Centre each line on its own width. Not clamped: when a line is wider than the
-        // pane it stays centred and simply overflows both edges, rather than pinning left.
-        const auto center_x = [&](float width) { ImGui::SetCursorPosX(origin.x + (avail.x - width) * 0.5f); };
+    ImGui::SameLine();
 
-        if (has_icon) {
-            center_x(icon_size);
-            const ImVec2 icon_pos = ImGui::GetCursorScreenPos();
-            ImGui::GetWindowDrawList()->AddImage(
-                static_cast<ImTextureID>(icons.change_root),
-                icon_pos,
-                ImVec2(icon_pos.x + icon_size, icon_pos.y + icon_size),
-                ImVec2(0.0f, 0.0f),
-                ImVec2(1.0f, 1.0f),
-                ImGui::GetColorU32(ImGuiCol_TextDisabled)
-            );
-            ImGui::Dummy(ImVec2(icon_size, icon_size));
+    if (is_remote) {
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    if (ImGui::Button("  Remote (SSH)  ")) {
+        if (!is_remote) {
+            explorer.set_mode(FileExplorer::SourceMode::Remote);
+            result.mode_changed = true;
+        }
+    }
+    if (is_remote) {
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopStyleVar();
+
+    ImGui::Separator();
+
+    if (!is_remote) {
+        // ── Local Mode UI ─────────────────────────────────
+        if (!explorer.has_root()) {
+            const ImGuiStyle& style = ImGui::GetStyle();
+            const ImVec2 origin = ImGui::GetCursorPos();
+            const ImVec2 avail = ImGui::GetContentRegionAvail();
+            const ExplorerIcons& icons = explorer.icons();
+
+            const char* heading = "No data folder selected";
+            const char* hint = "Choose a folder to scan for .hexport files.";
+            const char* button_label = "Choose Data Folder";
+            const float icon_size = 48.0f;
+            const bool has_icon = icons.change_root != 0;
+            const float gap = ImGui::GetTextLineHeight() * 0.6f;
+            const float line_height = ImGui::GetTextLineHeight();
+            const float button_width = ImGui::CalcTextSize(button_label).x + style.FramePadding.x * 2.0f;
+
+            float block_height = line_height + style.ItemSpacing.y + line_height + gap + ImGui::GetFrameHeight();
+            if (has_icon) {
+                block_height += icon_size + gap;
+            }
+            ImGui::SetCursorPosY(origin.y + std::max(0.0f, (avail.y - block_height) * 0.4f));
+
+            const auto center_x = [&](float width) { ImGui::SetCursorPosX(origin.x + (avail.x - width) * 0.5f); };
+
+            if (has_icon) {
+                center_x(icon_size);
+                const ImVec2 icon_pos = ImGui::GetCursorScreenPos();
+                ImGui::GetWindowDrawList()->AddImage(
+                    static_cast<ImTextureID>(icons.change_root),
+                    icon_pos,
+                    ImVec2(icon_pos.x + icon_size, icon_pos.y + icon_size),
+                    ImVec2(0.0f, 0.0f),
+                    ImVec2(1.0f, 1.0f),
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled)
+                );
+                ImGui::Dummy(ImVec2(icon_size, icon_size));
+                ImGui::Dummy(ImVec2(0.0f, gap - style.ItemSpacing.y));
+            }
+
+            center_x(ImGui::CalcTextSize(heading).x);
+            ImGui::TextUnformatted(heading);
+            center_x(ImGui::CalcTextSize(hint).x);
+            ImGui::TextDisabled("%s", hint);
             ImGui::Dummy(ImVec2(0.0f, gap - style.ItemSpacing.y));
-        }
+            center_x(button_width);
+            if (ImGui::Button(button_label)) {
+                result.choose_root_requested = true;
+            }
+        } else {
+            const ImGuiStyle& style = ImGui::GetStyle();
+            const float icon = ImGui::GetFontSize();
+            const ExplorerIcons& icons = explorer.icons();
+            const float button_width = icon + style.FramePadding.x * 2.0f;
+            const float buttons_width = button_width * 2.0f + style.ItemSpacing.x;
 
-        center_x(ImGui::CalcTextSize(heading).x);
-        ImGui::TextUnformatted(heading);
-        center_x(ImGui::CalcTextSize(hint).x);
-        ImGui::TextDisabled("%s", hint);
-        ImGui::Dummy(ImVec2(0.0f, gap - style.ItemSpacing.y));
-        center_x(button_width);
-        if (ImGui::Button(button_label)) {
-            result.choose_root_requested = true;
+            const ImVec2 row_start = ImGui::GetCursorPos();
+            const float region_width = ImGui::GetContentRegionAvail().x;
+            const ImVec4 tint = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            const ImVec4 no_bg(0.0f, 0.0f, 0.0f, 0.0f);
+            const ImVec2 uv0(0.0f, 0.0f);
+            const ImVec2 uv1(1.0f, 1.0f);
+
+            ImGui::AlignTextToFramePadding();
+            const float text_width = std::max(0.0f, region_width - buttons_width - style.ItemSpacing.x);
+            const ImVec2 text_pos = ImGui::GetCursorScreenPos();
+            ImGui::PushClipRect(text_pos, ImVec2(text_pos.x + text_width, text_pos.y + ImGui::GetFrameHeight()), true);
+            ImGui::TextDisabled("%s", explorer.root_path().c_str());
+            ImGui::PopClipRect();
+
+            ImGui::SetCursorPos(ImVec2(row_start.x + region_width - buttons_width, row_start.y));
+            bool change_clicked = false;
+            if (icons.change_root != 0) {
+                change_clicked = ImGui::ImageButton("change_root", static_cast<ImTextureID>(icons.change_root), ImVec2(icon, icon), uv0, uv1, no_bg, tint);
+            } else {
+                change_clicked = ImGui::Button("Change");
+            }
+            if (change_clicked) {
+                result.choose_root_requested = true;
+            }
+            ImGui::SetItemTooltip("Change data folder");
+
+            ImGui::SameLine();
+            const bool scanning = explorer.scanning();
+            ImGui::BeginDisabled(scanning);
+            bool refresh_clicked = false;
+            if (icons.refresh != 0) {
+                refresh_clicked = ImGui::ImageButton("refresh_root", static_cast<ImTextureID>(icons.refresh), ImVec2(icon, icon), uv0, uv1, no_bg, tint);
+            } else {
+                refresh_clicked = ImGui::Button("Refresh");
+            }
+            ImGui::EndDisabled();
+            if (refresh_clicked) {
+                explorer.refresh();
+            }
+            ImGui::SetItemTooltip("Rescan this folder");
+
+            ImGui::Separator();
+
+            if (FileExplorer::Node* root = explorer.root_node()) {
+                explorer.clear_live_expanded();
+                TreeDraw draw{explorer, result, ImGui::GetCursorScreenPos().x, ImGui::GetContentRegionAvail().x, 0};
+                draw_node(draw, *root);
+            } else if (scanning) {
+                ImGui::TextDisabled("Scanning...");
+            } else {
+                ImGui::TextDisabled("No .hexport files found.");
+            }
         }
     } else {
-        // Header row: the data-folder path on the left, then two right-aligned icon
-        // buttons — change-root, then refresh (rescan). The path is clipped to stop
-        // short of the buttons so a long path never renders under or past them.
-        const ImGuiStyle& style = ImGui::GetStyle();
-        const float icon = ImGui::GetFontSize();
-        const ExplorerIcons& icons = explorer.icons();
-        const float button_width = icon + style.FramePadding.x * 2.0f;
-        const float buttons_width = button_width * 2.0f + style.ItemSpacing.x; // change + refresh
+        // ── Remote (SSH) Mode UI ──────────────────────────
+        RemoteClient* client = explorer.remote_client();
+        const bool connected = client != nullptr && client->is_connected();
 
-        const ImVec2 row_start = ImGui::GetCursorPos();
-        const float region_width = ImGui::GetContentRegionAvail().x;
+        if (!connected) {
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Connect to remote server over SSH:");
+            ImGui::Spacing();
 
-        // Tint icon buttons to the text colour so they track the theme.
-        const ImVec4 tint = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-        const ImVec4 no_bg(0.0f, 0.0f, 0.0f, 0.0f);
-        const ImVec2 uv0(0.0f, 0.0f);
-        const ImVec2 uv1(1.0f, 1.0f);
+            if (remote_config != nullptr) {
+                char host_buf[256];
+                std::snprintf(host_buf, sizeof(host_buf), "%s", remote_config->host.c_str());
+                if (ImGui::InputTextWithHint("Host##remote_host", "user@server or ssh_alias", host_buf, sizeof(host_buf))) {
+                    remote_config->host = host_buf;
+                }
 
-        // Path on the left, vertically centred to the button row and clipped.
-        ImGui::AlignTextToFramePadding();
-        const float text_width = std::max(0.0f, region_width - buttons_width - style.ItemSpacing.x);
-        const ImVec2 text_pos = ImGui::GetCursorScreenPos();
-        ImGui::PushClipRect(text_pos, ImVec2(text_pos.x + text_width, text_pos.y + ImGui::GetFrameHeight()), true);
-        ImGui::TextDisabled("%s", explorer.root_path().c_str());
-        ImGui::PopClipRect();
+                char root_buf[512];
+                std::snprintf(root_buf, sizeof(root_buf), "%s", remote_config->root_folder.c_str());
+                if (ImGui::InputTextWithHint("Data Folder##remote_root", "/path/to/cache", root_buf, sizeof(root_buf))) {
+                    remote_config->root_folder = root_buf;
+                    explorer.set_remote_root(root_buf);
+                }
 
-        // Change-root button. Falls back to a text button if its texture is missing.
-        ImGui::SetCursorPos(ImVec2(row_start.x + region_width - buttons_width, row_start.y));
-        bool change_clicked = false;
-        if (icons.change_root != 0) {
-            change_clicked = ImGui::ImageButton("change_root", static_cast<ImTextureID>(icons.change_root), ImVec2(icon, icon), uv0, uv1, no_bg, tint);
+                if (ImGui::CollapsingHeader("Advanced SSH Settings")) {
+                    ImGui::InputInt("SSH Port##remote_port", &remote_config->port);
+                    char py_buf[256];
+                    std::snprintf(py_buf, sizeof(py_buf), "%s", remote_config->python_bin.c_str());
+                    if (ImGui::InputText("Python Binary##remote_python", py_buf, sizeof(py_buf))) {
+                        remote_config->python_bin = py_buf;
+                    }
+                    char script_buf[512];
+                    std::snprintf(script_buf, sizeof(script_buf), "%s", remote_config->script_path.c_str());
+                    if (ImGui::InputText("Daemon Path##remote_script", script_buf, sizeof(script_buf))) {
+                        remote_config->script_path = script_buf;
+                    }
+                }
+            }
+
+            ImGui::Spacing();
+            const bool connecting = client && client->state() == ConnectionState::Connecting;
+            const bool can_connect = remote_config && !remote_config->host.empty();
+            ImGui::BeginDisabled(connecting || !can_connect);
+            if (ImGui::Button(connecting ? "Connecting..." : "Connect to Server", ImVec2(-1.0f, ImGui::GetFrameHeight() * 1.3f))) {
+                result.connect_requested = true;
+            }
+            ImGui::EndDisabled();
+
+            if (client && !client->last_error().empty()) {
+                ImGui::Spacing();
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+                ImGui::TextWrapped("Error: %s", client->last_error().c_str());
+                ImGui::PopStyleColor();
+            }
         } else {
-            change_clicked = ImGui::Button("Change");
-        }
-        if (change_clicked) {
-            result.choose_root_requested = true;
-        }
-        ImGui::SetItemTooltip("Change data folder");
+            const ImGuiStyle& style = ImGui::GetStyle();
+            const float icon = ImGui::GetFontSize();
+            const ExplorerIcons& icons = explorer.icons();
+            const float button_width = icon + style.FramePadding.x * 2.0f;
+            const float buttons_width = button_width + 85.0f + style.ItemSpacing.x; // disconnect + refresh
 
-        // Refresh (rescan) button to the right of it, disabled while a scan runs.
-        ImGui::SameLine();
-        const bool scanning = explorer.scanning();
-        ImGui::BeginDisabled(scanning);
-        bool refresh_clicked = false;
-        if (icons.refresh != 0) {
-            refresh_clicked = ImGui::ImageButton("refresh_root", static_cast<ImTextureID>(icons.refresh), ImVec2(icon, icon), uv0, uv1, no_bg, tint);
-        } else {
-            refresh_clicked = ImGui::Button("Refresh");
-        }
-        ImGui::EndDisabled();
-        if (refresh_clicked) {
-            explorer.refresh();
-        }
-        ImGui::SetItemTooltip("Rescan this folder");
+            const ImVec2 row_start = ImGui::GetCursorPos();
+            const float region_width = ImGui::GetContentRegionAvail().x;
+            const ImVec4 tint = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+            const ImVec4 no_bg(0.0f, 0.0f, 0.0f, 0.0f);
+            const ImVec2 uv0(0.0f, 0.0f);
+            const ImVec2 uv1(1.0f, 1.0f);
 
-        ImGui::Separator();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.3f, 1.0f), "%s", "●");
+            ImGui::SameLine();
+            const float text_width = std::max(0.0f, region_width - buttons_width - style.ItemSpacing.x - 20.0f);
+            const ImVec2 text_pos = ImGui::GetCursorScreenPos();
+            ImGui::PushClipRect(text_pos, ImVec2(text_pos.x + text_width, text_pos.y + ImGui::GetFrameHeight()), true);
+            ImGui::Text("%s", client->config().host.c_str());
+            ImGui::PopClipRect();
 
-        // Walk the folder tree. The stripe origin/width are captured here, at the
-        // root indent level, so every row's alternating background spans the full
-        // content width regardless of how deep the row is nested.
-        if (FileExplorer::Node* root = explorer.root_node()) {
-            explorer.clear_live_expanded(); // rebuilt from the open folders walked below
-            TreeDraw draw{explorer, result, ImGui::GetCursorScreenPos().x, ImGui::GetContentRegionAvail().x, 0};
-            draw_node(draw, *root);
-        } else if (scanning) {
-            ImGui::TextDisabled("Scanning...");
-        } else {
-            ImGui::TextDisabled("No .hexport files found.");
+            // Disconnect button
+            ImGui::SetCursorPos(ImVec2(row_start.x + region_width - buttons_width, row_start.y));
+            if (ImGui::Button("Disconnect")) {
+                result.disconnect_requested = true;
+            }
+            ImGui::SetItemTooltip("Disconnect from remote server");
+
+            // Refresh button
+            ImGui::SameLine();
+            const bool scanning = explorer.scanning();
+            ImGui::BeginDisabled(scanning);
+            bool refresh_clicked = false;
+            if (icons.refresh != 0) {
+                refresh_clicked = ImGui::ImageButton("refresh_remote", static_cast<ImTextureID>(icons.refresh), ImVec2(icon, icon), uv0, uv1, no_bg, tint);
+            } else {
+                refresh_clicked = ImGui::Button("Refresh");
+            }
+            ImGui::EndDisabled();
+            if (refresh_clicked) {
+                explorer.refresh();
+            }
+            ImGui::SetItemTooltip("Rescan remote folder");
+
+            ImGui::TextDisabled("Root: %s", explorer.remote_root().c_str());
+            ImGui::Separator();
+
+            if (FileExplorer::Node* root = explorer.root_node()) {
+                explorer.clear_live_expanded();
+                TreeDraw draw{explorer, result, ImGui::GetCursorScreenPos().x, ImGui::GetContentRegionAvail().x, 0};
+                draw_node(draw, *root);
+            } else if (scanning) {
+                ImGui::TextDisabled("Scanning remote server...");
+            } else if (!explorer.scan_error().empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+                ImGui::TextWrapped("Scan error: %s", explorer.scan_error().c_str());
+                ImGui::PopStyleColor();
+            } else {
+                ImGui::TextDisabled("No .hexport files found on remote server.");
+            }
         }
     }
 

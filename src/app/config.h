@@ -25,6 +25,14 @@ struct Config {
     std::optional<std::string> data_folder;    // root folder the Explorer pane browses, if chosen
     std::vector<std::string> expanded_folders; // Explorer tree folders left expanded, restored on launch
 
+    // Remote (SSH) settings
+    bool remote_mode = false;
+    std::string remote_host = "";
+    int remote_port = 22;
+    std::string remote_python = "python3";
+    std::string remote_script = "~/workspace/hand_motion_viewer/scripts/viewer_daemon.py";
+    std::string remote_data_folder = "/mnt/nvme1tb/infant_grasp_pipeline_cache";
+
     // Window placement. Position is stored relative to ``window_display``'s
     // top-left corner so the window returns to the right monitor next launch.
     std::optional<int> window_x;

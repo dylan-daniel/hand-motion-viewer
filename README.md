@@ -26,6 +26,11 @@ an interactive 3D viewport.
 - **Explorer pane** — a folder tree rooted at a chosen data folder, pruned to
   the folders that lead to a `.hexport` file at any nesting depth; the files
   themselves are openable leaves.
+- **Local & Remote (SSH) modes** — toggle between browsing files locally or
+  connecting persistently over SSH to a remote server (e.g. your GPU compute box).
+  In remote mode, the viewer browses the server's cache in real time, downloads
+  `.hexport` files on click, transparently resolves server-side symlinked video frames,
+  and streams/caches them locally for 30 FPS playback without manual downloading.
 - **Dockable UI** — Dear ImGui (docking branch); dock layout and window geometry
   persist across launches.
 - **Native file dialogs** — open a `.hexport` file via the OS file picker
@@ -101,6 +106,21 @@ On non-Windows platforms the binary is `build/hand_motion_viewer`.
 Open a `.hexport` file from within the app via **File → Open Export File**, or
 by picking a data folder in the Explorer pane and clicking a file it finds.
 
+### Remote Viewing (SSH)
+
+The Explorer pane supports switching between **Local** and **Remote (SSH)** modes:
+
+1. In the Explorer pane, click the **Remote (SSH)** toggle at the top.
+2. Enter your server connection settings:
+   - **Host**: your SSH alias or user/host (e.g. `user@server.edu` or SSH config alias).
+   - **Data Folder**: remote pipeline cache root (e.g. `/mnt/nvme1tb/infant_grasp_pipeline_cache`).
+   - (Optional) **Advanced SSH Settings**: custom port, Python binary path, or daemon script location (defaults to `scripts/viewer_daemon.py`).
+3. Click **Connect to Server**. The viewer establishes an SSH connection, executes `scripts/viewer_daemon.py` on the server, and scans the remote directory in milliseconds.
+4. Click on any `.hexport` file in the remote tree:
+   - The `.hexport` file (~100 KB) is downloaded immediately and rendered in the 3D scene.
+   - The server resolves symlinks for that sequence's video frames and bundles them to the client's local cache in the background.
+   - Playback and scrubber work locally at full 30 FPS without network lag.
+
 ## Data layout
 
 A `.hexport` file is a single self-contained binary (see
@@ -152,8 +172,13 @@ src/
 │   ├── mano_model.*     MANO forward pass (shape/pose params -> verts + joints)
 │   ├── mesh_sequence.*  Per-frame playback state, built from a loaded .hexport
 │   └── geometry.*       Mesh/grid geometry, MANO face topology, track coloring
+├── remote/              Remote SSH connection and caching
+│   ├── remote_client.*  SSH child process management, JSON/binary protocol
+│   └── cache_manager.*  Local disk cache for remote .hexport files & frame bundles
 └── util/                Shared utilities
-    └── worker_queue.h   Background job queue (async Explorer folder scan)
+    └── worker_queue.h   Background job queue (async folder scan & remote fetch)
+scripts/
+└── viewer_daemon.py     Lightweight headless server daemon for SSH remote mode
 assets/
 ├── fonts/               Bundled UI font (copied next to the exe)
 ├── icons/                Explorer/transport icon PNGs (copied next to the exe)

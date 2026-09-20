@@ -67,6 +67,17 @@ public:
         bool default_open = false; // seed imgui's initial open state once (the root)
     };
 
+    enum class SourceMode { Local, Remote };
+
+    void set_mode(SourceMode mode);
+    SourceMode mode() const { return mode_; }
+
+    void set_remote_client(class RemoteClient* client) { remote_client_ = client; }
+    class RemoteClient* remote_client() { return remote_client_; }
+
+    void set_remote_root(const std::string& root);
+    const std::string& remote_root() const { return remote_root_path_; }
+
     /// Point the explorer at ``root`` and kick off a background scan of its whole
     /// subtree. An empty or non-directory path clears the tree. Safe to call again
     /// to switch roots.
@@ -80,9 +91,10 @@ public:
     /// thread before drawing.
     void poll();
 
-    bool has_root() const { return !root_path_.empty(); }
-    const std::string& root_path() const { return root_path_; }
+    bool has_root() const { return mode_ == SourceMode::Local ? !root_path_.empty() : !remote_root_path_.empty(); }
+    const std::string& root_path() const { return mode_ == SourceMode::Local ? root_path_ : remote_root_path_; }
     bool scanning() const { return scanning_.load(); }
+    const std::string& scan_error() const { return scan_error_; }
 
     /// The current tree root, or null until the first scan completes.
     Node* root_node() { return root_ ? &*root_ : nullptr; }
@@ -115,16 +127,20 @@ public:
     std::vector<std::string> expanded_paths() const { return {live_open_.begin(), live_open_.end()}; }
 
 private:
-    /// Submit a full scan of root_path_ to the worker (if one isn't already running).
+    /// Submit a full scan of root_path_ (or remote_root_path_) to the worker (if one isn't already running).
     void start_scan();
 
     /// Walk ``root`` fully, building the pruned tree's root node. Runs on the worker
     /// thread; touches no shared state.
     static Node scan_root(const std::string& root);
 
-    std::string root_path_;    // selected root folder ("" = none); UI thread
-    std::optional<Node> root_; // displayed tree; UI thread (null until first scan done)
-    ExplorerIcons icons_;      // node/toolbar icon textures, owned for the explorer's lifetime
+    SourceMode mode_ = SourceMode::Local;
+    std::string root_path_;        // selected root folder ("" = none); UI thread (Local mode)
+    std::string remote_root_path_; // remote root folder; UI thread (Remote mode)
+    std::optional<Node> root_;     // displayed tree; UI thread (null until first scan done)
+    ExplorerIcons icons_;          // node/toolbar icon textures, owned for the explorer's lifetime
+    class RemoteClient* remote_client_ = nullptr;
+    std::string scan_error_;
 
     std::unordered_set<std::string> saved_open_; // folders to re-open (from last session); seeds open state once
     std::unordered_set<std::string> live_open_;  // folders currently expanded this frame; persisted on quit
@@ -135,18 +151,25 @@ private:
     std::mutex mutex_;
     bool has_ready_ = false;
     std::optional<Node> ready_root_;
+    std::string ready_error_;
 
     WorkerQueue worker_; // declared last so it joins before the state above is destroyed
 };
+
+struct RemoteConfig;
 
 /// What the user did in the Explorer pane this frame.
 struct ExplorerResult {
     bool hovered = false;
     bool focused = false;
     std::optional<std::string> open_file; // a .hexport leaf was clicked: load it
+    bool is_remote = false;               // true if open_file is a remote server path
     bool choose_root_requested = false;   // the "Choose Data Folder" / change button was pressed
+    bool connect_requested = false;       // user requested connecting to remote server
+    bool disconnect_requested = false;    // user requested disconnect
+    bool mode_changed = false;            // user toggled between Local and Remote
 };
 
 /// Draw the dockable "Explorer" window. Polls for a finished scan and may start a
 /// refresh when its button is pressed. Returns the user's actions for the caller.
-ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id);
+ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, RemoteConfig* remote_config = nullptr);

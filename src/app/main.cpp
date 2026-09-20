@@ -24,6 +24,8 @@
 #include "graphics/gl_loader.h"
 #include "graphics/image.h"
 #include "graphics/rendering.h"
+#include "remote/cache_manager.h"
+#include "remote/remote_client.h"
 #include "ui/explorer.h"
 #include "ui/gui.h"
 
@@ -224,10 +226,20 @@ int main(int, char**) {
         open_sequence(*settings.last_folder, settings.last_frame);
     }
 
+    CacheManager::init();
+    RemoteClient remote_client;
+    WorkerQueue remote_fetch_worker;
+
     // Explorer pane, rooted at the saved data folder, listing .hexport files at any
     // nesting depth. set_root validates the path and kicks off the background scan
     // that builds the pruned tree; it is a no-op when no folder is saved.
     FileExplorer explorer;
+    explorer.set_remote_client(&remote_client);
+    explorer.set_remote_root(settings.remote_data_folder);
+    if (settings.remote_mode) {
+        explorer.set_mode(FileExplorer::SourceMode::Remote);
+    }
+
     // Play/pause icons for the transport bar, loaded once here (GL context is current).
     TransportIcons transport_icons;
     {
@@ -239,8 +251,20 @@ int main(int, char**) {
     }
     // Restore the tree's expanded folders from last session, then scan the root.
     explorer.set_saved_open(settings.expanded_folders);
-    if (settings.data_folder) {
+    if (!settings.remote_mode && settings.data_folder) {
         explorer.set_root(*settings.data_folder);
+    } else if (settings.remote_mode && !settings.remote_host.empty()) {
+        RemoteConfig initial_remote{
+            .host = settings.remote_host,
+            .port = settings.remote_port,
+            .python_bin = settings.remote_python,
+            .script_path = settings.remote_script,
+            .root_folder = settings.remote_data_folder,
+        };
+        std::string err;
+        if (remote_client.connect(initial_remote, err)) {
+            explorer.refresh();
+        }
     }
 
     // Native pickers: a folder picker for choosing the Explorer's data-folder
@@ -605,13 +629,69 @@ int main(int, char**) {
 
         draw_flags_window("Flags", settings.flag_layers_enabled, dock_id);
 
-        // Explorer pane. Lazy: only expanding a folder touches the filesystem.
-        const ExplorerResult explorer_result = draw_explorer_window(explorer, dock_id);
+        // Explorer pane. Supports both Local and Remote (SSH) modes.
+        RemoteConfig remote_config{
+            .host = settings.remote_host,
+            .port = settings.remote_port,
+            .python_bin = settings.remote_python,
+            .script_path = settings.remote_script,
+            .root_folder = settings.remote_data_folder,
+        };
+        const ExplorerResult explorer_result = draw_explorer_window(explorer, dock_id, &remote_config);
+        settings.remote_host = remote_config.host;
+        settings.remote_port = remote_config.port;
+        settings.remote_python = remote_config.python_bin;
+        settings.remote_script = remote_config.script_path;
+        settings.remote_data_folder = remote_config.root_folder;
+
+        if (explorer_result.mode_changed) {
+            settings.remote_mode = explorer.mode() == FileExplorer::SourceMode::Remote;
+        }
         if (explorer_result.choose_root_requested && !data_folder_dialog) {
             data_folder_dialog = std::make_unique<pfd::select_folder>("Select data folder");
         }
+        if (explorer_result.connect_requested) {
+            std::string err;
+            if (remote_client.connect(remote_config, err)) {
+                explorer.refresh();
+            }
+        }
+        if (explorer_result.disconnect_requested) {
+            remote_client.disconnect();
+        }
         if (explorer_result.open_file) {
-            pending_open_file = explorer_result.open_file;
+            if (explorer_result.is_remote) {
+                const std::string remote_path = *explorer_result.open_file;
+                const std::string local_export = CacheManager::get_local_export_path(settings.remote_host, remote_path);
+                const std::string local_frames_dir = CacheManager::get_local_frames_dir(local_export);
+
+                // Fetch .hexport if not cached
+                if (!CacheManager::is_export_cached(local_export)) {
+                    std::string err;
+                    remote_client.fetch_file(remote_path, local_export, err);
+                }
+
+                if (CacheManager::is_export_cached(local_export)) {
+                    pending_open_file = local_export;
+                }
+
+                // Fetch frames if not cached
+                if (!CacheManager::are_frames_cached(local_frames_dir)) {
+                    // Fetch frame 1 immediately for instant preview
+                    std::string err;
+                    const std::string frame1_path = local_frames_dir + "/frame_00001.jpg";
+                    remote_client.fetch_single_frame(remote_path, 1, frame1_path, err);
+
+                    // Fetch the full bundle in background worker
+                    remote_fetch_worker.submit([&remote_client, remote_path, local_frames_dir]() {
+                        int count = 0;
+                        std::string bundle_err;
+                        remote_client.fetch_and_extract_bundle(remote_path, local_frames_dir, count, bundle_err);
+                    });
+                }
+            } else {
+                pending_open_file = explorer_result.open_file;
+            }
         }
 
         if (has_sequence) {
@@ -691,7 +771,8 @@ int main(int, char**) {
     store_geometry(settings, windowed_geometry);
     save_config(config_path, settings);
 
-    // Release GPU resources before tearing down the GL context.
+    // Release remote client and GPU resources before tearing down the GL context.
+    remote_client.disconnect();
     current_gpu.reset();
     sequence.reset();
     frame_image.clear();
