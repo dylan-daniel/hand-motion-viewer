@@ -319,24 +319,15 @@ int main(int, char**) {
                 win_height = event.window.data2;
             } else if (event.type == SDL_EVENT_KEY_DOWN) {
                 const SDL_Keycode key = event.key.key;
+                const bool modal_open = show_remote_connect_modal || (ImGui::GetCurrentContext() != nullptr && ImGui::GetTopMostPopupModal() != nullptr);
                 if (key == SDLK_ESCAPE) {
-                    running = false;
-                } else if (key == SDLK_R) {
-                    camera->reset();
-                } else if (key == SDLK_H) {
-                    settings.hand_translucent = !settings.hand_translucent;
-                } else if (key == SDLK_SPACE && event.key.repeat == 0 && !imgui_io.WantTextInput) {
-                    if (sequence && sequence->frame_count() > 0) {
-                        playing = !playing;
-                    }
-                } else if (sequence && !playing && (key == SDLK_HOME || key == SDLK_END)) {
-                    // Left/right scrubbing is handled by per-frame polling below so
-                    // that holding an arrow keeps stepping even while another key is
-                    // pressed; Home/End are one-shot jumps and stay event-driven.
-                    if (key == SDLK_HOME) {
-                        current_frame = 0;
+                    if (modal_open) {
+                        show_remote_connect_modal = false;
+                        ImGui::ClearActiveID();
+                    } else if (imgui_io.WantTextInput) {
+                        ImGui::ClearActiveID();
                     } else {
-                        current_frame = sequence->frame_count() - 1;
+                        running = false;
                     }
                 } else if (key == SDLK_F11) {
                     if (!settings.window_fullscreen) {
@@ -347,15 +338,37 @@ int main(int, char**) {
                     }
                     settings.window_fullscreen = !settings.window_fullscreen;
                     SDL_GetWindowSizeInPixels(app_window, &win_width, &win_height);
+                } else if (!imgui_io.WantTextInput && !imgui_io.WantCaptureKeyboard && !modal_open) {
+                    if (key == SDLK_R) {
+                        camera->reset();
+                    } else if (key == SDLK_H) {
+                        settings.hand_translucent = !settings.hand_translucent;
+                    } else if (key == SDLK_SPACE && event.key.repeat == 0) {
+                        if (sequence && sequence->frame_count() > 0) {
+                            playing = !playing;
+                        }
+                    } else if (sequence && !playing && (key == SDLK_HOME || key == SDLK_END)) {
+                        // Left/right scrubbing is handled by per-frame polling below so
+                        // that holding an arrow keeps stepping even while another key is
+                        // pressed; Home/End are one-shot jumps and stay event-driven.
+                        if (key == SDLK_HOME) {
+                            current_frame = 0;
+                        } else {
+                            current_frame = sequence->frame_count() - 1;
+                        }
+                    }
                 }
             } else if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && viewport_hovered) {
-                if (event.button.button == SDL_BUTTON_RIGHT) {
-                    if (SDL_GetModState() & SDL_KMOD_SHIFT) {
-                        panning = true;
-                    } else {
-                        orbiting = true;
+                const bool modal_open = show_remote_connect_modal || (ImGui::GetCurrentContext() != nullptr && ImGui::GetTopMostPopupModal() != nullptr);
+                if (!modal_open) {
+                    if (event.button.button == SDL_BUTTON_RIGHT) {
+                        if (SDL_GetModState() & SDL_KMOD_SHIFT) {
+                            panning = true;
+                        } else {
+                            orbiting = true;
+                        }
+                        set_relative_mouse(app_window, true);
                     }
-                    set_relative_mouse(app_window, true);
                 }
             } else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
                 if (event.button.button == SDL_BUTTON_RIGHT) {
@@ -364,10 +377,13 @@ int main(int, char**) {
                     set_relative_mouse(app_window, false);
                 }
             } else if (event.type == SDL_EVENT_MOUSE_WHEEL && viewport_hovered) {
-                if (event.wheel.y > 0) {
-                    camera->zoom(1.0f);
-                } else if (event.wheel.y < 0) {
-                    camera->zoom(-1.0f);
+                const bool modal_open = show_remote_connect_modal || (ImGui::GetCurrentContext() != nullptr && ImGui::GetTopMostPopupModal() != nullptr);
+                if (!modal_open) {
+                    if (event.wheel.y > 0) {
+                        camera->zoom(1.0f);
+                    } else if (event.wheel.y < 0) {
+                        camera->zoom(-1.0f);
+                    }
                 }
             } else if (event.type == SDL_EVENT_MOUSE_MOTION) {
                 const float dx = static_cast<float>(event.motion.xrel);
@@ -385,7 +401,8 @@ int main(int, char**) {
         // any mouse button is held over an imgui window (the click grabs the
         // window move-id as the active item), which would otherwise freeze camera
         // movement whenever the left button is down over the viewport.
-        if (!imgui_io.WantTextInput) {
+        const bool modal_open = show_remote_connect_modal || (ImGui::GetCurrentContext() != nullptr && ImGui::GetTopMostPopupModal() != nullptr);
+        if (!imgui_io.WantTextInput && !modal_open) {
             const bool* keys = SDL_GetKeyboardState(nullptr);
             const float forward = (keys[SDL_SCANCODE_W] ? 1.0f : 0.0f) - (keys[SDL_SCANCODE_S] ? 1.0f : 0.0f);
             const float right = (keys[SDL_SCANCODE_D] ? 1.0f : 0.0f) - (keys[SDL_SCANCODE_A] ? 1.0f : 0.0f);

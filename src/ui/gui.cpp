@@ -852,6 +852,15 @@ void draw_remote_modal(bool& is_open, RemoteConfig& config, RemoteClient& client
     if (ImGui::BeginPopupModal(
             "Connect to Remote Server", &is_open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove
         )) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            is_open = false;
+            if (connect_in_flight && client.is_connecting()) {
+                client.disconnect();
+            }
+            connect_in_flight = false;
+            ImGui::CloseCurrentPopup();
+        }
+
         ImGui::TextUnformatted("Connect to remote server over SSH:");
         ImGui::Spacing();
 
