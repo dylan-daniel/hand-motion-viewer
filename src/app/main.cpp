@@ -6,6 +6,10 @@
 #include <optional>
 #include <string>
 
+#ifndef _WIN32
+    #include <csignal>
+#endif
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_opengl.h>
@@ -35,6 +39,9 @@ namespace {
 } // namespace
 
 int main(int, char**) {
+#ifndef _WIN32
+    std::signal(SIGPIPE, SIG_IGN);
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         std::printf("SDL_Init failed: %s\n", SDL_GetError());
         return 1;
@@ -129,7 +136,13 @@ int main(int, char**) {
     // only offsets for the button when WindowMenuButtonPosition is Left, so None
     // hides the button and reclaims the offset everywhere — including the docking
     // drag preview, which otherwise ignores the per-node flag and leaves a gap.
-    ImGui::GetStyle().WindowMenuButtonPosition = ImGuiDir_None;
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowMenuButtonPosition = ImGuiDir_None;
+    style.FrameRounding = 5.0f;
+    style.GrabRounding = 4.0f;
+    style.PopupRounding = 5.0f;
+    style.ScrollbarRounding = 4.0f;
+    style.TabRounding = 4.0f;
 
     // Persist the dock layout next to the executable (like config.json) instead of
     // imgui's default cwd-relative path, so the saved window arrangement is
@@ -261,10 +274,7 @@ int main(int, char**) {
             .script_path = settings.remote_script,
             .root_folder = settings.remote_data_folder,
         };
-        std::string err;
-        if (remote_client.connect(initial_remote, err)) {
-            explorer.refresh();
-        }
+        remote_client.connect_async(initial_remote);
     }
 
     // Native pickers: a folder picker for choosing the Explorer's data-folder
@@ -275,6 +285,8 @@ int main(int, char**) {
     // rather than mid-frame: open_sequence frees current_gpu, and the render below
     // still holds a pointer to it, so opening inline would use freed memory.
     std::optional<std::string> pending_open_file;
+    std::mutex remote_open_mutex;
+    std::optional<std::string> pending_remote_open;
 
     // Both cameras kept alive; ``camera`` points at the active one.
     OrbitCamera orbit_cam;
@@ -629,6 +641,19 @@ int main(int, char**) {
 
         draw_flags_window("Flags", settings.flag_layers_enabled, dock_id);
 
+        // Poll remote client health and dispatch pending actions
+        remote_client.poll();
+        if (remote_client.consume_just_connected()) {
+            explorer.refresh();
+        }
+        {
+            std::lock_guard<std::mutex> lock(remote_open_mutex);
+            if (pending_remote_open.has_value()) {
+                pending_open_file = std::move(*pending_remote_open);
+                pending_remote_open.reset();
+            }
+        }
+
         // Explorer pane. Supports both Local and Remote (SSH) modes.
         RemoteConfig remote_config{
             .host = settings.remote_host,
@@ -651,10 +676,7 @@ int main(int, char**) {
             data_folder_dialog = std::make_unique<pfd::select_folder>("Select data folder");
         }
         if (explorer_result.connect_requested) {
-            std::string err;
-            if (remote_client.connect(remote_config, err)) {
-                explorer.refresh();
-            }
+            remote_client.connect_async(remote_config);
         }
         if (explorer_result.disconnect_requested) {
             remote_client.disconnect();
@@ -665,28 +687,35 @@ int main(int, char**) {
                 const std::string local_export = CacheManager::get_local_export_path(settings.remote_host, remote_path);
                 const std::string local_frames_dir = CacheManager::get_local_frames_dir(local_export);
 
-                // Fetch .hexport if not cached
-                if (!CacheManager::is_export_cached(local_export)) {
-                    std::string err;
-                    remote_client.fetch_file(remote_path, local_export, err);
-                }
-
                 if (CacheManager::is_export_cached(local_export)) {
+                    // Local export already cached: open immediately with zero delay
                     pending_open_file = local_export;
-                }
+                    if (!CacheManager::are_frames_cached(local_frames_dir)) {
+                        remote_fetch_worker.submit([&remote_client, remote_path, local_frames_dir]() {
+                            int count = 0;
+                            std::string bundle_err;
+                            remote_client.fetch_and_extract_bundle(remote_path, local_frames_dir, count, bundle_err);
+                        });
+                    }
+                } else {
+                    // Fetch export file in background so UI thread never stalls
+                    remote_fetch_worker.submit([&remote_client, remote_path, local_export, local_frames_dir, &remote_open_mutex, &pending_remote_open]() {
+                        std::string err;
+                        if (remote_client.fetch_file(remote_path, local_export, err)) {
+                            {
+                                std::lock_guard<std::mutex> lock(remote_open_mutex);
+                                pending_remote_open = local_export;
+                            }
+                            if (!CacheManager::are_frames_cached(local_frames_dir)) {
+                                std::string frame1_err;
+                                const std::string frame1_path = local_frames_dir + "/frame_00001.jpg";
+                                remote_client.fetch_single_frame(remote_path, 1, frame1_path, frame1_err);
 
-                // Fetch frames if not cached
-                if (!CacheManager::are_frames_cached(local_frames_dir)) {
-                    // Fetch frame 1 immediately for instant preview
-                    std::string err;
-                    const std::string frame1_path = local_frames_dir + "/frame_00001.jpg";
-                    remote_client.fetch_single_frame(remote_path, 1, frame1_path, err);
-
-                    // Fetch the full bundle in background worker
-                    remote_fetch_worker.submit([&remote_client, remote_path, local_frames_dir]() {
-                        int count = 0;
-                        std::string bundle_err;
-                        remote_client.fetch_and_extract_bundle(remote_path, local_frames_dir, count, bundle_err);
+                                int count = 0;
+                                std::string bundle_err;
+                                remote_client.fetch_and_extract_bundle(remote_path, local_frames_dir, count, bundle_err);
+                            }
+                        }
                     });
                 }
             } else {

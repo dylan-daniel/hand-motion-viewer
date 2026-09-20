@@ -532,7 +532,6 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, Rem
 
     // ── Source Mode Switcher ──────────────────────────────
     const bool is_remote = explorer.mode() == FileExplorer::SourceMode::Remote;
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
     if (!is_remote) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
     }
@@ -560,7 +559,6 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, Rem
     if (is_remote) {
         ImGui::PopStyleColor();
     }
-    ImGui::PopStyleVar();
 
     ImGui::Separator();
 

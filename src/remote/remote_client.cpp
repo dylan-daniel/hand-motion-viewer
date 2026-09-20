@@ -7,6 +7,15 @@
 #include <fstream>
 #include <utility>
 
+#ifndef _WIN32
+    #include <csignal>
+namespace {
+    struct SigPipeIgnorer {
+        SigPipeIgnorer() { std::signal(SIGPIPE, SIG_IGN); }
+    } s_sigpipe_ignorer;
+} // namespace
+#endif
+
 #include <miniz.h>
 
 namespace fs = std::filesystem;
@@ -97,12 +106,44 @@ namespace {
 
 RemoteClient::RemoteClient() = default;
 
-RemoteClient::~RemoteClient() { disconnect(); }
-
-bool RemoteClient::connect(const RemoteConfig& config, std::string& error_out) {
+RemoteClient::~RemoteClient() {
     disconnect();
+    async_worker_.shutdown();
+}
 
+std::string RemoteClient::last_error() const {
     std::lock_guard<std::mutex> guard(mutex_);
+    return last_error_;
+}
+
+RemoteConfig RemoteClient::config() const {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return config_;
+}
+
+void RemoteClient::connect_async(const RemoteConfig& config) {
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (state_.load() == ConnectionState::Connecting) {
+            return;
+        }
+        disconnect_locked();
+        config_ = config;
+        last_error_.clear();
+        state_.store(ConnectionState::Connecting);
+    }
+    async_worker_.submit([this, config]() {
+        std::string err;
+        if (connect_sync(config, err)) {
+            just_connected_.store(true);
+        }
+    });
+}
+
+bool RemoteClient::connect_sync(const RemoteConfig& config, std::string& error_out) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    disconnect_locked();
+
     config_ = config;
     state_.store(ConnectionState::Connecting);
 
@@ -114,7 +155,12 @@ bool RemoteClient::connect(const RemoteConfig& config, std::string& error_out) {
         args_str.push_back(config.script_path);
     } else {
         args_str.push_back("ssh");
-        args_str.push_back("-T");
+        args_str.push_back("-T"); // Disable pseudo-tty allocation
+        args_str.push_back("-q"); // Quiet mode (suppress warnings/banners)
+        args_str.push_back("-o");
+        args_str.push_back("BatchMode=yes"); // Never prompt for passwords interactively
+        args_str.push_back("-o");
+        args_str.push_back("ConnectTimeout=10");
         if (config.port != 22 && config.port > 0) {
             args_str.push_back("-p");
             args_str.push_back(std::to_string(config.port));
@@ -137,7 +183,9 @@ bool RemoteClient::connect(const RemoteConfig& config, std::string& error_out) {
     SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, args.data());
     SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDIN_NUMBER, SDL_PROCESS_STDIO_APP);
     SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER, SDL_PROCESS_STDIO_APP);
-    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_INHERITED);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER, SDL_PROCESS_STDIO_NULL);
+    // Background boolean ensures CREATE_NO_WINDOW on Windows so zero console window is displayed
+    SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
 
     process_ = SDL_CreateProcessWithProperties(props);
     SDL_DestroyProperties(props);
@@ -155,7 +203,7 @@ bool RemoteClient::connect(const RemoteConfig& config, std::string& error_out) {
     if (stdin_ == nullptr || stdout_ == nullptr) {
         error_out = "Failed to obtain process standard I/O streams.";
         last_error_ = error_out;
-        disconnect();
+        disconnect_locked();
         state_.store(ConnectionState::Error);
         return false;
     }
@@ -166,7 +214,7 @@ bool RemoteClient::connect(const RemoteConfig& config, std::string& error_out) {
     if (!send_command_locked(ping_req, ping_resp, error_out)) {
         last_error_ = "Connection failed during handshake: " + error_out;
         error_out = last_error_;
-        disconnect();
+        disconnect_locked();
         state_.store(ConnectionState::Error);
         return false;
     }
@@ -178,11 +226,27 @@ bool RemoteClient::connect(const RemoteConfig& config, std::string& error_out) {
 
 void RemoteClient::disconnect() {
     std::lock_guard<std::mutex> guard(mutex_);
+    disconnect_locked();
+}
+
+void RemoteClient::disconnect_locked() {
     if (process_ != nullptr) {
-        if (stdin_ != nullptr) {
+        int exitcode = 0;
+        bool already_exited = SDL_WaitProcess(process_, false, &exitcode);
+        if (!already_exited && stdin_ != nullptr) {
             json quit_req = {{"id", next_id_++}, {"cmd", "quit"}};
             std::string line = quit_req.dump() + "\n";
             write_all(stdin_, line.data(), line.size());
+        }
+        if (!already_exited) {
+            SDL_KillProcess(process_, false);
+            Uint64 start = SDL_GetTicks();
+            while (!SDL_WaitProcess(process_, false, &exitcode) && (SDL_GetTicks() - start < 100)) {
+                SDL_Delay(5);
+            }
+            if (!SDL_WaitProcess(process_, false, &exitcode)) {
+                SDL_KillProcess(process_, true);
+            }
         }
         SDL_DestroyProcess(process_);
         process_ = nullptr;
@@ -191,6 +255,20 @@ void RemoteClient::disconnect() {
     stdout_ = nullptr;
     state_.store(ConnectionState::Disconnected);
 }
+
+void RemoteClient::poll() {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (state_.load() == ConnectionState::Connected && process_ != nullptr) {
+        int exitcode = 0;
+        if (SDL_WaitProcess(process_, false, &exitcode)) {
+            disconnect_locked();
+            last_error_ = "Remote server connection closed unexpectedly.";
+            state_.store(ConnectionState::Disconnected);
+        }
+    }
+}
+
+bool RemoteClient::consume_just_connected() { return just_connected_.exchange(false); }
 
 bool RemoteClient::ping(std::string& error_out) {
     std::lock_guard<std::mutex> guard(mutex_);
@@ -259,7 +337,15 @@ bool RemoteClient::fetch_file(const std::string& remote_path, const std::string&
         error_out = "Failed to open local destination for writing: " + local_dest_path;
         return false;
     }
-    out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+
+    if (!data.empty()) {
+        out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+        if (!out) {
+            error_out = "Failed writing to local file: " + local_dest_path;
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -270,7 +356,7 @@ bool RemoteClient::fetch_single_frame(const std::string& remote_export_path, int
         return false;
     }
 
-    json req = {{"id", next_id_++}, {"cmd", "get_frame"}, {"export_path", remote_export_path}, {"frame_number", frame_number}};
+    json req = {{"id", next_id_++}, {"cmd", "get_frame"}, {"path", remote_export_path}, {"frame", frame_number}};
     json hdr;
     std::vector<uint8_t> data;
     if (!send_command_binary_locked(req, hdr, data, error_out)) {
@@ -278,7 +364,7 @@ bool RemoteClient::fetch_single_frame(const std::string& remote_export_path, int
     }
 
     if (hdr.value("status", "") != "ok") {
-        error_out = hdr.value("message", "Frame not found");
+        error_out = hdr.value("message", "Failed to fetch remote frame");
         return false;
     }
 
@@ -288,10 +374,14 @@ bool RemoteClient::fetch_single_frame(const std::string& remote_export_path, int
 
     std::ofstream out(local_file_dest, std::ios::binary);
     if (!out) {
-        error_out = "Failed to open local destination for writing frame: " + local_file_dest;
+        error_out = "Failed to open local frame destination: " + local_file_dest;
         return false;
     }
-    out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+
+    if (!data.empty()) {
+        out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    }
+
     return true;
 }
 
@@ -299,44 +389,48 @@ bool RemoteClient::fetch_and_extract_bundle(
     const std::string& remote_export_path, const std::string& local_frames_dir, int& frame_count_out, std::string& error_out
 ) {
     std::lock_guard<std::mutex> guard(mutex_);
-    frame_count_out = 0;
     if (!is_connected()) {
         error_out = "Not connected";
         return false;
     }
 
-    json req = {{"id", next_id_++}, {"cmd", "bundle_frames"}, {"export_path", remote_export_path}};
+    json req = {{"id", next_id_++}, {"cmd", "bundle_frames"}, {"path", remote_export_path}};
     json hdr;
-    std::vector<uint8_t> data;
-    if (!send_command_binary_locked(req, hdr, data, error_out)) {
+    std::vector<uint8_t> zip_data;
+    if (!send_command_binary_locked(req, hdr, zip_data, error_out)) {
         return false;
     }
 
     if (hdr.value("status", "") != "ok") {
-        error_out = hdr.value("message", "Failed to bundle frames on remote server");
+        error_out = hdr.value("message", "Bundle generation failed on remote server");
         return false;
     }
 
     frame_count_out = hdr.value("frame_count", 0);
-    if (data.empty() || frame_count_out == 0) {
-        return true; // no frames on server
+    if (zip_data.empty()) {
+        return true;
+    }
+
+    // Extract ZIP archive in-memory using miniz
+    mz_zip_archive zip_archive;
+    std::memset(&zip_archive, 0, sizeof(zip_archive));
+
+    if (!mz_zip_reader_init_mem(&zip_archive, zip_data.data(), zip_data.size(), 0)) {
+        error_out = "Failed to initialize ZIP reader for extracted bundle";
+        return false;
     }
 
     std::error_code ec;
     fs::create_directories(local_frames_dir, ec);
 
-    // Unzip in-memory archive to local_frames_dir
-    mz_zip_archive zip_archive;
-    std::memset(&zip_archive, 0, sizeof(zip_archive));
-    if (!mz_zip_reader_init_mem(&zip_archive, data.data(), data.size(), 0)) {
-        error_out = "Failed to parse ZIP frame bundle from server";
-        return false;
-    }
-
-    const mz_uint num_files = mz_zip_reader_get_num_files(&zip_archive);
+    mz_uint num_files = mz_zip_reader_get_num_files(&zip_archive);
     for (mz_uint i = 0; i < num_files; ++i) {
         mz_zip_archive_file_stat file_stat;
-        if (mz_zip_reader_file_stat(&zip_archive, i, &file_stat)) {
+        if (!mz_zip_reader_file_stat(&zip_archive, i, &file_stat)) {
+            continue;
+        }
+
+        if (!mz_zip_reader_is_file_a_directory(&zip_archive, i)) {
             fs::path out_file = fs::path(local_frames_dir) / file_stat.m_filename;
             mz_zip_reader_extract_to_file(&zip_archive, i, out_file.string().c_str(), 0);
         }
@@ -353,15 +447,17 @@ bool RemoteClient::send_command_locked(const json& req, json& resp_out, std::str
 
     const std::string line = req.dump() + "\n";
     if (!write_all(stdin_, line.data(), line.size())) {
-        error_out = "Failed to send request to remote daemon";
-        disconnect();
+        error_out = "Failed to send request to remote daemon (connection broken)";
+        disconnect_locked();
+        last_error_ = error_out;
         return false;
     }
 
     std::string resp_line;
     if (!read_line(stdout_, resp_line, DEFAULT_TIMEOUT_MS)) {
         error_out = "Timed out or connection dropped waiting for remote response";
-        disconnect();
+        disconnect_locked();
+        last_error_ = error_out;
         return false;
     }
 
@@ -383,15 +479,17 @@ bool RemoteClient::send_command_binary_locked(const json& req, json& resp_hdr_ou
 
     const std::string line = req.dump() + "\n";
     if (!write_all(stdin_, line.data(), line.size())) {
-        error_out = "Failed to send request to remote daemon";
-        disconnect();
+        error_out = "Failed to send request to remote daemon (connection broken)";
+        disconnect_locked();
+        last_error_ = error_out;
         return false;
     }
 
     std::string hdr_line;
     if (!read_line(stdout_, hdr_line, DEFAULT_TIMEOUT_MS)) {
         error_out = "Timed out waiting for binary header from remote server";
-        disconnect();
+        disconnect_locked();
+        last_error_ = error_out;
         return false;
     }
 
@@ -412,7 +510,8 @@ bool RemoteClient::send_command_binary_locked(const json& req, json& resp_hdr_ou
     if (byte_size > 0) {
         if (!read_exact(stdout_, data_out.data(), byte_size, BUNDLE_TIMEOUT_MS)) {
             error_out = "Timed out or dropped connection reading binary payload";
-            disconnect();
+            disconnect_locked();
+            last_error_ = error_out;
             return false;
         }
     }
