@@ -212,7 +212,11 @@ def find_frames_dir(export_path_str: str):
         return None
     export_path = Path(os.path.expanduser(export_path_str))
     stem = export_path.stem
-    frames_key = stem.rsplit("__", 1)[0] if "__" in stem else stem
+    parts = stem.split("__")
+    if len(parts) >= 2:
+        frames_key = f"{parts[0]}__{parts[1]}"
+    else:
+        frames_key = stem
 
     candidates = [
         export_path.parent.parent / "frames" / frames_key,
@@ -263,14 +267,19 @@ def handle_get_frame(req, out):
         return
 
     for ext in [".jpg", ".png", ".jpeg"]:
-        for fmt in [f"frame_{frame_number:05d}{ext}", f"frame_{frame_number:04d}{ext}", f"frame_{frame_number}{ext}"]:
+        for fmt in [f"frame_{frame_number:05d}{ext}", f"frame_{frame_number:04d}{ext}", f"frame_{frame_number}{ext}", f"{frame_number:05d}{ext}", f"{frame_number:04d}{ext}"]:
             candidate = frames_dir / fmt
             if candidate.exists():
                 try:
                     resolved = candidate.resolve()
                     with open(resolved, "rb") as f:
                         data = f.read()
-                    write_json_line(out, {"id": req["id"], "status": "ok", "size": len(data)})
+                    write_json_line(out, {
+                        "id": req["id"],
+                        "status": "ok",
+                        "size": len(data),
+                        "filename": candidate.name
+                    })
                     out.write(data)
                     out.flush()
                     return
@@ -286,7 +295,6 @@ def handle_bundle_frames(req, out):
     frames_dir = find_frames_dir(export_path_str)
 
     if not frames_dir:
-        # No frames folder; send 0 size
         write_json_line(out, {"id": req["id"], "status": "ok", "size": 0, "frame_count": 0})
         return
 
@@ -294,7 +302,7 @@ def handle_bundle_frames(req, out):
         # Find all frame images
         frame_files = []
         for p in frames_dir.iterdir():
-            if p.name.startswith("frame_") and p.suffix.lower() in [".jpg", ".png", ".jpeg"]:
+            if p.suffix.lower() in [".jpg", ".png", ".jpeg"]:
                 frame_files.append(p)
 
         frame_files.sort(key=lambda p: natural_sort_key(p.name))
@@ -303,10 +311,29 @@ def handle_bundle_frames(req, out):
             write_json_line(out, {"id": req["id"], "status": "ok", "size": 0, "frame_count": 0})
             return
 
+        start_frame = req.get("start_frame")
+        count = req.get("count", 0)
+
+        selected_files = frame_files
+        if start_frame is not None and start_frame > 0:
+            matched = []
+            for p in frame_files:
+                m = re.search(r"(\d+)", p.name)
+                if m and int(m.group(1)) >= start_frame:
+                    matched.append(p)
+            if matched:
+                selected_files = matched
+            else:
+                idx = max(0, start_frame - 1)
+                selected_files = frame_files[idx:]
+
+        if count and count > 0:
+            selected_files = selected_files[:count]
+
         # Pack into an uncompressed ZIP archive (JPEGs are already compressed)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
-            for p in frame_files:
+            for p in selected_files:
                 resolved = p.resolve()
                 if resolved.exists():
                     zf.write(resolved, arcname=p.name)
@@ -316,7 +343,7 @@ def handle_bundle_frames(req, out):
             "id": req["id"],
             "status": "ok",
             "size": len(zip_bytes),
-            "frame_count": len(frame_files)
+            "frame_count": len(selected_files)
         })
         out.write(zip_bytes)
         out.flush()

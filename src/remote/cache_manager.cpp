@@ -62,9 +62,12 @@ std::string CacheManager::get_local_frames_dir(const std::string& local_export_p
     const fs::path p(local_export_path);
     const std::string stem = p.stem().string();
     std::string frames_key = stem;
-    const auto last_sep = stem.rfind("__");
-    if (last_sep != std::string::npos) {
-        frames_key = stem.substr(0, last_sep);
+    const auto pos1 = stem.find("__");
+    if (pos1 != std::string::npos) {
+        const auto pos2 = stem.find("__", pos1 + 2);
+        if (pos2 != std::string::npos) {
+            frames_key = stem.substr(0, pos2);
+        }
     }
     return (p.parent_path() / "frames" / frames_key).string();
 }

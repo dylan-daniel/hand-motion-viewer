@@ -460,11 +460,20 @@ bool RemoteClient::fetch_single_frame(const std::string& remote_export_path, int
         out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
     }
 
+    const std::string original_filename = hdr.value("filename", "");
+    if (!original_filename.empty() && original_filename != local_p.filename().string() && !data.empty()) {
+        const fs::path alt_path = local_p.parent_path() / original_filename;
+        std::ofstream alt_out(alt_path, std::ios::binary);
+        if (alt_out) {
+            alt_out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+        }
+    }
+
     return true;
 }
 
 bool RemoteClient::fetch_and_extract_bundle(
-    const std::string& remote_export_path, const std::string& local_frames_dir, int& frame_count_out, std::string& error_out
+    const std::string& remote_export_path, const std::string& local_frames_dir, int start_frame, int count, int& frame_count_out, std::string& error_out
 ) {
     std::lock_guard<std::mutex> guard(mutex_);
     if (!is_connected()) {
@@ -472,7 +481,19 @@ bool RemoteClient::fetch_and_extract_bundle(
         return false;
     }
 
-    json req = {{"id", next_id_++}, {"cmd", "bundle_frames"}, {"path", remote_export_path}, {"export_path", remote_export_path}};
+    json req = {
+        {"id", next_id_++},
+        {"cmd", "bundle_frames"},
+        {"path", remote_export_path},
+        {"export_path", remote_export_path},
+    };
+    if (start_frame > 0) {
+        req["start_frame"] = start_frame;
+    }
+    if (count > 0) {
+        req["count"] = count;
+    }
+
     json hdr;
     std::vector<uint8_t> zip_data;
     if (!send_command_binary_locked(req, hdr, zip_data, error_out)) {
@@ -515,6 +536,12 @@ bool RemoteClient::fetch_and_extract_bundle(
     }
     mz_zip_reader_end(&zip_archive);
     return true;
+}
+
+bool RemoteClient::fetch_and_extract_bundle(
+    const std::string& remote_export_path, const std::string& local_frames_dir, int& frame_count_out, std::string& error_out
+) {
+    return fetch_and_extract_bundle(remote_export_path, local_frames_dir, 1, 0, frame_count_out, error_out);
 }
 
 bool RemoteClient::send_command_locked(const json& req, json& resp_out, std::string& error_out) {

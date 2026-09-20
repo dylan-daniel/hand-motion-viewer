@@ -30,6 +30,7 @@
 #include "graphics/rendering.h"
 #include "remote/cache_manager.h"
 #include "remote/remote_client.h"
+#include "remote/scrub_worker.h"
 #include "ui/explorer.h"
 #include "ui/gui.h"
 
@@ -202,6 +203,7 @@ int main(int, char**) {
     double playback_accumulator = 0.0;
 
     auto open_sequence = [&](const std::string& export_path, int start_frame) {
+        frame_image.clear();
         std::unique_ptr<MeshSequence> opened;
         bool has_frames = false;
         try {
@@ -233,9 +235,21 @@ int main(int, char**) {
         open_sequence(*settings.last_folder, settings.last_frame);
     }
 
+    struct PendingOpen {
+        std::string local_path;
+        std::string remote_path;
+        std::string local_frames_dir;
+    };
+
     CacheManager::init();
     RemoteClient remote_client;
     WorkerQueue remote_fetch_worker;
+    ScrubWorker scrub_worker(remote_client);
+    std::string current_remote_path;
+    std::string current_local_frames_dir;
+    std::atomic<uint64_t> active_sequence_id{0};
+    std::atomic<int> current_active_frame{0};
+
     RemoteConfig remote_config{
         .host = settings.remote_host,
         .port = settings.remote_port,
@@ -279,9 +293,9 @@ int main(int, char**) {
     // A file the Explorer asked to open, applied at the top of the next frame
     // rather than mid-frame: open_sequence frees current_gpu, and the render below
     // still holds a pointer to it, so opening inline would use freed memory.
-    std::optional<std::string> pending_open_file;
+    std::optional<PendingOpen> pending_open_file;
     std::mutex remote_open_mutex;
-    std::optional<std::string> pending_remote_open;
+    std::optional<PendingOpen> pending_remote_open;
 
     // Both cameras kept alive; ``camera`` points at the active one.
     OrbitCamera orbit_cam;
@@ -551,7 +565,11 @@ int main(int, char**) {
         if (export_file_dialog && export_file_dialog->ready(0)) {
             const std::vector<std::string> chosen = export_file_dialog->result();
             if (!chosen.empty()) {
-                open_sequence(chosen.front(), 0);
+                pending_open_file = PendingOpen{
+                    .local_path = chosen.front(),
+                    .remote_path = "",
+                    .local_frames_dir = "",
+                };
             }
             export_file_dialog.reset();
         }
@@ -570,8 +588,90 @@ int main(int, char**) {
         // Apply a deferred Explorer open here, before the current frame's GPU
         // buffers are read below, so opening never frees a buffer still in use.
         if (pending_open_file) {
-            open_sequence(*pending_open_file, 0);
+            current_remote_path = pending_open_file->remote_path;
+            current_local_frames_dir = pending_open_file->local_frames_dir;
+            open_sequence(pending_open_file->local_path, 0);
             pending_open_file.reset();
+
+            const uint64_t seq_id = ++active_sequence_id;
+            scrub_worker.cancel();
+
+            if (!current_remote_path.empty() && sequence && remote_client.is_connected()) {
+                // Immediately request frame 1 for instant display
+                const int frame1_num = sequence->frame_number(0);
+                if (frame1_num > 0) {
+                    char name[64];
+                    std::snprintf(name, sizeof(name), "frame_%05d.jpg", frame1_num);
+                    const std::string frame1_dest = (fs::path(current_local_frames_dir) / name).string();
+                    scrub_worker.request(current_remote_path, frame1_num, frame1_dest);
+                }
+
+                // Submit chunked background prefetcher centered around play/scrub head
+                std::vector<int> frame_nums = sequence->frame_numbers();
+                remote_fetch_worker.submit([&remote_client,
+                                            remote_path = current_remote_path,
+                                            local_frames_dir = current_local_frames_dir,
+                                            frame_nums = std::move(frame_nums),
+                                            seq_id,
+                                            &active_sequence_id,
+                                            &current_active_frame]() {
+                    constexpr int CHUNK_SIZE = 15;
+                    const int total_frames = static_cast<int>(frame_nums.size());
+                    if (total_frames <= 0) {
+                        return;
+                    }
+
+                    auto is_frame_cached = [&](int f_num) {
+                        char buf[64];
+                        std::snprintf(buf, sizeof(buf), "frame_%05d.jpg", f_num);
+                        std::error_code ec;
+                        if (fs::exists(fs::path(local_frames_dir) / buf, ec)) {
+                            return true;
+                        }
+                        std::snprintf(buf, sizeof(buf), "frame_%04d.jpg", f_num);
+                        return fs::exists(fs::path(local_frames_dir) / buf, ec);
+                    };
+
+                    while (active_sequence_id.load() == seq_id && remote_client.is_connected()) {
+                        const int active_idx = std::clamp(current_active_frame.load(), 0, total_frames - 1);
+                        int target_idx = -1;
+
+                        // Search forward from active_idx
+                        for (int i = active_idx; i < total_frames; ++i) {
+                            if (!is_frame_cached(frame_nums[static_cast<std::size_t>(i)])) {
+                                target_idx = i;
+                                break;
+                            }
+                        }
+                        // If forward frames are cached, search backward from active_idx
+                        if (target_idx == -1) {
+                            for (int i = active_idx - 1; i >= 0; --i) {
+                                if (!is_frame_cached(frame_nums[static_cast<std::size_t>(i)])) {
+                                    target_idx = i;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (target_idx == -1) {
+                            break;
+                        }
+
+                        const int start_f_num = frame_nums[static_cast<std::size_t>(target_idx)];
+                        int fetched_count = 0;
+                        std::string err;
+                        if (!remote_client.fetch_and_extract_bundle(remote_path, local_frames_dir, start_f_num, CHUNK_SIZE, fetched_count, err)) {
+                            break;
+                        }
+
+                        if (fetched_count == 0) {
+                            break;
+                        }
+
+                        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    }
+                });
+            }
         }
 
         // Advance playback at a fixed rate independent of the render frame rate.
@@ -622,11 +722,18 @@ int main(int, char**) {
         // MeshSequence::frame_image_path for the frames/<export-stem>/ lookup
         // convention; empty means no matching frame was found on disk.
         if (has_sequence) {
+            current_active_frame.store(current_frame);
             const std::string image_path = sequence->frame_image_path(current_frame);
             if (!image_path.empty()) {
                 frame_image.load(image_path);
-            } else {
-                frame_image.clear();
+            } else if (!current_remote_path.empty() && remote_client.is_connected()) {
+                const int f_num = sequence->frame_number(current_frame);
+                if (f_num > 0) {
+                    char name[64];
+                    std::snprintf(name, sizeof(name), "frame_%05d.jpg", f_num);
+                    const std::string dest = (fs::path(current_local_frames_dir) / name).string();
+                    scrub_worker.request(current_remote_path, f_num, dest);
+                }
             }
         } else {
             frame_image.clear();
@@ -713,41 +820,31 @@ int main(int, char**) {
 
                 if (CacheManager::is_export_cached(local_export)) {
                     // Local export already cached: open immediately with zero delay
-                    pending_open_file = local_export;
-                    if (!CacheManager::are_frames_cached(local_frames_dir)) {
-                        remote_fetch_worker.submit([&remote_client, remote_path, local_frames_dir]() {
-                            std::string frame1_err;
-                            const std::string frame1_path = local_frames_dir + "/frame_00001.jpg";
-                            remote_client.fetch_single_frame(remote_path, 1, frame1_path, frame1_err);
-
-                            int count = 0;
-                            std::string bundle_err;
-                            remote_client.fetch_and_extract_bundle(remote_path, local_frames_dir, count, bundle_err);
-                        });
-                    }
+                    pending_open_file = PendingOpen{
+                        .local_path = local_export,
+                        .remote_path = remote_path,
+                        .local_frames_dir = local_frames_dir,
+                    };
                 } else {
                     // Fetch export file in background so UI thread never stalls
                     remote_fetch_worker.submit([&remote_client, remote_path, local_export, local_frames_dir, &remote_open_mutex, &pending_remote_open]() {
                         std::string err;
                         if (remote_client.fetch_file(remote_path, local_export, err)) {
-                            {
-                                std::lock_guard<std::mutex> lock(remote_open_mutex);
-                                pending_remote_open = local_export;
-                            }
-                            if (!CacheManager::are_frames_cached(local_frames_dir)) {
-                                std::string frame1_err;
-                                const std::string frame1_path = local_frames_dir + "/frame_00001.jpg";
-                                remote_client.fetch_single_frame(remote_path, 1, frame1_path, frame1_err);
-
-                                int count = 0;
-                                std::string bundle_err;
-                                remote_client.fetch_and_extract_bundle(remote_path, local_frames_dir, count, bundle_err);
-                            }
+                            std::lock_guard<std::mutex> lock(remote_open_mutex);
+                            pending_remote_open = PendingOpen{
+                                .local_path = local_export,
+                                .remote_path = remote_path,
+                                .local_frames_dir = local_frames_dir,
+                            };
                         }
                     });
                 }
             } else {
-                pending_open_file = explorer_result.open_file;
+                pending_open_file = PendingOpen{
+                    .local_path = *explorer_result.open_file,
+                    .remote_path = "",
+                    .local_frames_dir = "",
+                };
             }
         }
 

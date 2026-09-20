@@ -65,9 +65,23 @@ public:
     /// an out-of-range index.
     Frame load_frame(int index) const;
 
+    /// Pipeline frame number for playback index ``index``, or -1 if out of range.
+    int frame_number(int index) const {
+        if (index < 0 || index >= static_cast<int>(frame_numbers_.size())) {
+            return -1;
+        }
+        return frame_numbers_[static_cast<std::size_t>(index)];
+    }
+
+    /// All pipeline frame numbers for the sequence.
+    const std::vector<int>& frame_numbers() const { return frame_numbers_; }
+
+    /// Resolved frames directory path on disk.
+    const std::string& frames_dir() const { return frames_dir_; }
+
     /// Path of the plain source-video frame image for playback frame
     /// ``index``, or empty if none is found (see the .cpp for the
-    /// frames/<export-stem>/ convention this looks for).
+    /// candidate directory and filename conventions).
     std::string frame_image_path(int index) const;
 
     /// Whether flag_reason ``flag_index`` (into FLAG_COLUMNS) is active on
@@ -78,7 +92,7 @@ public:
 
 private:
     std::string path_;
-    std::string frames_dir_;
+    mutable std::string frames_dir_;
     std::vector<Frame> frames_;
     std::vector<int> frame_numbers_;                                         // frame_numbers_[i] = the pipeline's own frame number for playback index i
     std::vector<std::array<bool, kFlagLayerCount>> frame_flags_all_;         // all hands contribute

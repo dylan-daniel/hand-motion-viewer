@@ -137,9 +137,12 @@ namespace {
     fs::path resolve_frames_dir(const fs::path& export_file) {
         const std::string stem = export_file.stem().string();
         std::string frames_key = stem;
-        const auto last_sep = stem.rfind("__");
-        if (last_sep != std::string::npos) {
-            frames_key = stem.substr(0, last_sep);
+        const auto pos1 = stem.find("__");
+        if (pos1 != std::string::npos) {
+            const auto pos2 = stem.find("__", pos1 + 2);
+            if (pos2 != std::string::npos) {
+                frames_key = stem.substr(0, pos2);
+            }
         }
 
         const fs::path parent = export_file.parent_path();
@@ -187,14 +190,39 @@ bool MeshSequence::is_flagged(int index, int flag_index, bool per_track_coloring
 }
 
 std::string MeshSequence::frame_image_path(int index) const {
-    if (index < 0 || index >= frame_count_ || frames_dir_.empty()) {
+    if (index < 0 || index >= frame_count_) {
         return {};
     }
+
+    std::error_code dir_err;
+    if (frames_dir_.empty() || !fs::is_directory(frames_dir_, dir_err)) {
+        frames_dir_ = resolve_frames_dir(fs::path(path_)).string();
+    }
+    if (frames_dir_.empty()) {
+        return {};
+    }
+
     const int frame_number = frame_numbers_[static_cast<std::size_t>(index)];
     const fs::path frames_path(frames_dir_);
 
     char name[64];
-    constexpr const char* formats[] = {"frame_%05d.jpg", "frame_%05d.jpeg", "frame_%05d.png", "frame_%04d.jpg", "frame_%04d.png"};
+    constexpr const char* formats[] = {
+        "frame_%05d.jpg",
+        "frame_%05d.jpeg",
+        "frame_%05d.png",
+        "frame_%04d.jpg",
+        "frame_%04d.jpeg",
+        "frame_%04d.png",
+        "frame_%d.jpg",
+        "frame_%d.jpeg",
+        "frame_%d.png",
+        "%05d.jpg",
+        "%05d.jpeg",
+        "%05d.png",
+        "%04d.jpg",
+        "%04d.jpeg",
+        "%04d.png",
+    };
     for (const char* fmt : formats) {
         std::snprintf(name, sizeof(name), fmt, frame_number);
         const fs::path candidate = frames_path / name;

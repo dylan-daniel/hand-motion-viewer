@@ -65,6 +65,12 @@ public:
     /// Fetch a single frame image and save to local_file_dest.
     bool fetch_single_frame(const std::string& remote_export_path, int frame_number, const std::string& local_file_dest, std::string& error_out);
 
+    /// Fetch and extract a chunk of frames for a sequence as a zip bundle.
+    /// If start_frame <= 0 and count <= 0, fetches all available frames.
+    bool fetch_and_extract_bundle(
+        const std::string& remote_export_path, const std::string& local_frames_dir, int start_frame, int count, int& frame_count_out, std::string& error_out
+    );
+
     /// Fetch all frames for a sequence as a zip bundle and extract to local_frames_dir.
     bool fetch_and_extract_bundle(const std::string& remote_export_path, const std::string& local_frames_dir, int& frame_count_out, std::string& error_out);
 
