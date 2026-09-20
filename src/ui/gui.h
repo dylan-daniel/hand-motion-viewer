@@ -19,6 +19,9 @@ inline constexpr float FPS_FONT_SIZE = 22.0f;
 // Height of the sequence playback bar pinned to the window bottom.
 inline constexpr float PLAYBACK_BAR_HEIGHT = 56.0f;
 
+struct RemoteConfig;
+class RemoteClient;
+
 /// The menu bar's toggle state, passed in and echoed back with the user's edits.
 /// New menu toggles are added here, not as another draw_menu_bar parameter.
 struct MenuState {
@@ -27,11 +30,14 @@ struct MenuState {
     bool free_camera = false;
     bool per_track_coloring = false; // Hands pane: off = infant-only + red/blue by side, on = colored by track
     std::string open_file;           // currently-loaded .hexport file, shown right-aligned in the bar (empty = none)
+    bool remote_connected = false;   // whether an SSH connection is currently active
 };
 
 struct MenuResult {
-    MenuState state;                    // the (possibly toggled) menu state
-    bool export_file_requested = false; // user picked "Open Export File"
+    MenuState state;                          // the (possibly toggled) menu state
+    bool export_file_requested = false;       // user picked "Open Export File"
+    bool open_remote_modal_requested = false; // user picked "Remote -> Connect to Server..."
+    bool disconnect_remote_requested = false; // user picked "Remote -> Disconnect"
 };
 
 /// Playback-transport state every pane that can host the player shares: passed in
@@ -133,3 +139,6 @@ ImageViewResult draw_image_window(const char* title, unsigned int texture, int t
 /// shown in the timeline progress bar. Contains a scrolling list of flag layer
 /// checkboxes and a button beneath that enables/disables all flags.
 void draw_flags_window(const char* title, std::array<bool, kFlagLayerCount>& flag_layers_enabled, ImGuiID dock_id = 0);
+
+/// Draw the centered modal popup for connecting to a remote SSH server.
+void draw_remote_modal(bool& is_open, RemoteConfig& config, RemoteClient& client);

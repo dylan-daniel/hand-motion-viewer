@@ -4,9 +4,11 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+
 #include <cstdio>
 #include <filesystem>
 #include <vector>
+#include "remote/remote_client.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_opengl.h>
@@ -366,9 +368,7 @@ namespace {
         draw_list->AddRectFilled(slider_min, slider_max, track_color, style.FrameRounding);
 
         if (transport.sequence != nullptr) {
-            draw_flag_overlay(
-                draw_list, slider_min, slider_max, frame_count, *transport.sequence, transport.per_track_coloring, transport.flag_layers_enabled
-            );
+            draw_flag_overlay(draw_list, slider_min, slider_max, frame_count, *transport.sequence, transport.per_track_coloring, transport.flag_layers_enabled);
         }
 
         // Grab handle: same padding/size/position math as above, centred over the
@@ -566,6 +566,8 @@ void TransportIcons::load(const std::string& icons_dir) {
 
 MenuResult draw_menu_bar(MenuState state) {
     bool export_file_requested = false;
+    bool open_remote_modal_requested = false;
+    bool disconnect_remote_requested = false;
 
     // Extra padding makes the bar taller; pop it right after begin so dropdown
     // contents don't grow too.
@@ -577,6 +579,17 @@ MenuResult draw_menu_bar(MenuState state) {
             if (ImGui::MenuItem("Open Export File")) {
                 export_file_requested = true;
             }
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Remote")) {
+            if (ImGui::MenuItem("Connect to Server...")) {
+                open_remote_modal_requested = true;
+            }
+            ImGui::BeginDisabled(!state.remote_connected);
+            if (ImGui::MenuItem("Disconnect")) {
+                disconnect_remote_requested = true;
+            }
+            ImGui::EndDisabled();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu("Settings")) {
@@ -625,7 +638,7 @@ MenuResult draw_menu_bar(MenuState state) {
 
         ImGui::EndMainMenuBar();
     }
-    return {state, export_file_requested};
+    return {state, export_file_requested, open_remote_modal_requested, disconnect_remote_requested};
 }
 
 ViewportResult draw_viewport_window(
@@ -798,3 +811,96 @@ void draw_flags_window(const char* title, std::array<bool, kFlagLayerCount>& fla
     ImGui::End();
 }
 
+void draw_remote_modal(bool& is_open, RemoteConfig& config, RemoteClient& client) {
+    if (is_open) {
+        if (!ImGui::IsPopupOpen("Connect to Remote Server")) {
+            ImGui::OpenPopup("Connect to Remote Server");
+        }
+    }
+
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(480.0f, 0.0f), ImGuiCond_Appearing);
+
+    static bool connect_in_flight = false;
+    static char host_buf[256] = "";
+    static char root_buf[512] = "";
+    static int port = 22;
+    static char py_buf[256] = "";
+    static char script_buf[512] = "";
+    static bool was_open = false;
+
+    if (is_open && !was_open) {
+        std::snprintf(host_buf, sizeof(host_buf), "%s", config.host.c_str());
+        std::snprintf(root_buf, sizeof(root_buf), "%s", config.root_folder.c_str());
+        port = config.port;
+        std::snprintf(py_buf, sizeof(py_buf), "%s", config.python_bin.c_str());
+        std::snprintf(script_buf, sizeof(script_buf), "%s", config.script_path.c_str());
+        connect_in_flight = false;
+    }
+    was_open = is_open;
+
+    if (!is_open) {
+        connect_in_flight = false;
+    }
+
+    if (ImGui::BeginPopupModal("Connect to Remote Server", &is_open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::TextUnformatted("Connect to remote server over SSH:");
+        ImGui::Spacing();
+
+        ImGui::InputTextWithHint("Host##modal_host", "user@server or ssh_alias", host_buf, sizeof(host_buf));
+        ImGui::InputTextWithHint("Data Folder##modal_root", "/path/to/cache", root_buf, sizeof(root_buf));
+
+        if (ImGui::CollapsingHeader("Advanced SSH Settings")) {
+            ImGui::InputInt("SSH Port##modal_port", &port);
+            ImGui::InputText("Python Binary##modal_python", py_buf, sizeof(py_buf));
+            ImGui::InputText("Daemon Path##modal_script", script_buf, sizeof(script_buf));
+        }
+
+        const bool connecting = client.is_connecting();
+        if (connecting) {
+            ImGui::Spacing();
+            ImGui::TextDisabled("Connecting to server in background...");
+        } else if (client.state() == ConnectionState::Error && !client.last_error().empty()) {
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+            ImGui::TextWrapped("Error: %s", client.last_error().c_str());
+            ImGui::PopStyleColor();
+        }
+
+        // Close modal automatically once connection succeeds
+        if (connect_in_flight && client.is_connected()) {
+            connect_in_flight = false;
+            is_open = false;
+            ImGui::CloseCurrentPopup();
+        } else if (client.state() == ConnectionState::Error) {
+            connect_in_flight = false;
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        const bool can_connect = host_buf[0] != '\0' && !connecting;
+        ImGui::BeginDisabled(!can_connect);
+        if (ImGui::Button(connecting ? "Connecting..." : "Connect", ImVec2(100.0f, 0.0f))) {
+            config.host = host_buf;
+            config.root_folder = root_buf;
+            config.port = port;
+            config.python_bin = py_buf;
+            config.script_path = script_buf;
+            client.connect_async(config);
+            connect_in_flight = true;
+        }
+        ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(80.0f, 0.0f))) {
+            is_open = false;
+            connect_in_flight = false;
+            ImGui::CloseCurrentPopup();
+        }
+
+        ImGui::EndPopup();
+    }
+}

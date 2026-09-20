@@ -236,6 +236,14 @@ int main(int, char**) {
     CacheManager::init();
     RemoteClient remote_client;
     WorkerQueue remote_fetch_worker;
+    RemoteConfig remote_config{
+        .host = settings.remote_host,
+        .port = settings.remote_port,
+        .python_bin = settings.remote_python,
+        .script_path = settings.remote_script,
+        .root_folder = settings.remote_data_folder,
+    };
+    bool show_remote_connect_modal = false;
 
     // Explorer pane, rooted at the saved data folder, listing .hexport files at any
     // nesting depth. set_root validates the path and kicks off the background scan
@@ -243,7 +251,7 @@ int main(int, char**) {
     FileExplorer explorer;
     explorer.set_remote_client(&remote_client);
     explorer.set_remote_root(settings.remote_data_folder);
-    if (settings.remote_mode) {
+    if (settings.remote_mode && !settings.remote_host.empty()) {
         explorer.set_mode(FileExplorer::SourceMode::Remote);
     }
 
@@ -261,14 +269,7 @@ int main(int, char**) {
     if (!settings.remote_mode && settings.data_folder) {
         explorer.set_root(*settings.data_folder);
     } else if (settings.remote_mode && !settings.remote_host.empty()) {
-        RemoteConfig initial_remote{
-            .host = settings.remote_host,
-            .port = settings.remote_port,
-            .python_bin = settings.remote_python,
-            .script_path = settings.remote_script,
-            .root_folder = settings.remote_data_folder,
-        };
-        remote_client.connect_async(initial_remote);
+        remote_client.connect_async(remote_config);
     }
 
     // Native pickers: a folder picker for choosing the Explorer's data-folder
@@ -446,6 +447,7 @@ int main(int, char**) {
                 .free_camera = settings.free_camera,
                 .per_track_coloring = settings.per_track_coloring,
                 .open_file = open_file_label,
+                .remote_connected = remote_client.is_connected(),
             }
         );
         settings.hand_translucent = menu.state.hand_translucent;
@@ -465,6 +467,17 @@ int main(int, char**) {
             } else {
                 orbit_cam.set_from_free(free_cam);
                 camera = &orbit_cam;
+            }
+        }
+        if (menu.open_remote_modal_requested) {
+            show_remote_connect_modal = true;
+        }
+        if (menu.disconnect_remote_requested) {
+            remote_client.disconnect();
+            settings.remote_mode = false;
+            explorer.set_mode(FileExplorer::SourceMode::Local);
+            if (settings.data_folder) {
+                explorer.set_root(*settings.data_folder);
             }
         }
 
@@ -638,7 +651,17 @@ int main(int, char**) {
         // Poll remote client health and dispatch pending actions
         remote_client.poll();
         if (remote_client.consume_just_connected()) {
+            settings.remote_mode = true;
+            explorer.set_remote_root(remote_config.root_folder);
+            explorer.set_mode(FileExplorer::SourceMode::Remote);
             explorer.refresh();
+        }
+        if (remote_client.state() == ConnectionState::Disconnected && explorer.mode() == FileExplorer::SourceMode::Remote) {
+            settings.remote_mode = false;
+            explorer.set_mode(FileExplorer::SourceMode::Local);
+            if (settings.data_folder) {
+                explorer.set_root(*settings.data_folder);
+            }
         }
         {
             std::lock_guard<std::mutex> lock(remote_open_mutex);
@@ -649,31 +672,20 @@ int main(int, char**) {
         }
 
         // Explorer pane. Supports both Local and Remote (SSH) modes.
-        RemoteConfig remote_config{
-            .host = settings.remote_host,
-            .port = settings.remote_port,
-            .python_bin = settings.remote_python,
-            .script_path = settings.remote_script,
-            .root_folder = settings.remote_data_folder,
-        };
-        const ExplorerResult explorer_result = draw_explorer_window(explorer, dock_id, &remote_config);
+        const ExplorerResult explorer_result = draw_explorer_window(explorer, dock_id);
+        if (explorer_result.change_remote_requested) {
+            show_remote_connect_modal = true;
+        }
+        draw_remote_modal(show_remote_connect_modal, remote_config, remote_client);
+
         settings.remote_host = remote_config.host;
         settings.remote_port = remote_config.port;
         settings.remote_python = remote_config.python_bin;
         settings.remote_script = remote_config.script_path;
         settings.remote_data_folder = remote_config.root_folder;
 
-        if (explorer_result.mode_changed) {
-            settings.remote_mode = explorer.mode() == FileExplorer::SourceMode::Remote;
-        }
         if (explorer_result.choose_root_requested && !data_folder_dialog) {
             data_folder_dialog = std::make_unique<pfd::select_folder>("Select data folder");
-        }
-        if (explorer_result.connect_requested) {
-            remote_client.connect_async(remote_config);
-        }
-        if (explorer_result.disconnect_requested) {
-            remote_client.disconnect();
         }
         if (explorer_result.open_file) {
             if (explorer_result.is_remote) {

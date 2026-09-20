@@ -519,7 +519,7 @@ void FileExplorer::set_saved_open(std::vector<std::string> paths) {
     saved_open_ = std::unordered_set<std::string>(std::make_move_iterator(paths.begin()), std::make_move_iterator(paths.end()));
 }
 
-ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, RemoteConfig* remote_config) {
+ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id) {
     ExplorerResult result;
 
     // Fold in a finished background scan (if any) before drawing this frame's tree.
@@ -530,37 +530,7 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, Rem
     result.focused = ImGui::IsWindowFocused();
     result.hovered = ImGui::IsWindowHovered();
 
-    // ── Source Mode Switcher ──────────────────────────────
     const bool is_remote = explorer.mode() == FileExplorer::SourceMode::Remote;
-    if (!is_remote) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-    }
-    if (ImGui::Button("  Local  ")) {
-        if (is_remote) {
-            explorer.set_mode(FileExplorer::SourceMode::Local);
-            result.mode_changed = true;
-        }
-    }
-    if (!is_remote) {
-        ImGui::PopStyleColor();
-    }
-
-    ImGui::SameLine();
-
-    if (is_remote) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-    }
-    if (ImGui::Button("  Remote (SSH)  ")) {
-        if (!is_remote) {
-            explorer.set_mode(FileExplorer::SourceMode::Remote);
-            result.mode_changed = true;
-        }
-    }
-    if (is_remote) {
-        ImGui::PopStyleColor();
-    }
-
-    ImGui::Separator();
 
     if (!is_remote) {
         // ── Local Mode UI ─────────────────────────────────
@@ -598,15 +568,17 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, Rem
                     ImVec2(1.0f, 1.0f),
                     ImGui::GetColorU32(ImGuiCol_TextDisabled)
                 );
-                ImGui::Dummy(ImVec2(icon_size, icon_size));
-                ImGui::Dummy(ImVec2(0.0f, gap - style.ItemSpacing.y));
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + icon_size + gap);
             }
 
             center_x(ImGui::CalcTextSize(heading).x);
             ImGui::TextUnformatted(heading);
+
+            ImGui::Spacing();
             center_x(ImGui::CalcTextSize(hint).x);
             ImGui::TextDisabled("%s", hint);
-            ImGui::Dummy(ImVec2(0.0f, gap - style.ItemSpacing.y));
+
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + gap);
             center_x(button_width);
             if (ImGui::Button(button_label)) {
                 result.choose_root_requested = true;
@@ -677,123 +649,77 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, Rem
     } else {
         // ── Remote (SSH) Mode UI ──────────────────────────
         RemoteClient* client = explorer.remote_client();
-        const bool connected = client != nullptr && client->is_connected();
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float icon = ImGui::GetFontSize();
+        const ExplorerIcons& icons = explorer.icons();
+        const float button_width = icon + style.FramePadding.x * 2.0f;
+        const float buttons_width = button_width * 2.0f + style.ItemSpacing.x;
 
-        if (!connected) {
-            ImGui::Spacing();
-            ImGui::TextUnformatted("Connect to remote server over SSH:");
-            ImGui::Spacing();
+        const ImVec2 row_start = ImGui::GetCursorPos();
+        const float region_width = ImGui::GetContentRegionAvail().x;
+        const ImVec4 tint = ImGui::GetStyleColorVec4(ImGuiCol_Text);
+        const ImVec4 no_bg(0.0f, 0.0f, 0.0f, 0.0f);
+        const ImVec2 uv0(0.0f, 0.0f);
+        const ImVec2 uv1(1.0f, 1.0f);
 
-            if (remote_config != nullptr) {
-                char host_buf[256];
-                std::snprintf(host_buf, sizeof(host_buf), "%s", remote_config->host.c_str());
-                if (ImGui::InputTextWithHint("Host##remote_host", "user@server or ssh_alias", host_buf, sizeof(host_buf))) {
-                    remote_config->host = host_buf;
-                }
+        // Path label: <host>:<path>
+        const std::string host = client ? client->config().host : "";
+        const std::string remote_label = host.empty() ? explorer.remote_root() : (host + ":" + explorer.remote_root());
 
-                char root_buf[512];
-                std::snprintf(root_buf, sizeof(root_buf), "%s", remote_config->root_folder.c_str());
-                if (ImGui::InputTextWithHint("Data Folder##remote_root", "/path/to/cache", root_buf, sizeof(root_buf))) {
-                    remote_config->root_folder = root_buf;
-                    explorer.set_remote_root(root_buf);
-                }
+        ImGui::AlignTextToFramePadding();
+        const float text_width = std::max(0.0f, region_width - buttons_width - style.ItemSpacing.x);
+        const ImVec2 text_pos = ImGui::GetCursorScreenPos();
+        ImGui::PushClipRect(text_pos, ImVec2(text_pos.x + text_width, text_pos.y + ImGui::GetFrameHeight()), true);
+        ImGui::TextDisabled("%s", remote_label.c_str());
+        ImGui::PopClipRect();
 
-                if (ImGui::CollapsingHeader("Advanced SSH Settings")) {
-                    ImGui::InputInt("SSH Port##remote_port", &remote_config->port);
-                    char py_buf[256];
-                    std::snprintf(py_buf, sizeof(py_buf), "%s", remote_config->python_bin.c_str());
-                    if (ImGui::InputText("Python Binary##remote_python", py_buf, sizeof(py_buf))) {
-                        remote_config->python_bin = py_buf;
-                    }
-                    char script_buf[512];
-                    std::snprintf(script_buf, sizeof(script_buf), "%s", remote_config->script_path.c_str());
-                    if (ImGui::InputText("Daemon Path##remote_script", script_buf, sizeof(script_buf))) {
-                        remote_config->script_path = script_buf;
-                    }
-                }
-            }
-
-            ImGui::Spacing();
-            const bool connecting = client && client->state() == ConnectionState::Connecting;
-            const bool can_connect = remote_config && !remote_config->host.empty();
-            ImGui::BeginDisabled(connecting || !can_connect);
-            if (ImGui::Button(connecting ? "Connecting..." : "Connect to Server", ImVec2(-1.0f, ImGui::GetFrameHeight() * 1.3f))) {
-                result.connect_requested = true;
-            }
-            ImGui::EndDisabled();
-
-            if (client && !client->last_error().empty()) {
-                ImGui::Spacing();
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
-                ImGui::TextWrapped("Error: %s", client->last_error().c_str());
-                ImGui::PopStyleColor();
-            }
+        // Change button (re-opens remote connection modal)
+        ImGui::SetCursorPos(ImVec2(row_start.x + region_width - buttons_width, row_start.y));
+        bool change_clicked = false;
+        if (icons.change_root != 0) {
+            change_clicked = ImGui::ImageButton("change_remote", static_cast<ImTextureID>(icons.change_root), ImVec2(icon, icon), uv0, uv1, no_bg, tint);
         } else {
-            const ImGuiStyle& style = ImGui::GetStyle();
-            const float icon = ImGui::GetFontSize();
-            const ExplorerIcons& icons = explorer.icons();
-            const float button_width = icon + style.FramePadding.x * 2.0f;
-            const float buttons_width = button_width + 85.0f + style.ItemSpacing.x; // disconnect + refresh
-
-            const ImVec2 row_start = ImGui::GetCursorPos();
-            const float region_width = ImGui::GetContentRegionAvail().x;
-            const ImVec4 tint = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-            const ImVec4 no_bg(0.0f, 0.0f, 0.0f, 0.0f);
-            const ImVec2 uv0(0.0f, 0.0f);
-            const ImVec2 uv1(1.0f, 1.0f);
-
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.3f, 1.0f), "%s", "●");
-            ImGui::SameLine();
-            const float text_width = std::max(0.0f, region_width - buttons_width - style.ItemSpacing.x - 20.0f);
-            const ImVec2 text_pos = ImGui::GetCursorScreenPos();
-            ImGui::PushClipRect(text_pos, ImVec2(text_pos.x + text_width, text_pos.y + ImGui::GetFrameHeight()), true);
-            ImGui::Text("%s", client->config().host.c_str());
-            ImGui::PopClipRect();
-
-            // Disconnect button
-            ImGui::SetCursorPos(ImVec2(row_start.x + region_width - buttons_width, row_start.y));
-            if (ImGui::Button("Disconnect")) {
-                result.disconnect_requested = true;
-            }
-            ImGui::SetItemTooltip("Disconnect from remote server");
-
-            // Refresh button
-            ImGui::SameLine();
-            const bool scanning = explorer.scanning();
-            ImGui::BeginDisabled(scanning);
-            bool refresh_clicked = false;
-            if (icons.refresh != 0) {
-                refresh_clicked = ImGui::ImageButton("refresh_remote", static_cast<ImTextureID>(icons.refresh), ImVec2(icon, icon), uv0, uv1, no_bg, tint);
-            } else {
-                refresh_clicked = ImGui::Button("Refresh");
-            }
-            ImGui::EndDisabled();
-            if (refresh_clicked) {
-                explorer.refresh();
-            }
-            ImGui::SetItemTooltip("Rescan remote folder");
-
-            ImGui::TextDisabled("Root: %s", explorer.remote_root().c_str());
-            ImGui::Separator();
-
-            if (ImGui::BeginChild("##tree_scroll_remote", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
-                if (FileExplorer::Node* root = explorer.root_node()) {
-                    explorer.clear_live_expanded();
-                    TreeDraw draw{explorer, result, ImGui::GetCursorScreenPos().x, ImGui::GetContentRegionAvail().x, 0};
-                    draw_node(draw, *root);
-                } else if (scanning) {
-                    ImGui::TextDisabled("Scanning remote server...");
-                } else if (!explorer.scan_error().empty()) {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
-                    ImGui::TextWrapped("Scan error: %s", explorer.scan_error().c_str());
-                    ImGui::PopStyleColor();
-                } else {
-                    ImGui::TextDisabled("No .hexport files found on remote server.");
-                }
-            }
-            ImGui::EndChild();
+            change_clicked = ImGui::Button("Change##remote");
         }
+        if (change_clicked) {
+            result.change_remote_requested = true;
+        }
+        ImGui::SetItemTooltip("Change remote server / folder");
+
+        // Refresh button (rescans remote folder)
+        ImGui::SameLine();
+        const bool scanning = explorer.scanning();
+        ImGui::BeginDisabled(scanning);
+        bool refresh_clicked = false;
+        if (icons.refresh != 0) {
+            refresh_clicked = ImGui::ImageButton("refresh_remote", static_cast<ImTextureID>(icons.refresh), ImVec2(icon, icon), uv0, uv1, no_bg, tint);
+        } else {
+            refresh_clicked = ImGui::Button("Refresh##remote");
+        }
+        ImGui::EndDisabled();
+        if (refresh_clicked) {
+            explorer.refresh();
+        }
+        ImGui::SetItemTooltip("Rescan remote folder");
+
+        ImGui::Separator();
+
+        if (ImGui::BeginChild("##tree_scroll_remote", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+            if (FileExplorer::Node* root = explorer.root_node()) {
+                explorer.clear_live_expanded();
+                TreeDraw draw{explorer, result, ImGui::GetCursorScreenPos().x, ImGui::GetContentRegionAvail().x, 0};
+                draw_node(draw, *root);
+            } else if (scanning) {
+                ImGui::TextDisabled("Scanning remote server...");
+            } else if (!explorer.scan_error().empty()) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+                ImGui::TextWrapped("Scan error: %s", explorer.scan_error().c_str());
+                ImGui::PopStyleColor();
+            } else {
+                ImGui::TextDisabled("No .hexport files found on remote server.");
+            }
+        }
+        ImGui::EndChild();
     }
 
     ImGui::End();

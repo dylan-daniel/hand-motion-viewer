@@ -156,20 +156,16 @@ private:
     WorkerQueue worker_; // declared last so it joins before the state above is destroyed
 };
 
-struct RemoteConfig;
-
 /// What the user did in the Explorer pane this frame.
 struct ExplorerResult {
     bool hovered = false;
     bool focused = false;
     std::optional<std::string> open_file; // a .hexport leaf was clicked: load it
     bool is_remote = false;               // true if open_file is a remote server path
-    bool choose_root_requested = false;   // the "Choose Data Folder" / change button was pressed
-    bool connect_requested = false;       // user requested connecting to remote server
-    bool disconnect_requested = false;    // user requested disconnect
-    bool mode_changed = false;            // user toggled between Local and Remote
+    bool choose_root_requested = false;   // the "Choose Data Folder" / change button was pressed (Local mode)
+    bool change_remote_requested = false; // "Change" button was pressed (Remote mode) -> open connection modal
 };
 
 /// Draw the dockable "Explorer" window. Polls for a finished scan and may start a
 /// refresh when its button is pressed. Returns the user's actions for the caller.
-ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, RemoteConfig* remote_config = nullptr);
+ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id);
