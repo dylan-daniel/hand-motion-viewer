@@ -171,7 +171,7 @@ bool RemoteClient::connect_internal(const RemoteConfig& config, std::string& err
 
     if (is_local) {
         args_str.push_back(config.python_bin.empty() ? "python3" : config.python_bin);
-        args_str.push_back(config.script_path);
+        args_str.push_back(config.script_path.empty() ? "scripts/viewer_daemon.py" : config.script_path);
     } else {
         args_str.push_back("ssh");
         args_str.push_back("-T"); // Disable pseudo-tty allocation
@@ -187,7 +187,15 @@ bool RemoteClient::connect_internal(const RemoteConfig& config, std::string& err
         args_str.push_back(config.host);
 
         std::string remote_cmd = config.python_bin.empty() ? "python3" : config.python_bin;
-        remote_cmd += " " + config.script_path;
+        if (!config.script_path.empty()) {
+            remote_cmd += " " + config.script_path;
+        } else {
+            remote_cmd +=
+                " -c \"import os, sys; candidates = [os.path.expanduser('~/workspace/hand_motion_viewer/scripts/viewer_daemon.py'), "
+                "os.path.expanduser('~/.hand_motion_viewer/viewer_daemon.py'), 'viewer_daemon.py', 'scripts/viewer_daemon.py']; target = next((p for p in "
+                "candidates if os.path.isfile(p)), None); sys.exit('Daemon script not found. Please specify daemon path in Advanced SSH Settings.') if not "
+                "target else None; exec(open(target).read())\"";
+        }
         args_str.push_back(remote_cmd);
     }
 

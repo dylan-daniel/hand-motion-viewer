@@ -30,8 +30,8 @@ struct Config {
     std::string remote_host = "";
     int remote_port = 22;
     std::string remote_python = "python3";
-    std::string remote_script = "~/workspace/hand_motion_viewer/scripts/viewer_daemon.py";
-    std::string remote_data_folder = "/mnt/nvme1tb/infant_grasp_pipeline_cache";
+    std::string remote_script = "";
+    std::string remote_data_folder = "";
 
     // Window placement. Position is stored relative to ``window_display``'s
     // top-left corner so the window returns to the right monitor next launch.

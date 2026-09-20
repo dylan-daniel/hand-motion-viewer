@@ -818,9 +818,11 @@ void draw_remote_modal(bool& is_open, RemoteConfig& config, RemoteClient& client
         }
     }
 
+    constexpr float MODAL_WIDTH = 540.0f;
     ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(480.0f, 0.0f), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(MODAL_WIDTH, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(MODAL_WIDTH, 0.0f), ImVec2(MODAL_WIDTH, 2000.0f));
 
     static bool connect_in_flight = false;
     static char host_buf[256] = "";
@@ -833,28 +835,43 @@ void draw_remote_modal(bool& is_open, RemoteConfig& config, RemoteClient& client
     if (is_open && !was_open) {
         std::snprintf(host_buf, sizeof(host_buf), "%s", config.host.c_str());
         std::snprintf(root_buf, sizeof(root_buf), "%s", config.root_folder.c_str());
-        port = config.port;
-        std::snprintf(py_buf, sizeof(py_buf), "%s", config.python_bin.c_str());
+        port = config.port > 0 ? config.port : 22;
+        std::snprintf(py_buf, sizeof(py_buf), "%s", config.python_bin.empty() ? "python3" : config.python_bin.c_str());
         std::snprintf(script_buf, sizeof(script_buf), "%s", config.script_path.c_str());
         connect_in_flight = false;
     }
     was_open = is_open;
 
     if (!is_open) {
+        if (connect_in_flight && client.is_connecting()) {
+            client.disconnect();
+        }
         connect_in_flight = false;
     }
 
-    if (ImGui::BeginPopupModal("Connect to Remote Server", &is_open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+    if (ImGui::BeginPopupModal(
+            "Connect to Remote Server", &is_open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove
+        )) {
         ImGui::TextUnformatted("Connect to remote server over SSH:");
         ImGui::Spacing();
 
+        const float label_width = 140.0f;
+
+        ImGui::SetNextItemWidth(-label_width);
         ImGui::InputTextWithHint("Host##modal_host", "user@server or ssh_alias", host_buf, sizeof(host_buf));
+
+        ImGui::SetNextItemWidth(-label_width);
         ImGui::InputTextWithHint("Data Folder##modal_root", "/path/to/cache", root_buf, sizeof(root_buf));
 
         if (ImGui::CollapsingHeader("Advanced SSH Settings")) {
+            ImGui::SetNextItemWidth(-label_width);
             ImGui::InputInt("SSH Port##modal_port", &port);
-            ImGui::InputText("Python Binary##modal_python", py_buf, sizeof(py_buf));
-            ImGui::InputText("Daemon Path##modal_script", script_buf, sizeof(script_buf));
+
+            ImGui::SetNextItemWidth(-label_width);
+            ImGui::InputTextWithHint("Python Binary##modal_python", "python3", py_buf, sizeof(py_buf));
+
+            ImGui::SetNextItemWidth(-label_width);
+            ImGui::InputTextWithHint("Daemon Path##modal_script", "/path/to/viewer_daemon.py", script_buf, sizeof(script_buf));
         }
 
         const bool connecting = client.is_connecting();
@@ -883,23 +900,16 @@ void draw_remote_modal(bool& is_open, RemoteConfig& config, RemoteClient& client
 
         const bool can_connect = host_buf[0] != '\0' && !connecting;
         ImGui::BeginDisabled(!can_connect);
-        if (ImGui::Button(connecting ? "Connecting..." : "Connect", ImVec2(100.0f, 0.0f))) {
+        if (ImGui::Button(connecting ? "Connecting..." : "Connect", ImVec2(-1.0f, 0.0f))) {
             config.host = host_buf;
             config.root_folder = root_buf;
             config.port = port;
-            config.python_bin = py_buf;
+            config.python_bin = py_buf[0] != '\0' ? py_buf : "python3";
             config.script_path = script_buf;
             client.connect_async(config);
             connect_in_flight = true;
         }
         ImGui::EndDisabled();
-
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(80.0f, 0.0f))) {
-            is_open = false;
-            connect_in_flight = false;
-            ImGui::CloseCurrentPopup();
-        }
 
         ImGui::EndPopup();
     }

@@ -13,11 +13,11 @@
 #include "util/worker_queue.h"
 
 struct RemoteConfig {
-    std::string host = ""; // e.g. "tus43540@cis-a6000" or ssh alias, or "localhost"
+    std::string host = ""; // e.g. "user@server" or ssh alias, or "localhost"
     int port = 22;
     std::string python_bin = "python3";
-    std::string script_path = "~/workspace/hand_motion_viewer/scripts/viewer_daemon.py";
-    std::string root_folder = "/mnt/nvme1tb/infant_grasp_pipeline_cache";
+    std::string script_path = "";
+    std::string root_folder = "";
 };
 
 enum class ConnectionState { Disconnected, Connecting, Connected, Error };

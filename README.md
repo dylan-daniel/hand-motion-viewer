@@ -108,14 +108,14 @@ by picking a data folder in the Explorer pane and clicking a file it finds.
 
 ### Remote Viewing (SSH)
 
-The Explorer pane supports switching between **Local** and **Remote (SSH)** modes:
+The viewer supports connecting to a remote server over SSH:
 
-1. In the Explorer pane, click the **Remote (SSH)** toggle at the top.
-2. Enter your server connection settings:
+1. Click **Remote -> Connect to Server...** in the top menu bar.
+2. Enter your server connection settings in the modal dialog:
    - **Host**: your SSH alias or user/host (e.g. `user@server.edu` or SSH config alias).
-   - **Data Folder**: remote pipeline cache root (e.g. `/mnt/nvme1tb/infant_grasp_pipeline_cache`).
+   - **Data Folder**: remote pipeline cache root (e.g. `/path/to/pipeline_cache`).
    - (Optional) **Advanced SSH Settings**: custom port, Python binary path, or daemon script location (defaults to `scripts/viewer_daemon.py`).
-3. Click **Connect to Server**. The viewer establishes an SSH connection, executes `scripts/viewer_daemon.py` on the server, and scans the remote directory in milliseconds.
+3. Click **Connect**. The viewer establishes an SSH connection, starts the daemon on the server, and populates the Explorer with the remote file tree. To disconnect, select **Remote -> Disconnect**.
 4. Click on any `.hexport` file in the remote tree:
    - The `.hexport` file (~100 KB) is downloaded immediately and rendered in the 3D scene.
    - The server resolves symlinks for that sequence's video frames and bundles them to the client's local cache in the background.
