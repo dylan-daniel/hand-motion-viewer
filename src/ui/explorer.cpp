@@ -526,7 +526,7 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, Rem
     explorer.poll();
 
     ImGui::SetNextWindowDockID(dock_id, ImGuiCond_FirstUseEver);
-    ImGui::Begin("Explorer");
+    ImGui::Begin("Explorer", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     result.focused = ImGui::IsWindowFocused();
     result.hovered = ImGui::IsWindowHovered();
 
@@ -661,15 +661,18 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, Rem
 
             ImGui::Separator();
 
-            if (FileExplorer::Node* root = explorer.root_node()) {
-                explorer.clear_live_expanded();
-                TreeDraw draw{explorer, result, ImGui::GetCursorScreenPos().x, ImGui::GetContentRegionAvail().x, 0};
-                draw_node(draw, *root);
-            } else if (scanning) {
-                ImGui::TextDisabled("Scanning...");
-            } else {
-                ImGui::TextDisabled("No .hexport files found.");
+            if (ImGui::BeginChild("##tree_scroll_local", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+                if (FileExplorer::Node* root = explorer.root_node()) {
+                    explorer.clear_live_expanded();
+                    TreeDraw draw{explorer, result, ImGui::GetCursorScreenPos().x, ImGui::GetContentRegionAvail().x, 0};
+                    draw_node(draw, *root);
+                } else if (scanning) {
+                    ImGui::TextDisabled("Scanning...");
+                } else {
+                    ImGui::TextDisabled("No .hexport files found.");
+                }
             }
+            ImGui::EndChild();
         }
     } else {
         // ── Remote (SSH) Mode UI ──────────────────────────
@@ -774,19 +777,22 @@ ExplorerResult draw_explorer_window(FileExplorer& explorer, ImGuiID dock_id, Rem
             ImGui::TextDisabled("Root: %s", explorer.remote_root().c_str());
             ImGui::Separator();
 
-            if (FileExplorer::Node* root = explorer.root_node()) {
-                explorer.clear_live_expanded();
-                TreeDraw draw{explorer, result, ImGui::GetCursorScreenPos().x, ImGui::GetContentRegionAvail().x, 0};
-                draw_node(draw, *root);
-            } else if (scanning) {
-                ImGui::TextDisabled("Scanning remote server...");
-            } else if (!explorer.scan_error().empty()) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
-                ImGui::TextWrapped("Scan error: %s", explorer.scan_error().c_str());
-                ImGui::PopStyleColor();
-            } else {
-                ImGui::TextDisabled("No .hexport files found on remote server.");
+            if (ImGui::BeginChild("##tree_scroll_remote", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_HorizontalScrollbar)) {
+                if (FileExplorer::Node* root = explorer.root_node()) {
+                    explorer.clear_live_expanded();
+                    TreeDraw draw{explorer, result, ImGui::GetCursorScreenPos().x, ImGui::GetContentRegionAvail().x, 0};
+                    draw_node(draw, *root);
+                } else if (scanning) {
+                    ImGui::TextDisabled("Scanning remote server...");
+                } else if (!explorer.scan_error().empty()) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
+                    ImGui::TextWrapped("Scan error: %s", explorer.scan_error().c_str());
+                    ImGui::PopStyleColor();
+                } else {
+                    ImGui::TextDisabled("No .hexport files found on remote server.");
+                }
             }
+            ImGui::EndChild();
         }
     }
 

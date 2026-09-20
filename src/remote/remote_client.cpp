@@ -112,41 +112,60 @@ RemoteClient::~RemoteClient() {
 }
 
 std::string RemoteClient::last_error() const {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return last_error_;
 }
 
 RemoteConfig RemoteClient::config() const {
-    std::lock_guard<std::mutex> guard(mutex_);
+    std::lock_guard<std::mutex> lock(state_mutex_);
     return config_;
 }
 
 void RemoteClient::connect_async(const RemoteConfig& config) {
+    if (state_.load() == ConnectionState::Connecting) {
+        return;
+    }
+    state_.store(ConnectionState::Connecting);
     {
-        std::lock_guard<std::mutex> guard(mutex_);
-        if (state_.load() == ConnectionState::Connecting) {
-            return;
-        }
-        disconnect_locked();
+        std::lock_guard<std::mutex> lock(state_mutex_);
         config_ = config;
         last_error_.clear();
-        state_.store(ConnectionState::Connecting);
     }
     async_worker_.submit([this, config]() {
         std::string err;
-        if (connect_sync(config, err)) {
+        if (connect_internal(config, err)) {
+            state_.store(ConnectionState::Connected);
             just_connected_.store(true);
+        } else {
+            {
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                last_error_ = err;
+            }
+            state_.store(ConnectionState::Error);
         }
     });
 }
 
 bool RemoteClient::connect_sync(const RemoteConfig& config, std::string& error_out) {
-    std::lock_guard<std::mutex> guard(mutex_);
-    disconnect_locked();
-
-    config_ = config;
     state_.store(ConnectionState::Connecting);
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        config_ = config;
+        last_error_.clear();
+    }
+    if (connect_internal(config, error_out)) {
+        state_.store(ConnectionState::Connected);
+        return true;
+    }
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        last_error_ = error_out;
+    }
+    state_.store(ConnectionState::Error);
+    return false;
+}
 
+bool RemoteClient::connect_internal(const RemoteConfig& config, std::string& error_out) {
     std::vector<std::string> args_str;
     const bool is_local = config.host.empty() || config.host == "localhost" || config.host == "127.0.0.1";
 
@@ -187,44 +206,80 @@ bool RemoteClient::connect_sync(const RemoteConfig& config, std::string& error_o
     // Background boolean ensures CREATE_NO_WINDOW on Windows so zero console window is displayed
     SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
 
-    process_ = SDL_CreateProcessWithProperties(props);
+    SDL_Process* new_process = SDL_CreateProcessWithProperties(props);
     SDL_DestroyProperties(props);
 
-    if (process_ == nullptr) {
+    if (new_process == nullptr) {
         error_out = std::string("Failed to spawn process: ") + SDL_GetError();
-        last_error_ = error_out;
-        state_.store(ConnectionState::Error);
         return false;
     }
 
-    stdin_ = SDL_GetProcessInput(process_);
-    stdout_ = SDL_GetProcessOutput(process_);
+    SDL_IOStream* new_stdin = SDL_GetProcessInput(new_process);
+    SDL_IOStream* new_stdout = SDL_GetProcessOutput(new_process);
 
-    if (stdin_ == nullptr || stdout_ == nullptr) {
+    if (new_stdin == nullptr || new_stdout == nullptr) {
         error_out = "Failed to obtain process standard I/O streams.";
-        last_error_ = error_out;
-        disconnect_locked();
-        state_.store(ConnectionState::Error);
+        SDL_KillProcess(new_process, true);
+        SDL_DestroyProcess(new_process);
         return false;
     }
 
-    // Ping daemon to verify connection and protocol
-    json ping_req = {{"id", next_id_++}, {"cmd", "ping"}};
-    json ping_resp;
-    if (!send_command_locked(ping_req, ping_resp, error_out)) {
-        last_error_ = "Connection failed during handshake: " + error_out;
-        error_out = last_error_;
-        disconnect_locked();
-        state_.store(ConnectionState::Error);
+    // Ping daemon to verify connection and protocol without holding mutex_
+    json ping_req = {{"id", 1}, {"cmd", "ping"}};
+    const std::string line = ping_req.dump() + "\n";
+    if (!write_all(new_stdin, line.data(), line.size())) {
+        error_out = "Connection failed: unable to send handshake to daemon";
+        SDL_KillProcess(new_process, true);
+        SDL_DestroyProcess(new_process);
         return false;
     }
 
-    state_.store(ConnectionState::Connected);
-    last_error_.clear();
+    std::string resp_line;
+    if (!read_line(new_stdout, resp_line, DEFAULT_TIMEOUT_MS)) {
+        error_out = "Connection failed: timed out waiting for daemon response";
+        SDL_KillProcess(new_process, true);
+        SDL_DestroyProcess(new_process);
+        return false;
+    }
+
+    try {
+        json ping_resp = json::parse(resp_line);
+        if (ping_resp.value("status", "") != "ok") {
+            error_out = ping_resp.value("message", "Daemon returned error status on handshake");
+            SDL_KillProcess(new_process, true);
+            SDL_DestroyProcess(new_process);
+            return false;
+        }
+    } catch (const json::exception& e) {
+        error_out = std::string("Malformed JSON during handshake: ") + e.what();
+        SDL_KillProcess(new_process, true);
+        SDL_DestroyProcess(new_process);
+        return false;
+    }
+
+    // Abort if canceled while connecting
+    if (state_.load() != ConnectionState::Connecting) {
+        error_out = "Connection canceled";
+        SDL_KillProcess(new_process, true);
+        SDL_DestroyProcess(new_process);
+        return false;
+    }
+
+    // Swap in active connection under lock
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        disconnect_locked();
+        process_ = new_process;
+        stdin_ = new_stdin;
+        stdout_ = new_stdout;
+        next_id_ = 2;
+    }
+
     return true;
 }
 
 void RemoteClient::disconnect() {
+    state_.store(ConnectionState::Disconnected);
     std::lock_guard<std::mutex> guard(mutex_);
     disconnect_locked();
 }
@@ -253,16 +308,24 @@ void RemoteClient::disconnect_locked() {
     }
     stdin_ = nullptr;
     stdout_ = nullptr;
-    state_.store(ConnectionState::Disconnected);
 }
 
 void RemoteClient::poll() {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (state_.load() == ConnectionState::Connected && process_ != nullptr) {
+    if (state_.load() != ConnectionState::Connected) {
+        return;
+    }
+    std::unique_lock<std::mutex> guard(mutex_, std::try_to_lock);
+    if (!guard.owns_lock()) {
+        return;
+    }
+    if (process_ != nullptr) {
         int exitcode = 0;
         if (SDL_WaitProcess(process_, false, &exitcode)) {
             disconnect_locked();
-            last_error_ = "Remote server connection closed unexpectedly.";
+            {
+                std::lock_guard<std::mutex> state_guard(state_mutex_);
+                last_error_ = "Remote server connection closed unexpectedly.";
+            }
             state_.store(ConnectionState::Disconnected);
         }
     }
@@ -449,7 +512,11 @@ bool RemoteClient::send_command_locked(const json& req, json& resp_out, std::str
     if (!write_all(stdin_, line.data(), line.size())) {
         error_out = "Failed to send request to remote daemon (connection broken)";
         disconnect_locked();
-        last_error_ = error_out;
+        {
+            std::lock_guard<std::mutex> state_guard(state_mutex_);
+            last_error_ = error_out;
+        }
+        state_.store(ConnectionState::Disconnected);
         return false;
     }
 
@@ -457,7 +524,11 @@ bool RemoteClient::send_command_locked(const json& req, json& resp_out, std::str
     if (!read_line(stdout_, resp_line, DEFAULT_TIMEOUT_MS)) {
         error_out = "Timed out or connection dropped waiting for remote response";
         disconnect_locked();
-        last_error_ = error_out;
+        {
+            std::lock_guard<std::mutex> state_guard(state_mutex_);
+            last_error_ = error_out;
+        }
+        state_.store(ConnectionState::Disconnected);
         return false;
     }
 
@@ -481,7 +552,11 @@ bool RemoteClient::send_command_binary_locked(const json& req, json& resp_hdr_ou
     if (!write_all(stdin_, line.data(), line.size())) {
         error_out = "Failed to send request to remote daemon (connection broken)";
         disconnect_locked();
-        last_error_ = error_out;
+        {
+            std::lock_guard<std::mutex> state_guard(state_mutex_);
+            last_error_ = error_out;
+        }
+        state_.store(ConnectionState::Disconnected);
         return false;
     }
 
@@ -489,7 +564,11 @@ bool RemoteClient::send_command_binary_locked(const json& req, json& resp_hdr_ou
     if (!read_line(stdout_, hdr_line, DEFAULT_TIMEOUT_MS)) {
         error_out = "Timed out waiting for binary header from remote server";
         disconnect_locked();
-        last_error_ = error_out;
+        {
+            std::lock_guard<std::mutex> state_guard(state_mutex_);
+            last_error_ = error_out;
+        }
+        state_.store(ConnectionState::Disconnected);
         return false;
     }
 
@@ -511,7 +590,11 @@ bool RemoteClient::send_command_binary_locked(const json& req, json& resp_hdr_ou
         if (!read_exact(stdout_, data_out.data(), byte_size, BUNDLE_TIMEOUT_MS)) {
             error_out = "Timed out or dropped connection reading binary payload";
             disconnect_locked();
-            last_error_ = error_out;
+            {
+                std::lock_guard<std::mutex> state_guard(state_mutex_);
+                last_error_ = error_out;
+            }
+            state_.store(ConnectionState::Disconnected);
             return false;
         }
     }

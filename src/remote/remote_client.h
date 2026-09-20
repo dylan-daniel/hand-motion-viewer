@@ -69,14 +69,17 @@ public:
     bool fetch_and_extract_bundle(const std::string& remote_export_path, const std::string& local_frames_dir, int& frame_count_out, std::string& error_out);
 
 private:
+    bool connect_internal(const RemoteConfig& config, std::string& error_out);
     void disconnect_locked();
     bool send_command_locked(const nlohmann::json& req, nlohmann::json& resp_out, std::string& error_out);
     bool send_command_binary_locked(const nlohmann::json& req, nlohmann::json& resp_hdr_out, std::vector<uint8_t>& data_out, std::string& error_out);
 
-    mutable std::mutex mutex_;
+    mutable std::mutex state_mutex_;
     RemoteConfig config_;
-    std::atomic<ConnectionState> state_{ConnectionState::Disconnected};
     std::string last_error_;
+
+    mutable std::mutex mutex_;
+    std::atomic<ConnectionState> state_{ConnectionState::Disconnected};
     std::atomic<bool> just_connected_{false};
 
     SDL_Process* process_ = nullptr;

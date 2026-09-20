@@ -136,13 +136,7 @@ int main(int, char**) {
     // only offsets for the button when WindowMenuButtonPosition is Left, so None
     // hides the button and reclaims the offset everywhere — including the docking
     // drag preview, which otherwise ignores the per-node flag and leaves a gap.
-    ImGuiStyle& style = ImGui::GetStyle();
-    style.WindowMenuButtonPosition = ImGuiDir_None;
-    style.FrameRounding = 5.0f;
-    style.GrabRounding = 4.0f;
-    style.PopupRounding = 5.0f;
-    style.ScrollbarRounding = 4.0f;
-    style.TabRounding = 4.0f;
+    ImGui::GetStyle().WindowMenuButtonPosition = ImGuiDir_None;
 
     // Persist the dock layout next to the executable (like config.json) instead of
     // imgui's default cwd-relative path, so the saved window arrangement is
