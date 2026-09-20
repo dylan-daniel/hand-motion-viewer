@@ -251,3 +251,102 @@ std::vector<HandExportRow> load_hand_export(const std::string& export_path) {
 
     return rows;
 }
+
+bool read_hexport_metadata(const std::string& path, std::string& subject_out, std::string& trial_out) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    char header[HEADER_SIZE];
+    if (!file.read(header, HEADER_SIZE)) {
+        return false;
+    }
+    if (std::memcmp(header, MAGIC, 4) != 0) {
+        return false;
+    }
+    const std::uint32_t version = read_u32(header + 4);
+    if (version != VERSION) {
+        return false;
+    }
+    const std::uint32_t payload_size = read_u32(header + 8);
+    const std::uint32_t compressed_size = read_u32(header + 12);
+    if (payload_size == 0 || compressed_size == 0) {
+        return false;
+    }
+
+    std::vector<char> compressed(compressed_size);
+    if (!file.read(compressed.data(), compressed_size)) {
+        return false;
+    }
+
+    std::vector<unsigned char> payload(payload_size);
+    mz_ulong actual_payload_size = payload_size;
+    const int rc = mz_uncompress(payload.data(), &actual_payload_size, reinterpret_cast<const unsigned char*>(compressed.data()), compressed_size);
+    if (rc != MZ_OK || actual_payload_size != payload_size) {
+        return false;
+    }
+
+    if (payload.size() < 8) {
+        return false;
+    }
+    const char* p = reinterpret_cast<const char*>(payload.data());
+    std::size_t offset = 0;
+    const std::uint32_t row_count = read_u32(p + offset);
+    offset += 4;
+    const std::uint32_t column_count = read_u32(p + offset);
+    offset += 4;
+
+    if (row_count == 0) {
+        return false;
+    }
+
+    struct PendingColumn {
+        std::string name;
+        DType dtype;
+    };
+    std::vector<PendingColumn> ordered;
+    ordered.reserve(column_count);
+    for (std::uint32_t i = 0; i < column_count; ++i) {
+        if (offset + 2 > payload.size()) {
+            return false;
+        }
+        const auto name_len = static_cast<std::uint8_t>(p[offset]);
+        offset += 1;
+        const auto dtype = static_cast<DType>(static_cast<std::uint8_t>(p[offset]));
+        offset += 1;
+        if (offset + name_len > payload.size()) {
+            return false;
+        }
+        std::string name(p + offset, name_len);
+        offset += name_len;
+        ordered.push_back({std::move(name), dtype});
+    }
+
+    std::map<std::string, ColumnInfo> columns;
+    for (const auto& col : ordered) {
+        columns[col.name] = ColumnInfo{col.dtype, offset};
+        offset += item_size(col.dtype) * row_count;
+    }
+
+    const auto subj_it = columns.find("subject");
+    const auto trial_it = columns.find("trial");
+    if (subj_it == columns.end() || trial_it == columns.end()) {
+        return false;
+    }
+
+    const auto get_string = [&](const ColumnInfo& col, std::uint32_t row) -> std::string {
+        if (col.offset + static_cast<std::size_t>(row + 1) * STRING_FIELD_WIDTH > payload.size()) {
+            return "";
+        }
+        const char* s = p + col.offset + static_cast<std::size_t>(row) * STRING_FIELD_WIDTH;
+        std::size_t len = 0;
+        while (len < STRING_FIELD_WIDTH && s[len] != '\0') {
+            ++len;
+        }
+        return std::string(s, len);
+    };
+
+    subject_out = get_string(subj_it->second, 0);
+    trial_out = get_string(trial_it->second, 0);
+    return !subject_out.empty() && !trial_out.empty();
+}

@@ -15,9 +15,11 @@ import io
 import json
 import os
 import re
+import struct
 import sys
 import traceback
 import zipfile
+import zlib
 from pathlib import Path
 
 
@@ -26,15 +28,81 @@ def natural_sort_key(s: str):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)]
 
 
+def read_hexport_metadata(path: str):
+    """Quickly read subject and trial from a .hexport binary file."""
+    try:
+        with open(path, "rb") as fp:
+            header = fp.read(16)
+            if len(header) < 16 or header[:4] != b"HEXP":
+                return None, None
+            version, payload_size, compressed_size = struct.unpack("<III", header[4:16])
+            if version != 1 or payload_size == 0 or compressed_size == 0:
+                return None, None
+            compressed = fp.read(compressed_size)
+            if len(compressed) < compressed_size:
+                return None, None
+        payload = zlib.decompress(compressed)
+        if len(payload) < 8:
+            return None, None
+        row_count, column_count = struct.unpack("<II", payload[:8])
+        if row_count == 0:
+            return None, None
+        offset = 8
+        ordered_cols = []
+        for _ in range(column_count):
+            if offset + 2 > len(payload):
+                return None, None
+            name_len = payload[offset]
+            offset += 1
+            dtype = payload[offset]
+            offset += 1
+            if offset + name_len > len(payload):
+                return None, None
+            name = payload[offset:offset + name_len].decode("ascii", errors="replace")
+            offset += name_len
+            ordered_cols.append((name, dtype))
+
+        col_offsets = {}
+        for name, dtype in ordered_cols:
+            col_offsets[name] = offset
+            item_sz = 4 if dtype in (0, 1) else (1 if dtype == 2 else 32)
+            offset += item_sz * row_count
+
+        if "subject" not in col_offsets or "trial" not in col_offsets:
+            return None, None
+
+        subj_off = col_offsets["subject"]
+        trial_off = col_offsets["trial"]
+        if subj_off + 32 > len(payload) or trial_off + 32 > len(payload):
+            return None, None
+
+        subject = payload[subj_off:subj_off + 32].split(b"\x00")[0].decode("ascii", errors="replace").strip()
+        trial = payload[trial_off:trial_off + 32].split(b"\x00")[0].decode("ascii", errors="replace").strip()
+        return subject, trial
+    except Exception:
+        return None, None
+
+
+def _disambiguate_names(files_list):
+    seen = {}
+    for f in files_list:
+        seen[f["name"]] = seen.get(f["name"], 0) + 1
+    for f in files_list:
+        if seen[f["name"]] > 1 and f.get("params"):
+            short_p = f["params"][:6]
+            f["name"] = f"{f['name']} ({short_p})"
+        f.pop("params", None)
+
+
 def scan_tree(root_path_str: str):
-    """Recursively scan directory, returning a pruned tree containing only .hexport files."""
+    """Recursively scan directory, returning a pruned synthetic tree grouped by subject and trial."""
     root_path = os.path.expanduser(root_path_str)
     if not os.path.isdir(root_path):
         return None
 
     def _scan(dir_path: str):
-        children = []
-        has_hexport = False
+        subdirs = []
+        hexport_entries = []
         try:
             with os.scandir(dir_path) as it:
                 for entry in it:
@@ -44,22 +112,70 @@ def scan_tree(root_path_str: str):
                         if entry.is_dir(follow_symlinks=False):
                             sub = _scan(entry.path)
                             if sub:
-                                children.append(sub)
+                                subdirs.append(sub)
                         elif entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(".hexport"):
-                            children.append({
-                                "name": entry.name,
-                                "path": entry.path,
-                                "is_file": True,
-                                "children": []
-                            })
-                            has_hexport = True
+                            hexport_entries.append(entry)
                     except OSError:
                         continue
         except (PermissionError, OSError):
             pass
 
-        if children or has_hexport:
-            # Sort: folders first, then natural order by name
+        children = []
+
+        if hexport_entries:
+            subject_groups = {}
+            unclassified = []
+
+            for entry in hexport_entries:
+                subject, trial = read_hexport_metadata(entry.path)
+                stem = Path(entry.name).stem
+                parts = stem.split("__")
+                fps_tag = parts[1] if len(parts) >= 2 else ""
+                params_tag = parts[2] if len(parts) >= 3 else ""
+
+                if subject and trial:
+                    display_name = f"{trial}_{fps_tag}" if fps_tag else trial
+                    subject_groups.setdefault(subject, []).append({
+                        "name": display_name,
+                        "path": entry.path,
+                        "is_file": True,
+                        "children": [],
+                        "params": params_tag,
+                    })
+                else:
+                    unclassified.append({
+                        "name": stem,
+                        "path": entry.path,
+                        "is_file": True,
+                        "children": []
+                    })
+
+            folder_basename = os.path.basename(dir_path)
+
+            if len(subject_groups) == 1 and list(subject_groups.keys())[0] == folder_basename:
+                single_subject_files = list(subject_groups.values())[0]
+                _disambiguate_names(single_subject_files)
+                children.extend(single_subject_files)
+            else:
+                for subj in sorted(subject_groups.keys(), key=natural_sort_key):
+                    s_files = subject_groups[subj]
+                    _disambiguate_names(s_files)
+                    s_files.sort(key=lambda c: natural_sort_key(c["name"]))
+                    children.append({
+                        "name": subj,
+                        "path": os.path.join(dir_path, subj),
+                        "is_file": False,
+                        "children": s_files
+                    })
+
+            if unclassified:
+                unclassified.sort(key=lambda c: natural_sort_key(c["name"]))
+                children.extend(unclassified)
+
+        if subdirs:
+            children.extend(subdirs)
+
+        if children:
             children.sort(key=lambda c: (c["is_file"], natural_sort_key(c["name"])))
             folder_name = os.path.basename(dir_path) or dir_path
             return {
@@ -85,28 +201,28 @@ def scan_tree(root_path_str: str):
 def find_frames_dir(export_path_str: str):
     """
     Locate the frames directory for an export file.
-    Supports both:
-    1. Standard sibling layout: <dir>/frames/<export_stem>/
-    2. infant_grasp_pipeline cache layout:
-       <cache_root>/hand_export/<hash>__<fps>__<params>.hexport ->
-       <cache_root>/frames/<hash>__<fps>/
+    Supports candidate layouts in order of priority:
+    1. Pipeline cache layout: <cache_root>/frames/<hash>__<fps>/
+    2. Sibling frames layout: <dir>/frames/<hash>__<fps>/
+    3. Direct folder layout: <dir>/<hash>__<fps>/
+    4. Sibling stem layout: <dir>/frames/<export_stem>/
+    5. Cache stem layout: <cache_root>/frames/<export_stem>/
     """
     export_path = Path(os.path.expanduser(export_path_str))
     stem = export_path.stem
+    frames_key = stem.rsplit("__", 1)[0] if "__" in stem else stem
 
-    # 1. Standard sibling layout
-    candidate1 = export_path.parent / "frames" / stem
-    if candidate1.is_dir():
-        return candidate1
+    candidates = [
+        export_path.parent.parent / "frames" / frames_key,
+        export_path.parent / "frames" / frames_key,
+        export_path.parent / frames_key,
+        export_path.parent / "frames" / stem,
+        export_path.parent.parent / "frames" / stem,
+    ]
 
-    # 2. Pipeline cache layout: hand_export -> frames/<hash>__<fps>
-    if export_path.parent.name == "hand_export":
-        cache_root = export_path.parent.parent
-        if "__" in stem:
-            frames_key = stem.rsplit("__", 1)[0]
-            candidate2 = cache_root / "frames" / frames_key
-            if candidate2.is_dir():
-                return candidate2
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
 
     return None
 

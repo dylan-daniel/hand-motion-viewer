@@ -1,4 +1,5 @@
 #include "ui/explorer.h"
+#include "data/hand_export.h"
 #include "remote/remote_client.h"
 
 #include <algorithm>
@@ -6,6 +7,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -136,6 +138,102 @@ namespace {
     /// branch, dropped).
     bool keep_child(const FileExplorer::Node& child) { return child.is_file || !child.children.empty(); }
 
+    /// Group .hexport files synthetically by subject and trial.
+    /// Leaf nodes are named <trial>_<fps> (without .hexport).
+    void group_and_add_hexport_files(FileExplorer::Node& node, const std::vector<std::string>& hexport_paths) {
+        if (hexport_paths.empty()) {
+            return;
+        }
+        struct FileEntry {
+            std::string path;
+            std::string display_name;
+            std::string params_tag;
+        };
+        std::map<std::string, std::vector<FileEntry>> subject_groups;
+        std::vector<FileExplorer::Node> unclassified;
+
+        for (const std::string& path : hexport_paths) {
+            std::string subject;
+            std::string trial;
+            const fs::path p(path);
+            const std::string stem = p.stem().string();
+
+            std::string fps_tag;
+            std::string params_tag;
+            const auto pos1 = stem.find("__");
+            if (pos1 != std::string::npos) {
+                const auto pos2 = stem.find("__", pos1 + 2);
+                if (pos2 != std::string::npos) {
+                    fps_tag = stem.substr(pos1 + 2, pos2 - (pos1 + 2));
+                    params_tag = stem.substr(pos2 + 2);
+                } else {
+                    fps_tag = stem.substr(pos1 + 2);
+                }
+            }
+
+            if (read_hexport_metadata(path, subject, trial)) {
+                std::string display_name = fps_tag.empty() ? trial : (trial + "_" + fps_tag);
+                subject_groups[subject].push_back(FileEntry{path, std::move(display_name), std::move(params_tag)});
+            } else {
+                FileExplorer::Node leaf;
+                leaf.is_file = true;
+                leaf.path = path;
+                leaf.name = stem;
+                unclassified.push_back(std::move(leaf));
+            }
+        }
+
+        const std::string folder_basename = folder_name(fs::path(node.path));
+
+        if (subject_groups.size() == 1 && subject_groups.begin()->first == folder_basename) {
+            auto& entries = subject_groups.begin()->second;
+            std::map<std::string, int> name_counts;
+            for (const auto& entry : entries) {
+                name_counts[entry.display_name]++;
+            }
+            for (auto& entry : entries) {
+                FileExplorer::Node leaf;
+                leaf.is_file = true;
+                leaf.path = entry.path;
+                if (name_counts[entry.display_name] > 1 && !entry.params_tag.empty()) {
+                    leaf.name = entry.display_name + " (" + entry.params_tag.substr(0, 6) + ")";
+                } else {
+                    leaf.name = entry.display_name;
+                }
+                node.children.push_back(std::move(leaf));
+            }
+        } else {
+            for (auto& [subject, entries] : subject_groups) {
+                FileExplorer::Node subject_node;
+                subject_node.is_file = false;
+                subject_node.name = subject;
+                subject_node.path = node.path + "/" + subject;
+
+                std::map<std::string, int> name_counts;
+                for (const auto& entry : entries) {
+                    name_counts[entry.display_name]++;
+                }
+                for (auto& entry : entries) {
+                    FileExplorer::Node leaf;
+                    leaf.is_file = true;
+                    leaf.path = entry.path;
+                    if (name_counts[entry.display_name] > 1 && !entry.params_tag.empty()) {
+                        leaf.name = entry.display_name + " (" + entry.params_tag.substr(0, 6) + ")";
+                    } else {
+                        leaf.name = entry.display_name;
+                    }
+                    subject_node.children.push_back(std::move(leaf));
+                }
+                sort_children(subject_node);
+                node.children.push_back(std::move(subject_node));
+            }
+        }
+
+        for (auto& leaf : unclassified) {
+            node.children.push_back(std::move(leaf));
+        }
+    }
+
 #ifdef _WIN32
     /// Convert a UTF-8 path to UTF-16 for the wide Win32 directory APIs.
     std::wstring widen(const std::string& utf8) {
@@ -191,6 +289,7 @@ namespace {
         const std::wstring pattern = widen(node.path) + L"\\*";
         WIN32_FIND_DATAW find_data;
         HANDLE handle = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &find_data, FindExSearchNameMatch, nullptr, FIND_FIRST_EX_LARGE_FETCH);
+        std::vector<std::string> hexport_paths;
         if (handle != INVALID_HANDLE_VALUE) {
             do {
                 const wchar_t* name = find_data.cFileName;
@@ -206,15 +305,13 @@ namespace {
                         node.children.push_back(std::move(child));
                     }
                 } else if (wname_is_hexport(name)) {
-                    FileExplorer::Node child;
-                    child.is_file = true;
-                    child.name = narrow(name, static_cast<int>(std::wcslen(name)));
-                    child.path = node.path + "\\" + child.name;
-                    node.children.push_back(std::move(child));
+                    const std::string file_name = narrow(name, static_cast<int>(std::wcslen(name)));
+                    hexport_paths.push_back(node.path + "\\" + file_name);
                 }
             } while (FindNextFileW(handle, &find_data) != 0);
             FindClose(handle);
         }
+        group_and_add_hexport_files(node, hexport_paths);
         sort_children(node);
     }
 #else
@@ -240,6 +337,7 @@ namespace {
     void scan_children(FileExplorer::Node& node) {
         std::error_code error;
         fs::directory_iterator iterator(node.path, fs::directory_options::skip_permission_denied, error);
+        std::vector<std::string> hexport_paths;
         if (!error) {
             for (const fs::directory_entry& entry : iterator) {
                 std::error_code type_error;
@@ -252,14 +350,11 @@ namespace {
                         node.children.push_back(std::move(child));
                     }
                 } else if (entry.is_regular_file(type_error) && name_is_hexport(entry.path().filename().string())) {
-                    FileExplorer::Node child;
-                    child.is_file = true;
-                    child.path = entry.path().string();
-                    child.name = entry.path().filename().string();
-                    node.children.push_back(std::move(child));
+                    hexport_paths.push_back(entry.path().string());
                 }
             }
         }
+        group_and_add_hexport_files(node, hexport_paths);
         sort_children(node);
     }
 #endif
@@ -343,6 +438,9 @@ namespace {
             const float node_left = ImGui::GetCursorScreenPos().x;
             ImGui::TreeNodeEx(node.path.c_str(), flags, "%s", "");
             draw_node_label(draw.explorer.icons(), node.name, node.is_file, false, node_left);
+            if (node.is_file && ImGui::IsItemHovered()) {
+                ImGui::SetItemTooltip("%s", node.path.c_str());
+            }
             if (node.is_file && ImGui::IsItemClicked()) {
                 draw.result.open_file = node.path;
                 draw.result.is_remote = draw.explorer.mode() == FileExplorer::SourceMode::Remote;

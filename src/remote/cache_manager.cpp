@@ -60,7 +60,13 @@ std::string CacheManager::get_local_export_path(const std::string& host, const s
 
 std::string CacheManager::get_local_frames_dir(const std::string& local_export_path) {
     const fs::path p(local_export_path);
-    return (p.parent_path() / "frames" / p.stem()).string();
+    const std::string stem = p.stem().string();
+    std::string frames_key = stem;
+    const auto last_sep = stem.rfind("__");
+    if (last_sep != std::string::npos) {
+        frames_key = stem.substr(0, last_sep);
+    }
+    return (p.parent_path() / "frames" / frames_key).string();
 }
 
 bool CacheManager::is_export_cached(const std::string& local_export_path) {

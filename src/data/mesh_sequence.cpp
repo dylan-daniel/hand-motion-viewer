@@ -133,9 +133,40 @@ namespace {
             frame_flags_infant_only.push_back(flags_infant_by_frame[frame_number]);
         }
     }
+
+    fs::path resolve_frames_dir(const fs::path& export_file) {
+        const std::string stem = export_file.stem().string();
+        std::string frames_key = stem;
+        const auto last_sep = stem.rfind("__");
+        if (last_sep != std::string::npos) {
+            frames_key = stem.substr(0, last_sep);
+        }
+
+        const fs::path parent = export_file.parent_path();
+        const fs::path grandparent = parent.parent_path();
+
+        const std::vector<fs::path> candidates = {
+            grandparent / "frames" / frames_key,
+            parent / "frames" / frames_key,
+            parent / frames_key,
+            parent / "frames" / stem,
+            grandparent / "frames" / stem,
+        };
+
+        for (const auto& candidate : candidates) {
+            std::error_code ec;
+            if (fs::is_directory(candidate, ec)) {
+                return candidate;
+            }
+        }
+
+        // Default candidate if directory does not exist yet (e.g. pending remote download)
+        return parent / "frames" / frames_key;
+    }
 } // namespace
 
 MeshSequence::MeshSequence(const std::string& path) : path_(path) {
+    frames_dir_ = resolve_frames_dir(fs::path(path)).string();
     build_export_frames(path, frames_, frame_numbers_, frame_flags_all_, frame_flags_infant_only_);
     frame_count_ = static_cast<int>(frames_.size());
 }
@@ -156,34 +187,21 @@ bool MeshSequence::is_flagged(int index, int flag_index, bool per_track_coloring
 }
 
 std::string MeshSequence::frame_image_path(int index) const {
-    if (index < 0 || index >= frame_count_) {
+    if (index < 0 || index >= frame_count_ || frames_dir_.empty()) {
         return {};
     }
-    // Convention: a plain source-video frame for a hand-motion export lives in
-    // a sibling ``frames/<export-file-stem>/`` folder, named ``frame_%05d.jpg``
-    // (matching infant_grasp_pipeline's own frame-extraction naming) -- e.g.
-    // GZ65_T1_BabyView.hexport looks in frames/GZ65_T1_BabyView/ next to it.
-    // Naming the subfolder after the export file (rather than one shared
-    // frames/ folder) disambiguates multiple .hexport files sitting in the
-    // same directory. Nothing in the .hexport file itself records this path --
-    // it is purely a packaging convention between however the export and its
-    // frames are delivered together, so a missing folder or frame is not an
-    // error, just "no image" (the caller treats an empty path that way).
-    const fs::path export_file(path_);
-    const fs::path frames_dir = export_file.parent_path() / "frames" / export_file.stem();
     const int frame_number = frame_numbers_[static_cast<std::size_t>(index)];
+    const fs::path frames_path(frames_dir_);
 
-    char name[32];
-    std::snprintf(name, sizeof(name), "frame_%05d.jpg", frame_number);
-    std::error_code error;
-    fs::path candidate = frames_dir / name;
-    if (fs::exists(candidate, error)) {
-        return candidate.string();
-    }
-    std::snprintf(name, sizeof(name), "frame_%05d.png", frame_number);
-    candidate = frames_dir / name;
-    if (fs::exists(candidate, error)) {
-        return candidate.string();
+    char name[64];
+    constexpr const char* formats[] = {"frame_%05d.jpg", "frame_%05d.jpeg", "frame_%05d.png", "frame_%04d.jpg", "frame_%04d.png"};
+    for (const char* fmt : formats) {
+        std::snprintf(name, sizeof(name), fmt, frame_number);
+        const fs::path candidate = frames_path / name;
+        std::error_code error;
+        if (fs::exists(candidate, error)) {
+            return candidate.string();
+        }
     }
     return {};
 }

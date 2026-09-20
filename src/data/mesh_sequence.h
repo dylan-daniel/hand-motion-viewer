@@ -78,6 +78,7 @@ public:
 
 private:
     std::string path_;
+    std::string frames_dir_;
     std::vector<Frame> frames_;
     std::vector<int> frame_numbers_;                                         // frame_numbers_[i] = the pipeline's own frame number for playback index i
     std::vector<std::array<bool, kFlagLayerCount>> frame_flags_all_;         // all hands contribute

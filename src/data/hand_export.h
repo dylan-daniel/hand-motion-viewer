@@ -49,3 +49,8 @@ struct HandExportRow {
 /// number, an unsupported version, a decompression failure, or a missing
 /// expected column.
 std::vector<HandExportRow> load_hand_export(const std::string& export_path);
+
+/// Read only the subject and trial identifiers from a .hexport file without
+/// loading or decompressing the full row payload. Returns true if both were read
+/// successfully; false otherwise.
+bool read_hexport_metadata(const std::string& path, std::string& subject_out, std::string& trial_out);
